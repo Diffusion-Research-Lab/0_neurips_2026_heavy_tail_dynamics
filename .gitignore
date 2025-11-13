@@ -1,0 +1,8 @@
+# directories to ignore
+__pycache__/
+figures/
+
+# compiled python files
+*.pyc
+*.pyo
+*.pyd
