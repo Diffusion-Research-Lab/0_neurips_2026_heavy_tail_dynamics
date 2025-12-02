@@ -3,7 +3,7 @@
 # Authors: Hamza Cherkaoui
 
 import math
-from typing import Optional, Literal
+from typing import Union
 import torch
 import torch.nn as nn
 from constants import EPS
@@ -49,7 +49,6 @@ def sample_student_t(
     z = torch.randn(n_samples, dim, device=device, dtype=dtype)
     s = torch.distributions.Gamma(nu / 2.0, 0.5).sample((n_samples,)).to(device=device, dtype=dtype)
     scale = torch.sqrt((s / nu).clamp_min(EPS)).unsqueeze(1)
-
     return z / scale
 
 
@@ -117,48 +116,43 @@ def sample_from_diffusion(
 @torch.no_grad()
 def sample_from_flow_matching(
     model: nn.Module,
-    n_samples: int,
-    dim: int,
     device: torch.device,
     dtype: torch.dtype,
-    base: str = "gaussian",
+    base_or_sample: Union[str, torch.Tensor] = "gaussian",
+    n_samples: int = 1000,
+    dim: int = 2,
     nu_source: float | None = None,
     steps: int = 300,
     t_min: float = 0.05,
     t_max: float = 0.95,
-    chunk_size: int | None = None,
 ) -> torch.Tensor:
     """Deterministic FM sampling: integrate dx/dt = v_theta(x,t) from a base x0."""
     model.eval()
 
-    def draw_base(count: int) -> torch.Tensor:
+    if isinstance(base_or_sample, torch.Tensor):
+        x = base_or_sample.to(device=device, dtype=dtype)
+        if x.ndim != 2:
+            raise ValueError(f"`base_or_sample` tensor must be 2D, got shape {x.shape}.")
+    else:
+        base = base_or_sample
         if base == "gaussian":
-            return sample_gaussian(batch_size=count, dim=dim, device=device, dtype=dtype)
-        if base == "student_t":
+            x = sample_gaussian(n_samples=n_samples, dim=dim, device=device, dtype=dtype)
+        elif base == "student_t":
             if nu_source is None:
                 raise ValueError("nu_source must be provided when base='student_t'.")
-            return sample_student_t(batch_size=count, dim=dim, nu=nu_source, device=device, dtype=dtype)
-        raise ValueError("base must be 'gaussian' or 'student_t'.")
+            x = sample_student_t(nu=nu_source, n_samples=n_samples, dim=dim, device=device,
+                                 dtype=dtype)
+        else:
+            raise ValueError("base_or_sample must be a Tensor, 'gaussian' or 'student_t'.")
 
-    def integrate(x0: torch.Tensor) -> torch.Tensor:
-        count = x0.shape[0]
-        x = x0.clone()
-        dt = (t_max - t_min) / float(steps)
-        t = torch.full((count,), t_min, device=device, dtype=dtype)
-        for _ in range(steps):
-            v1 = model(x, t)
-            x_e = x + dt * v1
-            t_n = t + dt
-            v2 = model(x_e, t_n)
-            x = x + 0.5 * dt * (v1 + v2)
-            t = t_n
-        return x
+    count, _ = x.shape
 
-    if chunk_size is None:
-        return integrate(draw_base(n_samples))
+    dt = (t_max - t_min) / float(steps)
+    t = torch.full((count, 1), t_min, device=device, dtype=dtype)
 
-    out = []
-    for start in range(0, n_samples, chunk_size):
-        n_now = min(chunk_size, n_samples - start)
-        out.append(integrate(draw_base(n_now)))
-    return torch.cat(out, dim=0)
+    for _ in range(steps):
+        v = model(x, t)
+        x = x + dt * v
+        t = t + dt
+
+    return x

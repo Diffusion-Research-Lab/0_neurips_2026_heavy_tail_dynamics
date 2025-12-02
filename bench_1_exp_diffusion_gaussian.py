@@ -1,4 +1,4 @@
-"""Train a flow-matching model to target a long-tail distribution using alpha-stable noise."""
+"""Train a diffusion model to target a bimodal Gaussian distribution using Gaussian noise."""
 
 # Authors: Hamza Cherkaoui
 
@@ -15,17 +15,21 @@ from constants import FIGURES_DIR, FONTSIZE
 from training import _train
 
 
-def train_flow_matching_gaussian(
+####################################################################################################
+# Globals
+def train_diffusion_gaussian(
     model: nn.Module,
     data: torch.Tensor,
     batch_size: int,
+    n_steps: int,
     n_epochs: int,
     lr: float,
     device: torch.device,
-    eps: float = 1e-2,
 ) -> Tuple[nn.Module, dict]:
-    """Train on long-tail data (Gaussian base)."""
+    """Train on Gaussian data."""
 
+    dtype = data.dtype
+    alphas_cumprod = torch.cumprod(torch.linspace(1-1e-4, 1-1e-2, n_steps, device=device, dtype=dtype), dim=0)
     loss_fn = nn.MSELoss()
 
     def step_fn(
@@ -39,26 +43,25 @@ def train_flow_matching_gaussian(
 
         x_0 = sample_gaussian(n_samples=batch_size, dim=dim, device=device, dtype=dtype)
 
-        t = torch.empty(batch_size, device=device, dtype=dtype).uniform_(eps, 1 - eps)
+        t = torch.randint(0, n_steps, (batch_size,), device=device)
 
-        g = sample_gaussian(n_samples=batch_size, dim=dim, device=device, dtype=dtype)
-        sigma_g = torch.sqrt(t * (1 - t)).unsqueeze(-1)
-        d_sigma_g_dt = (0.5 * (1 - 2 * t) / torch.sqrt(t * (1 - t))).unsqueeze(-1)
+        gamma = alphas_cumprod.index_select(0, t)
+        x_t = gamma.sqrt().unsqueeze(-1) * x_1 + (1 - gamma).sqrt().unsqueeze(-1) * x_0
 
-        v_t = (x_1 - x_0) + d_sigma_g_dt * g
-        x_t = x_0 + t.unsqueeze(-1) * (x_1 - x_0) + sigma_g * g
-
-        return loss_fn(v_t, model(x_t, t))
+        return loss_fn(x_0, model(x_t, t.to(dtype) / float(n_steps - 1)))
 
     return _train(model, data, batch_size, n_epochs, lr, device, step_fn)
 
 
+####################################################################################################
+# Main
 if __name__ == "__main__":
 
     print("[INFO] ⚙️ Setting experiment...")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--dim", type=int, default=1)
+    parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--n_samples", type=int, default=10000)
     parser.add_argument("--n_epochs", type=int, default=250)
     parser.add_argument("--batch_size", type=int, default=512)
@@ -82,20 +85,23 @@ if __name__ == "__main__":
                                    )
 
     print("[INFO] 🧵 Running experiment")
-    model, meta = train_flow_matching_gaussian(model=model,
-                                               data=data,
-                                               batch_size=args.batch_size,
-                                               n_epochs=args.n_epochs,
-                                               lr=args.lr,
-                                               device=device,
-                                               )
+    model, meta = train_diffusion_gaussian(model=model,
+                                           data=data,
+                                           batch_size=args.batch_size,
+                                           n_steps=args.n_steps,
+                                           n_epochs=args.n_epochs,
+                                           lr=args.lr,
+                                           device=device,
+                                           )
 
+####################################################################################################
+# Plotting
     print("[INFO] 🎨 Plotting results")
     pdf_path = plot_training_loss(l_loss=meta['training_loss'],
                                   plot_dir=FIGURES_DIR,
                                   xlogscale=False,
                                   ylogscale=False,
                                   fontsize=FONTSIZE,
-                                  suffix="flowmatching_gaussian",
+                                  suffix="diffusion_gaussian",
                                   )
     logging.info(f"Training loss plot saved at '{pdf_path}'")

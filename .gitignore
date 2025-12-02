@@ -3,6 +3,7 @@ __pycache__/
 figures/
 
 # compiled python files
+*.pkl
 *.pyc
 *.pyo
 *.pyd

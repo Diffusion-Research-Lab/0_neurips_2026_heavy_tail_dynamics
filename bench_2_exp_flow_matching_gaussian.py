@@ -1,4 +1,4 @@
-"""Train a diffusion model to target a bimodal Gaussian distribution using Gaussian noise."""
+"""Train a flow-matching model to target a long-tail distribution using alpha-stable noise."""
 
 # Authors: Hamza Cherkaoui
 
@@ -13,21 +13,22 @@ from sampling import sample_bimodal_gaussian, sample_gaussian
 from plotting import plot_training_loss
 from constants import FIGURES_DIR, FONTSIZE
 from training import _train
+from evaluation import evaluate, fid
 
 
-def train_diffusion_gaussian(
+####################################################################################################
+# Globals
+def train_flow_matching_gaussian(
     model: nn.Module,
     data: torch.Tensor,
     batch_size: int,
-    n_steps: int,
     n_epochs: int,
     lr: float,
     device: torch.device,
+    eps: float = 1e-2,
 ) -> Tuple[nn.Module, dict]:
-    """Train on Gaussian data."""
+    """Train on long-tail data (Gaussian base)."""
 
-    dtype = data.dtype
-    alphas_cumprod = torch.cumprod(torch.linspace(1-1e-4, 1-1e-2, n_steps, device=device, dtype=dtype), dim=0)
     loss_fn = nn.MSELoss()
 
     def step_fn(
@@ -40,24 +41,24 @@ def train_diffusion_gaussian(
         batch_size = x_1.size(0)
 
         x_0 = sample_gaussian(n_samples=batch_size, dim=dim, device=device, dtype=dtype)
+        t = torch.empty(batch_size, device=device, dtype=dtype).uniform_(eps, 1 - eps)
 
-        t = torch.randint(0, n_steps, (batch_size,), device=device)
+        v_t = (x_1 - x_0)
+        x_t  = (1.0 - t.unsqueeze(-1)) * x_0 + t.unsqueeze(-1) * x_1
 
-        gamma = alphas_cumprod.index_select(0, t)
-        x_t = gamma.sqrt().unsqueeze(-1) * x_1 + (1 - gamma).sqrt().unsqueeze(-1) * x_0
-
-        return loss_fn(x_0, model(x_t, t.to(dtype) / float(n_steps - 1)))
+        return loss_fn(v_t, model(x_t, t))
 
     return _train(model, data, batch_size, n_epochs, lr, device, step_fn)
 
 
+####################################################################################################
+# Main
 if __name__ == "__main__":
 
     print("[INFO] ⚙️ Setting experiment...")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--dim", type=int, default=1)
-    parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--n_samples", type=int, default=10000)
     parser.add_argument("--n_epochs", type=int, default=250)
     parser.add_argument("--batch_size", type=int, default=512)
@@ -81,14 +82,13 @@ if __name__ == "__main__":
                                    )
 
     print("[INFO] 🧵 Running experiment")
-    model, meta = train_diffusion_gaussian(model=model,
-                                           data=data,
-                                           batch_size=args.batch_size,
-                                           n_steps=args.n_steps,
-                                           n_epochs=args.n_epochs,
-                                           lr=args.lr,
-                                           device=device,
-                                           )
+    model, meta = train_flow_matching_gaussian(model=model,
+                                               data=data,
+                                               batch_size=args.batch_size,
+                                               n_epochs=args.n_epochs,
+                                               lr=args.lr,
+                                               device=device,
+                                               )
 
     print("[INFO] 🎨 Plotting results")
     pdf_path = plot_training_loss(l_loss=meta['training_loss'],
@@ -96,6 +96,13 @@ if __name__ == "__main__":
                                   xlogscale=False,
                                   ylogscale=False,
                                   fontsize=FONTSIZE,
-                                  suffix="diffusion_gaussian",
+                                  suffix="flowmatching_gaussian",
                                   )
     logging.info(f"Training loss plot saved at '{pdf_path}'")
+
+####################################################################################################
+# Plotting
+    print("[INFO] 📏 Performance")
+    metric_value = evaluate(fid, data, model, device, dtype)
+    logging.info(f"Evaluation metric '{fid.__name__}': {metric_value:.4f}")
+    logging.info(f"Loss decrease: {meta['training_loss'][0] - meta['training_loss'][-1]:.4f}")

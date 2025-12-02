@@ -18,4 +18,5 @@ class MLP(nn.Module):
         )
 
     def forward(self, x, t):
-        return self.net(torch.cat([x, t.unsqueeze(-1)], dim=-1))
+        t = t.view(-1, 1)
+        return self.net(torch.cat([x, t], dim=-1))
