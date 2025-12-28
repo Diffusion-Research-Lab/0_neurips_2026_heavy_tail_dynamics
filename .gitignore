@@ -1,9 +1,15 @@
 # directories to ignore
 __pycache__/
-figures/
+*figure*/
+*table*/
+
+# results files
+*.pdf
 
 # compiled python files
 *.pkl
 *.pyc
 *.pyo
 *.pyd
+
+
