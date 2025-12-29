@@ -5,7 +5,6 @@
 import time
 import torch
 from cauda.model import LightNet
-from cauda.utils import set_seed, get_device
 from cauda.datasets import fetch_synthetic_data
 from cauda.training import train
 from cauda.metrics import fid, msle_at_quantile
@@ -27,10 +26,8 @@ lr = 5e-3
 seed = 4620518
 target_data_type = 'spiral'
 
-set_seed(seed)
-device = get_device()
+device = 'cpu'
 dtype = torch.float64
-torch.set_default_dtype(dtype)
 
 def msle(x, x_ref):
     return msle_at_quantile(x.abs(), x_ref.abs())
@@ -57,7 +54,7 @@ for gen_cls in [DDPMEps, DDPMX0, GaussianFlowLinear, GaussianFlowDDPM, GaussianF
     for coef, metric_func in zip(l_coefs, l_metrics):
         score = metric_func(X_test, X_test_gen)
         ref_score = metric_func(X_test, X_val)
-        print(f"       {metric_func.__name__} = {score:.4f} (baseline at {ref_score:.2e})")
+        print(f"       {metric_func.__name__} = {score:.2e} (baseline at {ref_score:.2e})")
 
 ####################################################################################################
 # Plotting

@@ -1,15 +1,20 @@
-# directories to ignore
+# Python cache / bytecode
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Artifacts / outputs
 *figure*/
 *table*/
-
-# results files
 *.pdf
 
-# compiled python files
+# Serialized objects / checkpoints
 *.pkl
-*.pyc
-*.pyo
-*.pyd
 
+# OS junk
+.DS_Store
+Thumbs.db
 
+# Test / coverage / tooling caches
+.pytest_cache/
+.coverage

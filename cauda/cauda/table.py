@@ -3,10 +3,10 @@
 # Authors: Hamza Cherkaoui
 
 from pathlib import Path
-import math
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Dict
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 import numpy as np
 from scipy.stats import ttest_ind
+from .utils import to_numpy
 
 
 def save_double_entry_table(
@@ -85,6 +85,10 @@ def dict_to_double_entry_latex_table(
         if v not in ['down', 'up']:
             raise ValueError(f"'metric_direction' for metric '{k}' not in ['down', 'up'], {v}")
 
+    for m in metrics:
+        for a in approaches:
+            results[(a, m)] = to_numpy(results[(a, m)])
+
     best_in_row: dict[Any, float] = {}
     best_name_in_row: dict[Any, float] = {}
     if bold_best_in_row:
@@ -100,8 +104,7 @@ def dict_to_double_entry_latex_table(
                 best_name_in_row[m] = approaches[best]
 
     def _fmt_ceil(x: float, t: float = 1e-1) -> float:
-        assert x > 0
-        if x > t: return "-"
+        if (x < 0) or (x > t): return "-"
         return f"{np.sign(x)*10:.0f}" + r"^{" + f"{np.ceil(np.log10(np.abs(x))):.0f}" + r"}"
 
     def _is_best(v: Any, m: Any) -> bool:

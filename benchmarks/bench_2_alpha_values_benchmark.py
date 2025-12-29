@@ -2,11 +2,9 @@
 
 # Authors: Hamza Cherkaoui
 
-import os
 import argparse
-from pathlib import Path
+import pprint
 import time
-import torch
 from cauda.model import LightNet
 from cauda.datasets import fetch_synthetic_data
 from cauda.training import train
@@ -26,6 +24,12 @@ args = parser.parse_args()
 
 cfg = load_config(args.config).set_up()
 
+print('-' * 40)
+print("Experimental configuration:")
+print("---------------------------")
+pprint.pprint(cfg.as_dict())
+print('-' * 40)
+
 def msle(x, x_ref):
     return msle_at_quantile(x.abs(), x_ref.abs())
 
@@ -38,7 +42,7 @@ for alpha_data in cfg.l_alpha_data:
 # Main
 for n in range(cfg.n_trials):
 
-    print(f"[INFO] Running trial {n:02d} / {cfg.n_trials:02d}")
+    print(f"[INFO] Running trial {n + 1:02d} / {cfg.n_trials:02d}")
 
     for alpha_data in cfg.l_alpha_data:
 

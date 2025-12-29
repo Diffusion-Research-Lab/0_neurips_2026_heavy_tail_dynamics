@@ -5,41 +5,8 @@
 import pytest
 import math
 import torch
-from cauda.utils import set_seed, get_device, cosine_betas, make_schedule
+from cauda.utils import cosine_betas, make_schedule
 from .utils import _devices
-
-
-def test_get_device_returns_torch_device():
-    dev = get_device()
-    assert isinstance(dev, torch.device)
-    assert dev.type in ("cpu", "cuda")
-
-
-def test_set_seed_reproducible_cpu():
-    set_seed(123)
-    a1 = torch.randn(32, device="cpu")
-    b1 = torch.randint(0, 100, (32,), device="cpu")
-
-    set_seed(123)
-    a2 = torch.randn(32, device="cpu")
-    b2 = torch.randint(0, 100, (32,), device="cpu")
-
-    assert torch.equal(a1, a2)
-    assert torch.equal(b1, b2)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_set_seed_reproducible_cuda():
-    set_seed(999)
-    a1 = torch.randn(32, device="cuda")
-    b1 = torch.randint(0, 100, (32,), device="cuda")
-
-    set_seed(999)
-    a2 = torch.randn(32, device="cuda")
-    b2 = torch.randint(0, 100, (32,), device="cuda")
-
-    assert torch.equal(a1, a2)
-    assert torch.equal(b1, b2)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

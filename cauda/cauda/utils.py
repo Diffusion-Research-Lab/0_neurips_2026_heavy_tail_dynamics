@@ -2,8 +2,9 @@
 
 # Authors: Hamza Cherkaoui
 
-from typing import Tuple, Any, MutableMapping
+from typing import Any, MutableMapping
 import math
+import numpy as np
 import torch
 
 
@@ -24,6 +25,17 @@ def getpop(
     if default is _sentinel:
         raise KeyError(key)
     return default
+
+
+def to_numpy(x):
+    """Recursively convert torch tensors (incl. nested containers) to CPU NumPy arrays."""
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    if isinstance(x, dict):
+        return {k: to_numpy(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [to_numpy(v) for v in x]
+    return x
 
 
 @torch.no_grad()

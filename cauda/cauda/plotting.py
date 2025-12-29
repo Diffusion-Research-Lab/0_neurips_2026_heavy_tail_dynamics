@@ -9,6 +9,7 @@ from matplotlib.colors import LogNorm
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
+from .utils import to_numpy
 
 
 def _format_tick(
@@ -36,6 +37,9 @@ def plot_scatter(
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = plot_dir / f"{suffix}_2d_scatter.pdf"
+
+    x = to_numpy(x)
+    x_ref = to_numpy(x_ref)
 
     center = np.median(np.vstack([x, x_ref]), axis=0)
     half_xy = np.quantile(np.abs(np.vstack([x, x_ref]) - center), perc_to_plot, axis=0)
@@ -73,10 +77,10 @@ def plot_histogram(
     plot_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = plot_dir / f"{suffix}_hist.pdf"
 
-    x_np = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
-    x_ref_np = x_ref.detach().cpu().numpy() if isinstance(x_ref, torch.Tensor) else np.asarray(x_ref)
+    x = to_numpy(x)
+    x_ref = to_numpy(x_ref)
 
-    pca = PCA(n_components=1).fit(np.concatenate([x_ref_np, x_np], axis=0))
+    pca = PCA(n_components=1).fit(np.concatenate([x_ref, x], axis=0))
     x_1d = pca.transform(x).ravel()
     x_ref_1d = pca.transform(x_ref).ravel()
 
@@ -117,6 +121,7 @@ def plot_training_loss(
     pdf_path = plot_dir / f"{suffix}_training_loss.pdf"
 
     epochs = list(range(1, len(l_loss) + 1))
+    l_loss = to_numpy(l_loss)
 
     plt.figure(figsize=figsize)
 
@@ -152,9 +157,7 @@ def plot_heatmap(
 
     clean_results: Dict[Tuple[float, float], float] = {}
     for (nu_p1, nu_p0), v in results.items():
-        if isinstance(v, torch.Tensor):
-            v = float(v.detach().cpu().item())
-        clean_results[(float(nu_p1), float(nu_p0))] = np.mean(v)
+        clean_results[(float(nu_p1), float(nu_p0))] = np.mean(to_numpy(v))
 
     yticks = sorted({k[0] for k in clean_results.keys()})
     xticks = sorted({k[1] for k in clean_results.keys()})

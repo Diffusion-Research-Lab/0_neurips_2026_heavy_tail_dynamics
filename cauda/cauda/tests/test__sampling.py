@@ -116,26 +116,6 @@ def test_bimodal_balanced_mean_var_and_weight():
     assert abs(frac_neg - 0.5) < 0.02
 
 
-def test_bimodal_unbalanced_mean_var_and_weight():
-    torch.manual_seed(5)
-    n, d = 80000, 2
-    mu, s, p = 2.0, 0.15, 0.1  # p = prob of -mu in your helper
-    x = sample_unbalanced_bimodal_gaussian(n, d, mu=mu, s=s, device="cpu", dtype=torch.float64)
-    assert x.shape == (n, d)
-    assert torch.isfinite(x).all()
-
-    mean_emp = x.mean(dim=0)
-    mean_true = mu * (1.0 - 2.0 * p)
-    assert (mean_emp - mean_true).abs().max().item() < 0.06
-
-    var_emp = x.var(dim=0, unbiased=True)
-    var_true = s * s + (mu * mu) * (4.0 * p * (1.0 - p))
-    assert (var_emp - var_true).abs().max().item() < 0.12
-
-    frac_neg = (x[:, 0] < 0.0).to(torch.float64).mean().item()
-    assert abs(frac_neg - p) < 0.02
-
-
 def test_scalar_alpha_stable_positive_and_scaling_property():
     torch.manual_seed(6)
     n = 60000

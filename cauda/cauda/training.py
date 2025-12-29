@@ -1,4 +1,4 @@
-"""Training utilities for diffusion models."""
+""""Training utilities for diffusion models."""
 
 # Authors: Hamza Cherkaoui
 
@@ -19,7 +19,6 @@ def train(
     lr: float = 1e-4,
     device: torch.device = "cpu",
     num_workers: int = 2,
-    use_amp: bool = True,
     use_adamw: bool = True,
     weight_decay: float = 0.0,
     grad_clip_norm: Optional[float] = None,
@@ -56,11 +55,10 @@ def train(
             raise ValueError(f"source_data dim {source.size(-1)} != target_data dim {dim}")
 
     pin = device.type == "cuda"
-    cpu_device = torch.device("cpu")
 
     loader = DataLoader(
         TensorDataset(target),
-        batch_size=batch_size,
+        batch_size=int(batch_size),
         shuffle=True,
         drop_last=True,
         num_workers=int(num_workers),
@@ -95,9 +93,6 @@ def train(
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=_lr_mult)
 
-    amp_ok = bool(use_amp and pin and dtype in (torch.float16, torch.float32, torch.bfloat16))
-    scaler = torch.amp.GradScaler(enabled=amp_ok)
-
     training_loss: List[float] = []
     lr_hist: List[float] = []
 
@@ -116,7 +111,6 @@ def train(
             "model_state": net.state_dict(),
             "opt_state": opt.state_dict(),
             "scheduler_state": scheduler.state_dict(),
-            "scaler_state": scaler.state_dict() if scaler.is_enabled() else None,
             "meta": {
                 "batch_size": int(batch_size),
                 "n_epochs": int(n_epochs),
@@ -125,7 +119,6 @@ def train(
                 "warmup_steps": int(warmup_steps),
                 "weight_decay": float(weight_decay),
                 "use_adamw": bool(use_adamw),
-                "use_amp": bool(scaler.is_enabled()),
                 "grad_clip_norm": None if grad_clip_norm is None else float(grad_clip_norm),
                 "dtype": str(dtype),
                 "device": str(device),
@@ -167,30 +160,19 @@ def train(
 
             z = None
             if source is not None:
-                idx = torch.randint(0, source.size(0), (x.size(0),), device=cpu_device)
+                idx = torch.randint(0, source.size(0), (x.size(0),), device="cpu")
                 z = source.index_select(0, idx).to(device=device, dtype=dtype, non_blocking=pin)
 
             opt.zero_grad(set_to_none=True)
 
-            with torch.amp.autocast(device_type=device.type, enabled=scaler.is_enabled()):
-                loss = generative_model.loss(x, z=z)
-
+            loss = generative_model.loss(x, z=z)
             if loss.ndim != 0:
                 raise ValueError(f"generative_model.loss must return a scalar, got shape {tuple(loss.shape)}")
 
-            if scaler.is_enabled():
-                scaler.scale(loss).backward()
-                if grad_clip_norm is not None:
-                    scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=float(grad_clip_norm))
-                scaler.step(opt)
-                scaler.update()
-            else:
-                loss.backward()
-                if grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=float(grad_clip_norm))
-                opt.step()
-
+            loss.backward()
+            if grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=float(grad_clip_norm))
+            opt.step()
             scheduler.step()
 
             losses_epoch.append(float(loss.detach().item()))
@@ -201,15 +183,14 @@ def train(
         training_loss.append(m)
 
         if (epoch + 1) % int(freq_logging) == 0:
-            logger.info(
-                f"epoch {epoch + 1:3d}/{n_epochs:3d} | loss {m:.6f} | lr {opt.param_groups[0]['lr']:.3e}"
-            )
+            logger.info(f"epoch {epoch + 1:3d}/{n_epochs:3d} | loss {m:.6f} | lr {opt.param_groups[0]['lr']:.3e}")
 
         if ckpt_path is not None and (epoch + 1) % int(ckpt_freq_epochs) == 0:
             _save_ckpt(epoch_idx=epoch + 1, global_step=global_step, last_loss=m)
 
     if ckpt_path is not None:
-        _save_ckpt(epoch_idx=n_epochs, global_step=global_step, last_loss=training_loss[-1] if training_loss else float("nan"))
+        last_loss = training_loss[-1] if training_loss else float("nan")
+        _save_ckpt(epoch_idx=n_epochs, global_step=global_step, last_loss=last_loss)
 
     logger.info("train | done")
     return generative_model, {"training_loss": training_loss, "lr": lr_hist}
