@@ -4,9 +4,15 @@ __pycache__/
 *$py.class
 
 # Artifacts / outputs
-*figure*/
-*table*/
-*.pdf
+benchmarks/_results/
+benchmarks/_figures/
+benchmarks/_tables/
+benchmarks/_data/
+benchmarks/_figures_bench_2/
+benchmarks/_tables_bench_1/
+benchmarks/_reports_bench_3/
+benchmarks/heavyflow_*.out
+benchmarks/heavyflow_*.err
 
 # Serialized objects / checkpoints
 *.pkl
