@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --hint=nomultithread
 #SBATCH --gres=gpu:1
-#SBATCH --time=01:00:00
+#SBATCH --time=06:00:00
 #SBATCH --qos=qos_gpu-dev
 #SBATCH -A jcx@v100
 

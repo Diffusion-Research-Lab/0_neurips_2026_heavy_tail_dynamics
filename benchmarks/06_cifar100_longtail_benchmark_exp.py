@@ -12,6 +12,7 @@ from cauda.model import FlowNet
 from cauda.training import train
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 try:
     from torchvision import datasets, models, transforms
@@ -140,8 +141,17 @@ if __name__ == "__main__":
     cfg = load_config(args.config).set_up()
     run_dir = create_run_dir(args.out_root, "bench_3")
 
+    data_root = Path(cfg.data_root)
+    if not data_root.is_absolute():
+        data_root = SCRIPT_DIR / data_root
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    weights_root = SCRIPT_DIR / "_weights"
+    weights_root.mkdir(parents=True, exist_ok=True)
+    torch.hub.set_dir(str(weights_root))
+
     tfm, weights = _build_transforms(bool(cfg.use_imagenet_weights))
-    ds = datasets.CIFAR100(root=str(cfg.data_root), train=True, download=bool(cfg.download), transform=tfm)
+    ds = datasets.CIFAR100(root=str(data_root), train=True, download=bool(cfg.download), transform=tfm)
 
     chosen_idx, minority_classes = _longtail_indices(
         targets=ds.targets,
