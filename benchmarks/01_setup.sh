@@ -17,6 +17,8 @@ DO_CHECK=0
 USE_JZ_MODULE=0
 JZ_MODULE="pytorch-gpu/py3/2.8.0"
 PYTHON_BIN="python"
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PIP_NO_INPUT=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -95,8 +97,13 @@ import sys
 print(f"[setup] Using Python {sys.version.split()[0]}")
 PY
 
-echo "[setup] Upgrading build tooling"
-python -m pip install --upgrade pip setuptools wheel
+if [[ "${USE_JZ_MODULE}" == "1" ]]; then
+  echo "[setup] Upgrading pip (module mode, pinned to avoid egg incompatibility)"
+  python -m pip install --upgrade "pip<25.1" --no-input
+else
+  echo "[setup] Upgrading build tooling"
+  python -m pip install --upgrade pip setuptools wheel --no-input
+fi
 
 TMP_CAUDA_REQ="$(mktemp)"
 TMP_LABKIT_REQ="$(mktemp)"
@@ -117,16 +124,16 @@ else
 fi
 
 echo "[setup] Installing cauda requirements"
-pip install -r "${TMP_CAUDA_REQ}"
+pip install -r "${TMP_CAUDA_REQ}" --no-input
 
 echo "[setup] Installing labkit requirements"
-pip install -r "${TMP_LABKIT_REQ}"
+pip install -r "${TMP_LABKIT_REQ}" --no-input
 
 echo "[setup] Installing benchmark requirements"
-pip install -r "${TMP_BENCH_REQ}"
+pip install -r "${TMP_BENCH_REQ}" --no-input
 
 echo "[setup] Installing cauda package"
-pip install -e "${PROJECT_ROOT}/cauda" --no-deps
+pip install -e "${PROJECT_ROOT}/cauda" --no-deps --no-input
 
 echo "[setup] Verifying imports (cauda + labkit + torchvision)"
 PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
@@ -156,6 +163,6 @@ cat <<NEXT
 [setup] Done.
 To use this environment in your current shell:
   source "${VENV_DIR}/bin/activate"
-  export PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit\${PYTHONPATH:+:\$PYTHONPATH}"
+  export PYTHONPATH=${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit\${PYTHONPATH:+:\$PYTHONPATH}
 
 NEXT

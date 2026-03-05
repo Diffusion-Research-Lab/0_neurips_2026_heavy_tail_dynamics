@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 
-#SBATCH --job-name=heavyflow
-#SBATCH --output=heavyflow_%j.out
-#SBATCH --error=heavyflow_%j.err
+#SBATCH --job-name=htfm
+#SBATCH --output=htfm_%j.out
+#SBATCH --error=htfm_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=10
-#SBATCH --hint=nomultithread
+#SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:1
 #SBATCH --time=06:00:00
-#SBATCH --qos=qos_gpu-dev
-#SBATCH -A jcx@v100
+#SBATCH --partition=gpu_p13
+#SBATCH --qos=qos_gpu-t3
+#SBATCH --account=jcx@v100
 
 set -euo pipefail
 
