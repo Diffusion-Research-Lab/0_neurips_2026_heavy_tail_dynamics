@@ -1,7 +1,5 @@
 """Diffusion module."""
 
-# Authors: Hamza Cherkaoui
-
 import torch
 from ._sampling import sample_gaussian
 from .utils import make_schedule
@@ -86,7 +84,7 @@ class DDPMAbstarct(Base):
         a_bar_t = self._alpha_bar.index_select(0, t).unsqueeze(-1)
 
         eps = self._sample_source(n_samples) if eps is None else eps.to(device=self._device,
-                                                                       dtype=self._dtype)
+                                                                        dtype=self._dtype)
         if eps.shape != x_1.shape:
             raise ValueError(f"eps must have shape {tuple(x_1.shape)}, got {tuple(eps.shape)}")
 

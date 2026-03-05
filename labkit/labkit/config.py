@@ -1,12 +1,9 @@
 """Configuration toolkit module."""
 
-# Authors: Hamza Cherkaoui
-
 import os
 import copy
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 import yaml
 import torch
 from .utils import set_seed, get_device

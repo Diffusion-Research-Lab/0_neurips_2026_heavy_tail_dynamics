@@ -1,7 +1,5 @@
 """Neural networks module unittests."""
 
-# Authors: Hamza Cherkaoui
-
 import pytest
 import torch
 from cauda.model import TimeEmbedding
@@ -18,9 +16,3 @@ def test_time_embedding_shape_dtype_device(dtype, device):
     assert y.dtype == dtype
     assert y.device.type == device.type
     assert torch.isfinite(y).all()
-
-
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-@pytest.mark.parametrize("device", _devices())
-def test_time_cond_block_shape_and_residual(dtype, device):
-    width, tdim, n = 64, 32, 11

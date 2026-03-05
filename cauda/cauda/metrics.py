@@ -1,7 +1,5 @@
 """Metrics module."""
 
-# Authors: Hamza Cherkaoui
-
 from typing import Optional
 import torch
 
@@ -293,8 +291,8 @@ def mmd_rbf(
         a2 = (a * a).sum(dim=1, keepdim=True)
 
         for i in range(0, a.shape[0], block_size):
-            ai = a[i : i + block_size]
-            ai2 = a2[i : i + block_size]
+            ai = a[i: i + block_size]
+            ai2 = a2[i: i + block_size]
             d2 = ai2 + b2 - 2.0 * (ai @ bt)
             d2 = d2.clamp_min(0.0)
             k = torch.exp(-d2 * inv_2sigma2)
@@ -345,8 +343,8 @@ def mmd_imq(
         a2 = (a * a).sum(dim=1, keepdim=True)
 
         for i in range(0, a.shape[0], block_size):
-            ai = a[i : i + block_size]
-            ai2 = a2[i : i + block_size]
+            ai = a[i: i + block_size]
+            ai2 = a2[i: i + block_size]
             d2 = ai2 + b2 - 2.0 * (ai @ bt)
             d2 = d2.clamp_min(0.0)
             k = (c_t / (c_t + d2)) ** beta_f

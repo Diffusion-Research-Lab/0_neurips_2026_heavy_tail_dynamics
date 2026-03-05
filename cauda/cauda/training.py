@@ -1,7 +1,5 @@
 """"Training utilities for diffusion models."""
 
-# Authors: Hamza Cherkaoui
-
 import logging
 import math
 from pathlib import Path

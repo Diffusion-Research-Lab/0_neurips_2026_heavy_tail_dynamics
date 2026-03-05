@@ -1,10 +1,7 @@
 """Utility functions for diffusion model experiments."""
 
-# Authors: Hamza Cherkaoui
-
 from typing import Any, MutableMapping
 import math
-import numpy as np
 import torch
 
 

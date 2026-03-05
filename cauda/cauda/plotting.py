@@ -1,7 +1,5 @@
 """Plotting functions for diffusion model experiments."""
 
-# Authors: Hamza Cherkaoui
-
 from pathlib import Path
 from typing import Tuple, List, Dict, Union
 import matplotlib.pyplot as plt
@@ -187,7 +185,7 @@ def plot_heatmap(
         else:
             vmin, vmax = vals_pos.min(), vals_pos.max()
 
-        eps  = 1e-12
+        eps = 1e-12
         vmin = max(vmin, eps)
         norm = LogNorm(vmin=vmin, vmax=vmax)
         vmin = vmax = None
@@ -203,10 +201,10 @@ def plot_heatmap(
     else:
         im = ax.imshow(Z, origin="lower", aspect="auto", vmin=vmin, vmax=vmax, interpolation='gaussian')
 
-    xticks_      = [0, int(n0/2), n0-1]
-    yticks_      = [0, int(n1/2), n1-1]
-    xticklabels_ = [xticks[0], xticks[int(n0/2)], xticks[n0-1]]
-    yticklabels_ = [yticks[0], yticks[int(n1/2)], yticks[n1-1]]
+    xticks_ = [0, int(n0 / 2), n0 - 1]
+    yticks_ = [0, int(n1 / 2), n1 - 1]
+    xticklabels_ = [xticks[0], xticks[int(n0 / 2)], xticks[n0 - 1]]
+    yticklabels_ = [yticks[0], yticks[int(n1 / 2)], yticks[n1 - 1]]
 
     ax.set_xticks(xticks_)
     ax.set_yticks(yticks_)

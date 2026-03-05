@@ -1,7 +1,5 @@
 """Utils module unittests."""
 
-# Authors: Hamza Cherkaoui
-
 import pytest
 import math
 import torch

@@ -1,7 +1,5 @@
 """Unittests utiles."""
 
-# Authors: Hamza Cherkaoui
-
 import torch
 
 

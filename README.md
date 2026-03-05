@@ -8,22 +8,21 @@ This repository provides:
 - evaluation metrics for heavy-tailed generative modeling,
 - scripts to reproduce the main figures and tables.
 
+### Authors
+
+- Hamza Cherkaoui
+
 ### Results reproduction
 
-To reproduce the figures of the paper, run the command::
+To reproduce benchmarks locally:
 
-    cd benchmarks
-    bash bench_0_run_all.sh
+    bash benchmarks/01_setup.sh --check
+    bash benchmarks/03_launcher.sh --run --venv-dir .venv
 
+To reproduce benchmarks on Slurm:
 
-### Citation
+    sbatch benchmarks/02_launcher.slurm
 
-If you use this code, please cite:
-```bib
-@inproceedings{cherkaoui2026heavytailedfm,
-  title     = {Heavy-Tail Flow Matching},
-  author    = {Cherkaoui, Hamza and Antonio Ocello and Hélèné Halconruy},
-  booktitle = {Advances in Neural Information Processing Systems},
-  year      = {2026}
-}
-```
+Detailed benchmark instructions are available in:
+
+    benchmarks/00_README.md

@@ -1,7 +1,5 @@
 """Diffusion module."""
 
-# Authors: Hamza Cherkaoui
-
 import warnings
 from typing import Tuple
 import torch
@@ -117,7 +115,7 @@ class DLPMEps(Base):
         n_trial_G: int = 1,
         reduce_type: str = "mean",
         clamp_A: Tuple[float, float] = (0.0, 1e3),
-        clamp_eps:  Tuple[float, float] = None,
+        clamp_eps: Tuple[float, float] = None,
         base_or_sample: torch.Tensor = None,
         dtype: torch.dtype = torch.float32,
         device: torch.device = 'cpu',
@@ -227,7 +225,7 @@ class DLPMEps(Base):
         t_norm_1d = self._normalize_t(t)
 
         # expand it for monte carlo estimation
-        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)  #  # (_n_o*_n_i*_n,)
+        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)  # (_n_o*_n_i*_n,)
         t_norm = self._expand(t_norm_1d.view(1, 1, self._n)).reshape(-1, 1)  # (_n_o*_n_i*_n, 1)
 
         # draw A one-sided stable (self._n_o)

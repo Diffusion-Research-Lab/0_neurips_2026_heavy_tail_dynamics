@@ -1,7 +1,5 @@
 """Wrapper module for https://github.com/darioShar/DLPM/."""
 
-# Authors: Hamza Cherkaoui
-
 import os
 import sys
 import warnings

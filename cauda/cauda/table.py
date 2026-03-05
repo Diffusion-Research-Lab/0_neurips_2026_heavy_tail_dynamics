@@ -1,7 +1,5 @@
 "Latex table module."
 
-# Authors: Hamza Cherkaoui
-
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 import numpy as np
@@ -104,8 +102,9 @@ def dict_to_double_entry_latex_table(
                 best_name_in_row[m] = approaches[best]
 
     def _fmt_ceil(x: float, t: float = 1e-1) -> float:
-        if (x < 0) or (x > t): return "-"
-        return f"{np.sign(x)*10:.0f}" + r"^{" + f"{np.ceil(np.log10(np.abs(x))):.0f}" + r"}"
+        if (x < 0) or (x > t):
+            return "-"
+        return f"{np.sign(x) * 10:.0f}" + r"^{" + f"{np.ceil(np.log10(np.abs(x))):.0f}" + r"}"
 
     def _is_best(v: Any, m: Any) -> bool:
         if not bold_best_in_row or m not in best_in_row:
@@ -124,7 +123,7 @@ def dict_to_double_entry_latex_table(
         r"% Requires \usepackage{booktabs}",
         r"\begin{table}[t]",
         r"  \centering",
-        r"  \small "
+        r"  \small",
         r"  \begin{tabular}{" + "l" + (col_align * len(approaches)) + "}",
         r"    \toprule",
         "    " + header,

@@ -1,7 +1,5 @@
 """Sampling functions for various distributions."""
 
-# Authors: Hamza Cherkaoui
-
 import warnings
 import torch
 from .utils import getpop

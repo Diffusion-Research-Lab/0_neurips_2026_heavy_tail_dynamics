@@ -1,7 +1,5 @@
 """Metrics module unittests."""
 
-# Authors: Hamza Cherkaoui
-
 import math
 import pytest
 import torch

@@ -1,7 +1,5 @@
 """Flow module."""
 
-# Authors: Hamza Cherkaoui
-
 from typing import Tuple
 import math
 import torch
