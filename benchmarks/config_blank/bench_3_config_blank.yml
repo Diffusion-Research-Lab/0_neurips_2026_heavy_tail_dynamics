@@ -2,7 +2,7 @@
 
 data_root: ./_data
 download: true
-use_imagenet_weights: true
+use_imagenet_weights: false
 
 longtail_ratio: 10
 head_fraction: 0.5

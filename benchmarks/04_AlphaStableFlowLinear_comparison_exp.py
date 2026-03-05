@@ -10,6 +10,7 @@ from cauda.metrics import msle_at_quantile
 from cauda.flow import GaussianFlowLinear, AlphaStableFlowLinear
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
+from tqdm import tqdm
 
 
 def msle(x, x_ref):
@@ -26,6 +27,8 @@ if __name__ == "__main__":
 
     cfg = load_config(args.config).set_up()
     run_dir = create_run_dir(args.out_root, "bench_1")
+    print(f"[INFO] bench_1 config loaded: {args.config}")
+    print(f"[INFO] bench_1 run directory: {run_dir}")
 
     l_cls = [GaussianFlowLinear, AlphaStableFlowLinear]
     l_kwargs = [
@@ -35,7 +38,8 @@ if __name__ == "__main__":
 
     raw = {(gen.__name__, "MSLE"): [] for gen in l_cls}
 
-    for _ in range(cfg.n_trials):
+    for trial_idx in tqdm(range(cfg.n_trials), desc="bench1/trials", unit="trial"):
+        print(f"[INFO] bench_1 trial {trial_idx + 1}/{cfg.n_trials}: generating synthetic data")
         x_train, _, x_test = fetch_synthetic_data(
             cfg.target_data_type,
             n_samples=cfg.n_samples,
@@ -45,7 +49,14 @@ if __name__ == "__main__":
             dtype=cfg.dtype,
         )
 
-        for kwargs, gen_cls in zip(l_kwargs, l_cls):
+        for kwargs, gen_cls in tqdm(
+            list(zip(l_kwargs, l_cls)),
+            total=len(l_cls),
+            desc=f"bench1/models t{trial_idx + 1}",
+            leave=False,
+            unit="model",
+        ):
+            print(f"[INFO] bench_1 trial {trial_idx + 1}: training {gen_cls.__name__}")
             net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.dtype)
             kwargs = dict(kwargs)
             kwargs["net"] = net

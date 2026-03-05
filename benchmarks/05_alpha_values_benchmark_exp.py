@@ -10,6 +10,7 @@ from cauda.metrics import msle_at_quantile
 from cauda.flow import AlphaStableFlowLinear
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
+from tqdm import tqdm
 
 
 def msle(x, x_ref):
@@ -26,6 +27,8 @@ if __name__ == "__main__":
 
     cfg = load_config(args.config).set_up()
     run_dir = create_run_dir(args.out_root, "bench_2")
+    print(f"[INFO] bench_2 config loaded: {args.config}")
+    print(f"[INFO] bench_2 run directory: {run_dir}")
 
     results = {
         (float(a_d), float(a_g)): []
@@ -33,8 +36,15 @@ if __name__ == "__main__":
         for a_g in cfg.l_alpha_generator
     }
 
-    for _ in range(cfg.n_trials):
-        for alpha_data in cfg.l_alpha_data:
+    for trial_idx in tqdm(range(cfg.n_trials), desc="bench2/trials", unit="trial"):
+        print(f"[INFO] bench_2 trial {trial_idx + 1}/{cfg.n_trials}")
+        for alpha_data in tqdm(
+            cfg.l_alpha_data,
+            desc=f"bench2/alpha_data t{trial_idx + 1}",
+            leave=False,
+            unit="alpha",
+        ):
+            print(f"[INFO] bench_2 trial {trial_idx + 1}: alpha_data={float(alpha_data):.3f}")
             x_train, _, x_test = fetch_synthetic_data(
                 cfg.target_data_type,
                 n_samples=cfg.n_samples,
@@ -44,7 +54,16 @@ if __name__ == "__main__":
                 dtype=cfg.dtype,
             )
 
-            for alpha_generator in cfg.l_alpha_generator:
+            for alpha_generator in tqdm(
+                cfg.l_alpha_generator,
+                desc=f"bench2/alpha_model d{float(alpha_data):.3f}",
+                leave=False,
+                unit="alpha",
+            ):
+                print(
+                    f"[INFO] bench_2 trial {trial_idx + 1}: "
+                    f"train AlphaStableFlowLinear(alpha_model={float(alpha_generator):.3f})"
+                )
                 net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.dtype)
                 generator = AlphaStableFlowLinear(
                     net=net,

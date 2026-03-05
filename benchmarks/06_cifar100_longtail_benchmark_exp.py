@@ -12,6 +12,7 @@ from cauda.model import FlowNet
 from cauda.training import train
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
+from tqdm import tqdm
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 try:
@@ -82,7 +83,7 @@ def _extract_features(
     )
 
     feats, labels = [], []
-    for x, y in loader:
+    for x, y in tqdm(loader, desc="bench3/feature_batches", unit="batch"):
         x = x.to(device=device)
         h = backbone(x)
         feats.append(h.detach().cpu())
@@ -140,17 +141,22 @@ if __name__ == "__main__":
 
     cfg = load_config(args.config).set_up()
     run_dir = create_run_dir(args.out_root, "bench_3")
+    print(f"[INFO] bench_3 config loaded: {args.config}")
+    print(f"[INFO] bench_3 run directory: {run_dir}")
 
     data_root = Path(cfg.data_root)
     if not data_root.is_absolute():
         data_root = SCRIPT_DIR / data_root
     data_root.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] bench_3 data root: {data_root}")
 
     weights_root = SCRIPT_DIR / "_weights"
     weights_root.mkdir(parents=True, exist_ok=True)
     torch.hub.set_dir(str(weights_root))
+    print(f"[INFO] bench_3 weights root: {weights_root}")
 
     tfm, weights = _build_transforms(bool(cfg.use_imagenet_weights))
+    print("[INFO] bench_3 loading CIFAR100")
     ds = datasets.CIFAR100(root=str(data_root), train=True, download=bool(cfg.download), transform=tfm)
 
     chosen_idx, minority_classes = _longtail_indices(
@@ -164,15 +170,18 @@ if __name__ == "__main__":
 
     if getattr(cfg, "max_train_samples", None) is not None:
         chosen_idx = chosen_idx[: int(cfg.max_train_samples)]
+    print(f"[INFO] bench_3 selected samples: {len(chosen_idx)}")
 
     device = torch.device(cfg.device)
 
+    print("[INFO] bench_3 loading ResNet18 backbone")
     backbone = models.resnet18(weights=weights if weights is not None else None)
     backbone.fc = nn.Identity()
     backbone.eval().to(device)
     for p in backbone.parameters():
         p.requires_grad = False
 
+    print("[INFO] bench_3 extracting frozen features")
     x_feat, y_label = _extract_features(
         backbone=backbone,
         dataset=ds,
@@ -184,6 +193,7 @@ if __name__ == "__main__":
 
     x_feat = x_feat.to(dtype=cfg.dtype)
     feat_dim = x_feat.size(1)
+    print(f"[INFO] bench_3 feature tensor: n={x_feat.size(0)} dim={feat_dim}")
     centroids = torch.stack([x_feat[y_label == c].mean(dim=0) for c in range(100)], dim=0)
 
     n_gen = int(getattr(cfg, "n_gen_samples", x_feat.size(0)))
@@ -194,8 +204,9 @@ if __name__ == "__main__":
     ]
 
     results = {}
-    for name, cls, extra in models_to_run:
+    for name, cls, extra in tqdm(models_to_run, desc="bench3/models", unit="model"):
         t_model = time.perf_counter()
+        print(f"[INFO] bench_3 training model: {name}")
 
         net = FlowNet(
             dim=feat_dim,
@@ -242,6 +253,7 @@ if __name__ == "__main__":
         )
         m["runtime_sec"] = float(time.perf_counter() - t_model)
         results[name] = m
+        print(f"[INFO] bench_3 done model: {name} ({m['runtime_sec']:.2f}s)")
 
     payload = {
         "benchmark": "bench_3",
