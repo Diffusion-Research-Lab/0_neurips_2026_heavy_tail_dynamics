@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 CAUDA_REQ_FILE="${PROJECT_ROOT}/cauda/requirements.txt"
 LABKIT_REQ_FILE="${PROJECT_ROOT}/labkit/requirements.txt"
+BENCH_REQ_FILE="${PROJECT_ROOT}/benchmarks/requirements.txt"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 DO_CHECK=0
 USE_JZ_MODULE=0
@@ -57,6 +58,11 @@ if [[ ! -f "${LABKIT_REQ_FILE}" ]]; then
   exit 1
 fi
 
+if [[ ! -f "${BENCH_REQ_FILE}" ]]; then
+  echo "[setup] Missing file: ${BENCH_REQ_FILE}" >&2
+  exit 1
+fi
+
 if [[ "${USE_JZ_MODULE}" == "1" ]]; then
   if ! type module >/dev/null 2>&1; then
     echo "[setup] --use-jz-module requested but 'module' command is unavailable." >&2
@@ -94,17 +100,20 @@ python -m pip install --upgrade pip setuptools wheel
 
 TMP_CAUDA_REQ="$(mktemp)"
 TMP_LABKIT_REQ="$(mktemp)"
+TMP_BENCH_REQ="$(mktemp)"
 cleanup_tmp() {
-  rm -f "${TMP_CAUDA_REQ}" "${TMP_LABKIT_REQ}"
+  rm -f "${TMP_CAUDA_REQ}" "${TMP_LABKIT_REQ}" "${TMP_BENCH_REQ}"
 }
 trap cleanup_tmp EXIT
 
 if [[ "${USE_JZ_MODULE}" == "1" ]]; then
   awk 'BEGIN{IGNORECASE=1} !($0 ~ /^[[:space:]]*torch([[:space:]]*[<>=!~].*)?$/) {print}' "${CAUDA_REQ_FILE}" > "${TMP_CAUDA_REQ}"
   awk 'BEGIN{IGNORECASE=1} !($0 ~ /^[[:space:]]*torch([[:space:]]*[<>=!~].*)?$/) {print}' "${LABKIT_REQ_FILE}" > "${TMP_LABKIT_REQ}"
+  awk 'BEGIN{IGNORECASE=1} !($0 ~ /^[[:space:]]*torch([[:space:]]*[<>=!~].*)?$/) {print}' "${BENCH_REQ_FILE}" > "${TMP_BENCH_REQ}"
 else
   cp "${CAUDA_REQ_FILE}" "${TMP_CAUDA_REQ}"
   cp "${LABKIT_REQ_FILE}" "${TMP_LABKIT_REQ}"
+  cp "${BENCH_REQ_FILE}" "${TMP_BENCH_REQ}"
 fi
 
 echo "[setup] Installing cauda requirements"
@@ -113,16 +122,20 @@ pip install -r "${TMP_CAUDA_REQ}"
 echo "[setup] Installing labkit requirements"
 pip install -r "${TMP_LABKIT_REQ}"
 
+echo "[setup] Installing benchmark requirements"
+pip install -r "${TMP_BENCH_REQ}"
+
 echo "[setup] Installing cauda package"
 pip install -e "${PROJECT_ROOT}/cauda" --no-deps
 
-echo "[setup] Verifying imports (cauda + labkit)"
+echo "[setup] Verifying imports (cauda + labkit + torchvision)"
 PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
 python - <<'PY'
 import cauda
 import torch
+import torchvision
 from labkit.config import load_config
-print(f"imports_ok torch={torch.__version__}")
+print(f"imports_ok torch={torch.__version__} torchvision={torchvision.__version__}")
 PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then

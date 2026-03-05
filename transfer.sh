@@ -53,11 +53,14 @@ ensure_safe_dir() {
 }
 
 repair_local_perms() {
-    # Some benchmark outputs/config dirs may end up without execute bit on dirs.
+    # Ensure benchmark outputs/config dirs are traversable for staging.
     # Make local tree readable/traversable for staging.
-    chmod -R u+rwX "${SRC_DIR}/benchmarks/configs" 2>/dev/null || true
+    chmod -R u+rwX "${SRC_DIR}/benchmarks/config" 2>/dev/null || true
+    chmod -R u+rwX "${SRC_DIR}/benchmarks/config_blank" 2>/dev/null || true
+    chmod -R u+rwX "${SRC_DIR}/benchmarks/_data" 2>/dev/null || true
     chmod -R u+rwX "${SRC_DIR}/benchmarks"/_figures* 2>/dev/null || true
     chmod -R u+rwX "${SRC_DIR}/benchmarks"/_tables* 2>/dev/null || true
+    chmod -R u+rwX "${SRC_DIR}/benchmarks"/_results* 2>/dev/null || true
 }
 
 prepare_common_staging() {
