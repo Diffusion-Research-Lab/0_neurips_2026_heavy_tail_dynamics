@@ -1,24 +1,16 @@
 ## LabKit
 
-**LabKit** makes experiments reproducible: config snapshots, resumable checkpoints, and reliable result saving.
+**LabKit** is a small internal utility module used by the benchmarks (config loading, seeding, and device/dtype setup).
 
 ### Installation
 
-To install the required dependencies and the package, run the command::
+LabKit is not intended to be installed as a standalone package in this repository workflow.
 
-    pip install -r requirements.txt
-    python setup.py install
+### Dependencies
 
-
-To test the installation you can run the unit-tests, run the command::
-
-    pytest  # run the unit-tests
-
-
-In order to check the PEP 8 compliance level of the package, run the command::
-
-    flake8 --ignore=E501 --count labkit
-
+LabKit requires:
+- PyYAML
+- torch
 
 ### License
 

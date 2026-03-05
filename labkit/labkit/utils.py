@@ -1,10 +1,12 @@
 """Utility functions for diffusion model experiments."""
 
-# Authors: Hamza Cherkaoui
-
 import random
-import numpy as np
 import torch
+
+try:
+    import numpy as np
+except ImportError:  # Optional dependency for seeding NumPy RNG when present.
+    np = None
 
 
 def set_seed(
@@ -16,7 +18,8 @@ def set_seed(
     Set random seeds for reproducibility.
     """
     random.seed(seed)
-    np.random.seed(seed)
+    if np is not None:
+        np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
