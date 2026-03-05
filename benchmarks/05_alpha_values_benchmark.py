@@ -1,10 +1,9 @@
 """Heavy tail illustrative example."""
 
-# Authors: Hamza Cherkaoui
-
 import argparse
 import pprint
 import time
+from pathlib import Path
 from cauda.model import LightNet
 from cauda.datasets import fetch_synthetic_data
 from cauda.training import train
@@ -18,8 +17,11 @@ from labkit.config import load_config
 # Settings
 t0_global = time.perf_counter()
 
+config_dir = Path("configs")
+default_cfg = config_dir / "bench_2_config.yaml"
+
 parser = argparse.ArgumentParser()
-parser.add_argument("--config", type=str, default="bench_2_config.yaml")
+parser.add_argument("--config", type=Path, default=default_cfg)
 args = parser.parse_args()
 
 cfg = load_config(args.config).set_up()
@@ -30,8 +32,10 @@ print("---------------------------")
 pprint.pprint(cfg.as_dict())
 print('-' * 40)
 
+
 def msle(x, x_ref):
     return msle_at_quantile(x.abs(), x_ref.abs())
+
 
 results = dict()
 for alpha_data in cfg.l_alpha_data:
@@ -73,7 +77,7 @@ for n in range(cfg.n_trials):
 
 ####################################################################################################
 # Savings
-filename = plot_heatmap(results=results, plot_dir="bench_2_figures", xlabel=r"$\alpha-$model",
+filename = plot_heatmap(results=results, plot_dir="_figures", xlabel=r"$\alpha-$model",
                         ylabel=r"$\alpha-$data", fontsize=16)
 print(f"[INFO] Saving '{filename}'")
 

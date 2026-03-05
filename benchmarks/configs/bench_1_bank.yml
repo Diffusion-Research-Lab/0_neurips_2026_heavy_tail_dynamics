@@ -1,0 +1,26 @@
+# Minimal smoke-test config for benchmark 1.
+
+# data
+dim: 2
+n_samples: 128
+target_data_type: alpha_stable
+
+# averaging
+n_trials: 1
+seed: 0
+
+# generator
+n_steps: 8
+alpha: 1.5
+
+# neural net
+batch_size: 64
+n_epochs: 1
+lr: 0.001
+grad_clip_norm: null
+use_adamw: false
+num_workers: 0
+
+# general
+device: cpu
+dtype: float32

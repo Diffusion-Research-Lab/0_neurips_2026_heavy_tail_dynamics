@@ -1,10 +1,9 @@
 """Heavy tail illustrative example."""
 
-# Authors: Hamza Cherkaoui
-
 import argparse
 import pprint
 import time
+from pathlib import Path
 from cauda.model import LightNet
 from cauda.datasets import fetch_synthetic_data
 from cauda.training import train
@@ -18,8 +17,11 @@ from labkit.config import load_config
 # Settings
 t0_global = time.perf_counter()
 
+config_dir = Path("configs")
+default_cfg = config_dir / "bench_1_config.yaml"
+
 parser = argparse.ArgumentParser()
-parser.add_argument("--config", type=str, default="bench_1_config.yaml")
+parser.add_argument("--config", type=Path, default=default_cfg)
 args = parser.parse_args()
 
 cfg = load_config(args.config).set_up()
@@ -30,10 +32,15 @@ print("---------------------------")
 pprint.pprint(cfg.as_dict())
 print('-' * 40)
 
+
 def msle(x, x_ref):
     return msle_at_quantile(x.abs(), x_ref.abs())
 
+
 l_cls = [GaussianFlowLinear, AlphaStableFlowLinear]
+l_kwargs = [{'dim': cfg.dim, 'dtype': cfg.dtype, 'device': cfg.device, 'n_steps': cfg.n_steps},
+            {'dim': cfg.dim, 'dtype': cfg.dtype, 'device': cfg.device, 'n_steps': cfg.n_steps, 'alpha': 1.5},
+            ]
 l_metrics = [msle,]
 l_coefs = [10.0,]
 
@@ -52,7 +59,7 @@ for n in range(cfg.n_trials):
 
     print(f"[INFO] Running trial {n + 1:02d} / {cfg.n_trials:02d}")
 
-    for gen_cls in l_cls:
+    for kwargs, gen_cls in zip(l_kwargs, l_cls):
 
         t0 = time.perf_counter()
 
@@ -60,8 +67,8 @@ for n in range(cfg.n_trials):
               f"'{gen_cls.__name__}' model: ")
 
         net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.dtype)
-        generator = gen_cls(net=net, dim=cfg.dim, dtype=cfg.dtype, device=cfg.device,
-                            n_steps=cfg.n_steps)
+        kwargs['net'] = net
+        generator = gen_cls(**kwargs)
 
         _, meta = train(generator, target_data=X_train.clone(), batch_size=cfg.batch_size,
                         n_epochs=cfg.n_epochs, lr=cfg.lr, use_adamw=cfg.use_adamw,
@@ -88,7 +95,7 @@ metric_name = {'MSLE': r'$10 \times \mathrm{MSLE}_{\xi=0.95}$',
 caption = (r"Comparison of generative models on $\alpha$-stable synthetic data ($\alpha = "
            f"{cfg.alpha:.2f}$).")
 filename = save_double_entry_table(results=results,
-                                   plot_dir="bench_1_table",
+                                   plot_dir="_tables",
                                    fmt="{:.2f}",
                                    caption=caption,
                                    label=f"tab:synthetic_alpha_{cfg.alpha:.2f}",
