@@ -1,7 +1,6 @@
 """Simple generation illustrative example."""
 
-# Authors: Hamza Cherkaoui
-
+import argparse
 import time
 import torch
 from cauda.model import LightNet
@@ -17,27 +16,44 @@ from cauda.flow import GaussianFlowLinear, GaussianFlowOT, GaussianFlowDDPM
 # Settings
 t0_global = time.perf_counter()
 
-dim = 2
-n_samples = 5_000
-n_steps = 100
-batch_size = 512
-n_epochs = 100
-lr = 5e-3
-seed = 4620518
-target_data_type = 'spiral'
+parser = argparse.ArgumentParser(description="Run spiral generation example.")
+parser.add_argument("--smoke", action="store_true", help="Run a fast smoke-test configuration.")
+parser.add_argument("--no-plot", action="store_true", help="Disable figure generation.")
+args = parser.parse_args()
 
+if args.smoke:
+    n_samples = 512
+    n_steps = 20
+    batch_size = 128
+    n_epochs = 3
+    lr = 5e-3
+    l_generators = [DDPMEps, GaussianFlowLinear]
+    num_workers = 0
+else:
+    n_samples = 5_000
+    n_steps = 100
+    batch_size = 512
+    n_epochs = 100
+    lr = 5e-3
+    l_generators = [DDPMEps, DDPMX0, GaussianFlowLinear, GaussianFlowDDPM, GaussianFlowOT]
+    num_workers = 2
+
+dim = 2
+target_data_type = "spiral"
 device = 'cpu'
 dtype = torch.float64
 
+
 def msle(x, x_ref):
     return msle_at_quantile(x.abs(), x_ref.abs())
+
 
 l_metrics = [msle, fid]
 l_coefs = [10.0, 1e-3]
 
 ####################################################################################################
 # Main
-for gen_cls in [DDPMEps, DDPMX0, GaussianFlowLinear, GaussianFlowDDPM, GaussianFlowOT]:
+for gen_cls in l_generators:
 
     print(f"[INFO] Running experiment on '{target_data_type}' data with '{gen_cls.__name__}' model: ")
 
@@ -47,7 +63,7 @@ for gen_cls in [DDPMEps, DDPMX0, GaussianFlowLinear, GaussianFlowDDPM, GaussianF
     net = LightNet(dim=dim).to(device=device, dtype=dtype)
     generator = gen_cls(net=net, dim=dim, dtype=dtype, device=device, n_steps=n_steps)
     _, meta = train(generator, target_data=X_train, batch_size=batch_size, n_epochs=n_epochs,
-                    lr=lr, device=device)
+                    lr=lr, device=device, num_workers=num_workers)
     X_test_gen = generator.sample(n_samples=n_samples)
 
     print("[INFO] Evaluation:")
@@ -58,14 +74,15 @@ for gen_cls in [DDPMEps, DDPMX0, GaussianFlowLinear, GaussianFlowDDPM, GaussianF
 
 ####################################################################################################
 # Plotting
-    filename = plot_training_loss(l_loss=meta['training_loss'], xlogscale=True, ylogscale=True,
-                                  plot_dir='_figures', suffix=f"_{target_data_type}_{gen_cls.__name__}")
-    print(f"[INFO] Saving '{filename}'")
-
-    if dim == 2:
-        filename = plot_scatter(X_test_gen, X_test, plot_dir='_figures',
-                                suffix=f"_{target_data_type}_{gen_cls.__name__}")
+    if not args.no_plot and not args.smoke:
+        filename = plot_training_loss(l_loss=meta['training_loss'], xlogscale=True, ylogscale=True,
+                                      plot_dir='_figures', suffix=f"_{target_data_type}_{gen_cls.__name__}")
         print(f"[INFO] Saving '{filename}'")
+
+        if dim == 2:
+            filename = plot_scatter(X_test_gen, X_test, plot_dir='_figures',
+                                    suffix=f"_{target_data_type}_{gen_cls.__name__}")
+            print(f"[INFO] Saving '{filename}'")
 
 ####################################################################################################
 # Timing
