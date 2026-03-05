@@ -1,0 +1,43 @@
+# CIFAR100 long-tail benchmark in frozen feature space.
+
+data_root: ./_data
+download: true
+use_imagenet_weights: true
+
+# long-tail setup
+longtail_ratio: 10
+head_fraction: 0.5
+max_per_head: 500
+
+# feature extraction
+feature_batch_size: 256
+feature_num_workers: 2
+
+# model / training
+n_steps: 100
+alpha: 1.5
+batch_size: 512
+n_epochs: 60
+lr: 0.0005
+use_adamw: true
+weight_decay: 0.0001
+grad_clip_norm: 1.0
+lr_schedule: cosine
+warmup_steps: 200
+freq_logging: 10
+num_workers: 2
+
+# medium-scale network
+net_width: 512
+net_depth: 6
+net_tdim: 128
+net_dropout: 0.1
+
+# evaluation
+n_gen_samples: 10000
+minority_k: 10
+
+# general
+seed: 0
+device: auto
+dtype: float32

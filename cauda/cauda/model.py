@@ -47,3 +47,46 @@ class LightNet(nn.Module):
             h = fc2(h)
             h = h + skip
         return self.out(h)
+
+
+class FlowNet(nn.Module):
+    """Medium-scale time-conditioned residual MLP for flow matching."""
+
+    def __init__(self, dim: int, width: int = 512, depth: int = 6, tdim: int = 128, dropout: float = 0.1):
+        super().__init__()
+        self.time = nn.Sequential(
+            nn.Linear(1, tdim),
+            nn.SiLU(),
+            nn.Linear(tdim, tdim),
+            nn.SiLU(),
+        )
+        self.inp = nn.Linear(dim, width)
+        self.blocks = nn.ModuleList(
+            [
+                nn.ModuleDict(
+                    {
+                        "norm": nn.LayerNorm(width),
+                        "fc1": nn.Linear(width, width),
+                        "fc2": nn.Linear(width, width),
+                        "tproj": nn.Linear(tdim, width),
+                        "drop": nn.Dropout(dropout),
+                    }
+                )
+                for _ in range(depth)
+            ]
+        )
+        self.out = nn.Linear(width, dim)
+        self.act = nn.SiLU()
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        h = self.inp(x)
+        temb = self.time(t)
+        for b in self.blocks:
+            skip = h
+            h = b["norm"](h)
+            h = b["fc1"](h)
+            h = self.act(h + b["tproj"](temb))
+            h = b["drop"](h)
+            h = b["fc2"](h)
+            h = h + skip
+        return self.out(h)

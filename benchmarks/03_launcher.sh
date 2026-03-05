@@ -4,6 +4,7 @@ set -euo pipefail
 # Usage:
 #   Local quick pipeline check: bash benchmarks/03_launcher.sh --blank
 #   Local full benchmark:       bash benchmarks/03_launcher.sh --run [--cpus N]
+#   Cleanup benchmark artifacts: bash benchmarks/03_launcher.sh --clean
 
 MODE=""
 CPUS=""
@@ -17,17 +18,20 @@ while [[ $# -gt 0 ]]; do
       MODE="run"; shift ;;
     --blank)
       MODE="blank"; shift ;;
+    --clean)
+      MODE="clean"; shift ;;
     --cpus)
       CPUS="$2"; shift 2 ;;
     --venv-dir)
       VENV_DIR="$2"; shift 2 ;;
     -h|--help)
       cat <<USAGE
-Usage: bash benchmarks/03_launcher.sh [--run|--blank] [--cpus N] [--venv-dir DIR]
+Usage: bash benchmarks/03_launcher.sh [--run|--blank|--clean] [--cpus N] [--venv-dir DIR]
 
 Options:
-  --run       Run full benchmark (experiments 1 and 2)
+  --run       Run full benchmark (experiments 1, 2 and 3)
   --blank     Run minimal benchmark smoke test (uses *_blank.yml)
+  --clean     Remove benchmark-generated artifacts and run pyclean
   --cpus N    Thread controls for OMP/MKL/OPENBLAS/NUMEXPR
   --venv-dir  Virtual env to activate before running (default: auto)
 USAGE
@@ -39,7 +43,7 @@ USAGE
 done
 
 if [[ -z "${MODE}" ]]; then
-  echo "[launcher] Missing mode. Use --run or --blank." >&2
+  echo "[launcher] Missing mode. Use --run, --blank or --clean." >&2
   exit 2
 fi
 
@@ -48,6 +52,32 @@ if [[ ! -d "${PROJECT_ROOT}/cauda" || ! -d "${PROJECT_ROOT}/labkit" ]]; then
   echo "  ${PROJECT_ROOT}/cauda" >&2
   echo "  ${PROJECT_ROOT}/labkit" >&2
   exit 1
+fi
+
+clean_outputs() {
+  echo "[clean] Removing benchmark artifacts..."
+  rm -rf "${SCRIPT_DIR}/_results" \
+         "${SCRIPT_DIR}/_figures" \
+         "${SCRIPT_DIR}/_tables" \
+         "${SCRIPT_DIR}/_data/cifar-100-batches-py"
+
+  rm -f "${SCRIPT_DIR}"/heavyflow_*.out "${SCRIPT_DIR}"/heavyflow_*.err
+
+  rm -rf "${SCRIPT_DIR}/__pycache__"
+
+  if command -v pyclean >/dev/null 2>&1; then
+    pyclean "${PROJECT_ROOT}" || true
+    echo "[clean] pyclean completed."
+  else
+    echo "[clean] pyclean not found; skipping."
+  fi
+
+  echo "[clean] Done."
+}
+
+if [[ "${MODE}" == "clean" ]]; then
+  clean_outputs
+  exit 0
 fi
 
 activate_venv_if_available() {
@@ -85,18 +115,26 @@ if [[ -n "${CPUS}" ]]; then
   export NUMEXPR_NUM_THREADS="${CPUS}"
 fi
 
-CFG_DIR="${SCRIPT_DIR}/configs"
-RUN_CFG_1="${CFG_DIR}/bench_1_config.yaml"
-RUN_CFG_2="${CFG_DIR}/bench_2_config.yaml"
-BLANK_CFG_1="${CFG_DIR}/bench_1_blank.yml"
-BLANK_CFG_2="${CFG_DIR}/bench_2_blank.yml"
+CFG_RUN_DIR="${SCRIPT_DIR}/config"
+CFG_BLANK_DIR="${SCRIPT_DIR}/config_blank"
+RUN_CFG_1="${CFG_RUN_DIR}/bench_1_config.yaml"
+RUN_CFG_2="${CFG_RUN_DIR}/bench_2_config.yaml"
+BLANK_CFG_1="${CFG_BLANK_DIR}/bench_1_config_blank.yml"
+BLANK_CFG_2="${CFG_BLANK_DIR}/bench_2_config_blank.yml"
+RUN_CFG_3="${CFG_RUN_DIR}/bench_3_config.yaml"
+BLANK_CFG_3="${CFG_BLANK_DIR}/bench_3_config_blank.yml"
 
-for f in "${RUN_CFG_1}" "${RUN_CFG_2}" "${BLANK_CFG_1}" "${BLANK_CFG_2}"; do
-  if [[ ! -f "${f}" ]]; then
-    echo "[launcher] Missing config file: ${f}" >&2
-    exit 1
-  fi
-done
+if [[ "${MODE}" == "blank" ]]; then
+  CFG_1="${BLANK_CFG_1}"
+  CFG_2="${BLANK_CFG_2}"
+  CFG_3="${BLANK_CFG_3}"
+  MODE_TAG="Blank"
+else
+  CFG_1="${RUN_CFG_1}"
+  CFG_2="${RUN_CFG_2}"
+  CFG_3="${RUN_CFG_3}"
+  MODE_TAG="Run"
+fi
 
 START_TIME="$(date)"
 
@@ -119,39 +157,34 @@ import cauda
 from labkit.config import load_config
 print("blank_imports_ok")
 PY
-
-  echo "-------------------------------------------------------------------------------"
-  echo "[Blank] Experiment 1"
-  (
-    cd "${SCRIPT_DIR}"
-    python 04_AlphaStableFlowLinear_comparison.py --config "${BLANK_CFG_1}"
-  )
-  echo "[✓] Blank Experiment 1"
-
-  echo "-------------------------------------------------------------------------------"
-  echo "[Blank] Experiment 2"
-  (
-    cd "${SCRIPT_DIR}"
-    python 05_alpha_values_benchmark.py --config "${BLANK_CFG_2}"
-  )
-  echo "[✓] Blank Experiment 2"
-else
-  echo "-------------------------------------------------------------------------------"
-  echo "[Run] Experiment 1"
-  (
-    cd "${SCRIPT_DIR}"
-    python 04_AlphaStableFlowLinear_comparison.py --config "${RUN_CFG_1}"
-  )
-  echo "[✓] Done Experiment 1"
-
-  echo "-------------------------------------------------------------------------------"
-  echo "[Run] Experiment 2"
-  (
-    cd "${SCRIPT_DIR}"
-    python 05_alpha_values_benchmark.py --config "${RUN_CFG_2}"
-  )
-  echo "[✓] Done Experiment 2"
 fi
+
+echo "-------------------------------------------------------------------------------"
+echo "[${MODE_TAG}] Experiment 1"
+(
+  cd "${SCRIPT_DIR}"
+  python 04_AlphaStableFlowLinear_comparison_exp.py --config "${CFG_1}"
+  python 04_AlphaStableFlowLinear_comparison_fig.py
+)
+echo "[✓] ${MODE_TAG} Experiment 1"
+
+echo "-------------------------------------------------------------------------------"
+echo "[${MODE_TAG}] Experiment 2"
+(
+  cd "${SCRIPT_DIR}"
+  python 05_alpha_values_benchmark_exp.py --config "${CFG_2}"
+  python 05_alpha_values_benchmark_fig.py
+)
+echo "[✓] ${MODE_TAG} Experiment 2"
+
+echo "-------------------------------------------------------------------------------"
+echo "[${MODE_TAG}] Experiment 3 (CIFAR100)"
+(
+  cd "${SCRIPT_DIR}"
+  python 06_cifar100_longtail_benchmark_exp.py --config "${CFG_3}"
+  python 06_cifar100_longtail_benchmark_fig.py
+)
+echo "[✓] ${MODE_TAG} Experiment 3"
 
 END_TIME="$(date)"
 echo "-------------------------------------------------------------------------------"
