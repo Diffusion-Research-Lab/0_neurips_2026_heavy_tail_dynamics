@@ -29,11 +29,18 @@ if __name__ == "__main__":
     run_dir = create_run_dir(args.out_root, "bench_1")
     print(f"[INFO] bench_1 config loaded: {args.config}")
     print(f"[INFO] bench_1 run directory: {run_dir}")
+    print(f"[INFO] bench_1 alpha_data={float(cfg.alpha_data):.2f} alpha_model={float(cfg.alpha_model):.2f}")
 
     l_cls = [GaussianFlowLinear, AlphaStableFlowLinear]
     l_kwargs = [
         {"dim": cfg.dim, "dtype": cfg.dtype, "device": cfg.device, "n_steps": cfg.n_steps},
-        {"dim": cfg.dim, "dtype": cfg.dtype, "device": cfg.device, "n_steps": cfg.n_steps, "alpha": 1.5},
+        {
+            "dim": cfg.dim,
+            "dtype": cfg.dtype,
+            "device": cfg.device,
+            "n_steps": cfg.n_steps,
+            "alpha": float(cfg.alpha_model),
+        },
     ]
 
     raw = {(gen.__name__, "MSLE"): [] for gen in l_cls}
@@ -44,7 +51,7 @@ if __name__ == "__main__":
             cfg.target_data_type,
             n_samples=cfg.n_samples,
             dim=cfg.dim,
-            alpha=cfg.alpha,
+            alpha=float(cfg.alpha_data),
             device=cfg.device,
             dtype=cfg.dtype,
         )

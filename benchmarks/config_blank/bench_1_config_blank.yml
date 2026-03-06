@@ -4,6 +4,7 @@
 dim: 2
 n_samples: 128
 target_data_type: alpha_stable
+alpha_data: 1.5
 
 # averaging
 n_trials: 1
@@ -11,7 +12,7 @@ seed: 0
 
 # generator
 n_steps: 8
-alpha: 1.5
+alpha_model: 1.2
 
 # neural net
 batch_size: 64

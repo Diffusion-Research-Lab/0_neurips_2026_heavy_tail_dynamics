@@ -29,12 +29,13 @@ if __name__ == "__main__":
     col_order = ["GaussianFlowLinear", "AlphaStableFlowLinear"]
     col_name = {
         "GaussianFlowLinear": "Lipman et al",
-        "AlphaStableFlowLinear": "Our approach",
+        "AlphaStableFlowLinear": rf"Our approach ($\alpha = {float(cfg['alpha_model']):.1f}$)",
     }
-    metric_name = {"MSLE": r"$10 \\times \\mathrm{MSLE}_{\\xi=0.95}$"}
+    metric_name = {"MSLE": r"$10 \times \mathrm{MSLE}_{\xi=0.95}$"}
     caption = (
-        r"Comparison of generative models on $\\alpha$-stable synthetic data ($\\alpha = "
-        f"{float(cfg['alpha']):.2f}$)."
+        "Comparison on "
+        rf"$\alpha$-stable synthetic data ($\alpha_{{data}} = {float(cfg['alpha_data']):.1f}$, "
+        rf"$\alpha_{{model}} = {float(cfg['alpha_model']):.1f}$)."
     )
 
     filename = save_double_entry_table(
@@ -42,7 +43,7 @@ if __name__ == "__main__":
         plot_dir=str(table_dir),
         fmt="{:.2f}",
         caption=caption,
-        label=f"tab:synthetic_alpha_{float(cfg['alpha']):.2f}",
+        label=f"tab:synthetic_alpha_data_{float(cfg['alpha_data']):.1f}_model_{float(cfg['alpha_model']):.1f}",
         col_order=col_order,
         metric_direction={"MSLE": "down"},
         col_name=col_name,
