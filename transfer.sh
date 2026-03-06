@@ -5,7 +5,7 @@ set -euo pipefail
 # Script to manage transfers with Jean Zay.
 # Usage:
 #   ./transfer.sh send        # Send code to Jean Zay
-#   ./transfer.sh fetch       # Fetch benchmarks/_figures* from Jean Zay
+#   ./transfer.sh fetch       # Fetch benchmarks/_figures and _tables from Jean Zay
 #   ./transfer.sh supp        # Build code.zip supplementary package
 #===============================================================================
 
@@ -15,7 +15,8 @@ WORK_DIR="/tmp/neurips_2026_heaytail_flow_matching"
 SUPP_DIR="/tmp/neurips_2026_heaytail_flow_matching"
 REMOTE_ROOT="jz:/lustre/fswork/projects/rech/jcx/uor49lv/src"
 REMOTE_PROJECT="${REMOTE_ROOT}/neurips_2026_heaytail_flow_matching"
-REMOTE_FIGURES="${REMOTE_PROJECT}/benchmarks/_figures_*"
+REMOTE_FIGURES_DIR="${REMOTE_PROJECT}/benchmarks/_figures/"
+REMOTE_TABLES_DIR="${REMOTE_PROJECT}/benchmarks/_tables/"
 LOCAL_BENCH_DIR="${SRC_DIR}/benchmarks"
 ZIP_NAME="code.zip"
 MODE="${1:-}"
@@ -82,6 +83,7 @@ prepare_common_staging() {
       --exclude '*~' \
       --exclude 'code.zip' \
       --exclude 'transfer.sh' \
+      --exclude 'sandbox/' \
       --exclude 'benchmarks/_figures*/' \
       --exclude 'benchmarks/_tables*/' \
       --exclude 'benchmarks/_results*/' \
@@ -119,18 +121,20 @@ send_code() {
 }
 
 fetch_figures() {
-    echo -e "${BLUE}${BOLD}Fetch figures from Jean Zay${RESET}"
-    echo -e "${BLUE}Remote figures:${RESET} ${REMOTE_FIGURES}"
+    echo -e "${BLUE}${BOLD}Fetch benchmark artifacts from Jean Zay${RESET}"
+    echo -e "${BLUE}Remote figures:${RESET} ${REMOTE_FIGURES_DIR}"
+    echo -e "${BLUE}Remote tables:${RESET} ${REMOTE_TABLES_DIR}"
     echo -e "${BLUE}Local target:${RESET} ${LOCAL_BENCH_DIR}"
     echo ""
 
-    mkdir -p "${LOCAL_BENCH_DIR}"
+    mkdir -p "${LOCAL_BENCH_DIR}/_figures" "${LOCAL_BENCH_DIR}/_tables"
     (
         cd "${LOCAL_BENCH_DIR}"
-        rsync -var --progress "${REMOTE_FIGURES}" .
+        rsync -var --progress "${REMOTE_FIGURES_DIR}" "./_figures/" || true
+        rsync -var --progress "${REMOTE_TABLES_DIR}" "./_tables/" || true
     )
 
-    echo -e "${GREEN}${BOLD}Figures synced.${RESET}"
+    echo -e "${GREEN}${BOLD}Artifacts synced.${RESET}"
 }
 
 build_supp_zip() {

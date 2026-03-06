@@ -11,6 +11,7 @@ CPUS=""
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR=""
+TOTAL_T0=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -137,6 +138,15 @@ else
 fi
 
 START_TIME="$(date)"
+TOTAL_T0="$(date +%s)"
+
+fmt_duration() {
+  local dt="$1"
+  local h=$((dt / 3600))
+  local m=$(((dt % 3600) / 60))
+  local s=$((dt % 60))
+  printf "%02dh:%02dm:%02ds" "${h}" "${m}" "${s}"
+}
 
 echo "-------------------------------------------------------------------------------"
 echo "Heavy Tail Flow Benchmark Launcher"
@@ -152,41 +162,55 @@ echo "PYTHONPATH:   ${PYTHONPATH}"
 if [[ "${MODE}" == "blank" ]]; then
   echo "-------------------------------------------------------------------------------"
   echo "[Blank] Import checks"
+  step_t0="$(date +%s)"
   python - <<'PY'
 import cauda
 from labkit.config import load_config
 print("blank_imports_ok")
 PY
+  step_dt=$(( $(date +%s) - step_t0 ))
+  echo "[time] Blank import checks: $(fmt_duration "${step_dt}") (${step_dt}s)"
 fi
 
 echo "-------------------------------------------------------------------------------"
 echo "[${MODE_TAG}] Experiment 1"
+step_t0="$(date +%s)"
 (
   cd "${SCRIPT_DIR}"
   python 04_AlphaStableFlowLinear_comparison_exp.py --config "${CFG_1}"
   python 04_AlphaStableFlowLinear_comparison_fig.py
 )
 echo "[✓] ${MODE_TAG} Experiment 1"
+step_dt=$(( $(date +%s) - step_t0 ))
+echo "[time] ${MODE_TAG} Experiment 1: $(fmt_duration "${step_dt}") (${step_dt}s)"
 
 echo "-------------------------------------------------------------------------------"
 echo "[${MODE_TAG}] Experiment 2"
+step_t0="$(date +%s)"
 (
   cd "${SCRIPT_DIR}"
   python 05_alpha_values_benchmark_exp.py --config "${CFG_2}"
   python 05_alpha_values_benchmark_fig.py
 )
 echo "[✓] ${MODE_TAG} Experiment 2"
+step_dt=$(( $(date +%s) - step_t0 ))
+echo "[time] ${MODE_TAG} Experiment 2: $(fmt_duration "${step_dt}") (${step_dt}s)"
 
 echo "-------------------------------------------------------------------------------"
 echo "[${MODE_TAG}] Experiment 3 (CIFAR100)"
+step_t0="$(date +%s)"
 (
   cd "${SCRIPT_DIR}"
   python 06_cifar100_longtail_benchmark_exp.py --config "${CFG_3}"
   python 06_cifar100_longtail_benchmark_fig.py
 )
 echo "[✓] ${MODE_TAG} Experiment 3"
+step_dt=$(( $(date +%s) - step_t0 ))
+echo "[time] ${MODE_TAG} Experiment 3: $(fmt_duration "${step_dt}") (${step_dt}s)"
 
 END_TIME="$(date)"
+TOTAL_DT=$(( $(date +%s) - TOTAL_T0 ))
 echo "-------------------------------------------------------------------------------"
 echo "All done."
 echo "END: ${END_TIME}"
+echo "TOTAL: $(fmt_duration "${TOTAL_DT}") (${TOTAL_DT}s)"

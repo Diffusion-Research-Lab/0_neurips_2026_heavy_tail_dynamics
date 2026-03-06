@@ -12,6 +12,8 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 CAUDA_REQ_FILE="${PROJECT_ROOT}/cauda/requirements.txt"
 LABKIT_REQ_FILE="${PROJECT_ROOT}/labkit/requirements.txt"
 BENCH_REQ_FILE="${PROJECT_ROOT}/benchmarks/requirements.txt"
+BENCH_DATA_DIR="${PROJECT_ROOT}/benchmarks/_data"
+BENCH_WEIGHTS_DIR="${PROJECT_ROOT}/benchmarks/_weights"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 DO_CHECK=0
 USE_JZ_MODULE=0
@@ -143,6 +145,25 @@ import torch
 import torchvision
 from labkit.config import load_config
 print(f"imports_ok torch={torch.__version__} torchvision={torchvision.__version__}")
+PY
+
+echo "[setup] Prefetching benchmark assets (_data and _weights)"
+mkdir -p "${BENCH_DATA_DIR}" "${BENCH_WEIGHTS_DIR}"
+PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
+BENCH_DATA_DIR="${BENCH_DATA_DIR}" \
+BENCH_WEIGHTS_DIR="${BENCH_WEIGHTS_DIR}" \
+python - <<'PY'
+import os
+import torch
+from torchvision import datasets, models
+
+data_dir = os.environ["BENCH_DATA_DIR"]
+weights_dir = os.environ["BENCH_WEIGHTS_DIR"]
+torch.hub.set_dir(weights_dir)
+
+datasets.CIFAR100(root=data_dir, train=True, download=True)
+models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+print(f"assets_ok data={data_dir} weights={weights_dir}")
 PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then
