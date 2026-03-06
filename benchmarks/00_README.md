@@ -8,45 +8,34 @@ From `benchmarks/`:
 bash 01_setup.sh --env-name cauda --use-jz-module
 ```
 
-This creates `.venv-cauda`, installs dependencies, and installs `cauda`.
-Dependencies are split in 3 layers:
-- `cauda/requirements.txt`
-- `labkit/requirements.txt`
-- `benchmarks/requirements.txt` (benchmark-specific, e.g. `torchvision`)
-
-### 2) Smoke check
+Or:
 
 ```bash
 bash 01_setup.sh --env-name cauda --use-jz-module --check
 ```
 
-### 3) Run benchmark (local)
+### 2) Run
+
+Locally with bash:
 
 ```bash
 bash 03_launcher.sh --run
 ```
 
-Smoke-only pipeline:
+Or smoke-only pipeline:
 
 ```bash
 bash 03_launcher.sh --blank
 ```
 
-Cleanup generated benchmark artifacts:
-
-```bash
-bash 03_launcher.sh --clean
-```
-
-### 4) Run benchmark (Slurm)
-
-Submit from `benchmarks/`:
+Or with Slurm:
 
 ```bash
 sbatch 02_launcher.slurm
 ```
 
-Artifacts are separated as:
-- `_results/<bench>/<run_id>/` for `config.yml`, `results.json`, `run.txt`
-- `_figures/<bench>/<run_id>/` for figures
-- `_tables/<bench>/<run_id>/` for tables
+### 3) Clean artifacts
+
+```bash
+bash 03_launcher.sh --clean
+```
