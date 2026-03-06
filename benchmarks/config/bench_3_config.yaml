@@ -17,8 +17,8 @@ feature_num_workers: 2
 n_steps: 100
 alpha: 1.5
 batch_size: 512
-n_epochs: 60
-lr: 0.0005
+n_epochs: 280
+lr: 0.0002
 use_adamw: true
 weight_decay: 0.0001
 grad_clip_norm: 1.0

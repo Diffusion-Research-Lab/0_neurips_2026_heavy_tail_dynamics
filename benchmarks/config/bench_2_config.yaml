@@ -8,7 +8,7 @@ authors_root:
 dim: 10
 n_samples: 10000
 target_data_type: alpha_stable
-l_alpha_data: {type: linspace, start: 0.999, end: 1.999, steps: 5}
+l_alpha_data: {type: linspace, start: 0.999, end: 1.999, steps: 4}
 
 # averaging
 n_trials: 5
@@ -16,7 +16,7 @@ seed: 0
 
 # generator
 n_steps: 100
-l_alpha_generator: {type: linspace, start: 0.999, end: 1.999, steps: 5}
+l_alpha_generator: {type: linspace, start: 0.999, end: 1.999, steps: 4}
 
 # neural net
 batch_size: 512
