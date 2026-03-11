@@ -3,11 +3,36 @@
 from typing import Tuple
 import math
 import torch
-from ._abs import FlowAbstract, GaussianFlowAbstract
+from ._abs import GaussianFlowAbstract
 from ._sampling import sample_scaled_scalar_alpha_stable
 
 
-class AlphaStableFlowLinear(FlowAbstract):
+class GaussianFlowLinear(GaussianFlowAbstract):
+    """Gaussian source flow with a linear path (Flow Matching)."""
+
+    def _precompute_loss(self, x, z):
+        x_0, x_1, t = self._latent(x_1=x, x_0=z)
+
+        x_t = (1.0 - t) * x_0 + t * x_1
+        v_t = x_1 - x_0
+        v_t_hat = self._net(x_t, t)
+
+        if v_t.shape != x_t.shape:
+            raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but x_t has shape"
+                             f" {tuple(x_t.shape)}.")
+
+        if v_t.shape != v_t_hat.shape:
+            raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but v_t_hat has shape"
+                             f" {tuple(v_t_hat.shape)}.")
+
+        return v_t_hat, v_t, t
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
+        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z)
+        return self._reduce(self._loss_fn(v_t_hat, v_t, t))
+
+
+class AlphaStableFlowLinear(GaussianFlowLinear):
     """Alpha source flow with a linear path (Flow Matching)."""
 
     def __init__(
@@ -17,9 +42,9 @@ class AlphaStableFlowLinear(FlowAbstract):
         n_steps: int = 1000,
         t_min: float = 0.01,
         t_max: float = 0.99,
-        alpha: float = 1.8,
+        alpha: float = 1.5,
         reduce_type: str = "mean",
-        clamp_A: Tuple[float, float] = (0.0, 1e3),
+        clamp_A: Tuple[float, float] = (0.0, 1e6),
         base_or_sample: torch.Tensor = None,
         dtype: torch.dtype = torch.float32,
         device: torch.device = "cpu",
@@ -68,45 +93,6 @@ class AlphaStableFlowLinear(FlowAbstract):
     def _loss_fn(self, x_0_hat: torch.Tensor, x_0: torch.Tensor, t: int) -> torch.Tensor:
         return (x_0_hat - x_0).square().sum(dim=-1)
 
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
-        x_1 = x.to(device=self._device, dtype=self._dtype)
-        if x_1.ndim != 2 or x_1.size(1) != self._dim:
-            raise ValueError(f"Expected x1 shape (N,{self._dim}), got {tuple(x_1.shape)}")
-        n_samples = x_1.size(0)
-
-        x_0 = self._sample_source(n_samples) if z is None else z.to(device=self._device,
-                                                                    dtype=self._dtype)
-        if x_0.shape != x_1.shape:
-            raise ValueError(f"x0 must have shape {tuple(x_1.shape)}, got {tuple(x_0.shape)}")
-
-        t = torch.rand((n_samples, 1), device=self._device, dtype=self._dtype)
-        t = self._t_min + (self._t_max - self._t_min) * t
-
-        x_t = (1.0 - t) * x_0 + t * x_1
-        v_t = x_1 - x_0
-
-        if v_t.shape != x_t.shape:
-            raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but x_t has shape"
-                             f" {tuple(x_t.shape)}.")
-
-        return self._reduce(self._loss_fn(self._net(x_t, t), v_t, t))
-
-
-class GaussianFlowLinear(GaussianFlowAbstract):
-    """Gaussian source flow with a linear path (Flow Matching)."""
-
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
-        x_0, x_1, t = self._latent(x_1=x, x_0=z)
-
-        x_t = (1.0 - t) * x_0 + t * x_1
-        v_t = x_1 - x_0
-
-        if v_t.shape != x_t.shape:
-            raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but x_t has shape"
-                             f" {tuple(x_t.shape)}.")
-
-        return self._reduce(self._loss_fn(self._net(x_t, t), v_t, t))
-
 
 class GaussianFlowDDPM(GaussianFlowAbstract):
     """Gaussian-source flow on the VP diffusion path (beta schedule)."""
@@ -145,18 +131,27 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
 
         return beta_s, abar, a, sigma
 
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
+    def _precompute_loss(self, x, z):
         x_0, x_1, t = self._latent(x_1=x, x_0=z)
-        beta_s, abar, a, sigma = self._vp_coefs(t)
 
+        beta_s, abar, a, sigma = self._vp_coefs(t)
         x_t = a * x_1 + sigma * x_0
         v_t = -0.5 * beta_s * (abar * x_t - a * x_1) / (1.0 - abar).clamp_min(self._eps)
+        v_t_hat = self._net(x_t, t)
 
         if v_t.shape != x_t.shape:
             raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but x_t has shape"
                              f" {tuple(x_t.shape)}.")
 
-        return self._reduce(self._loss_fn(self._net(x_t, t), v_t, t))
+        if v_t.shape != v_t_hat.shape:
+            raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but v_t_hat has shape"
+                             f" {tuple(v_t_hat.shape)}.")
+
+        return v_t_hat, v_t, t
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
+        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z)
+        return self._reduce(self._loss_fn(v_t_hat, v_t, t))
 
 
 class GaussianFlowOT(GaussianFlowAbstract):
@@ -182,14 +177,23 @@ class GaussianFlowOT(GaussianFlowAbstract):
 
         self._sigma_min = float(sigma_min)
 
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
+    def _precompute_loss(self, x, z):
         x_0, x_1, t = self._latent(x_1=x, x_0=z)
 
         x_t = (1.0 - (1.0 - self._sigma_min) * t) * x_0 + t * x_1
         v_t = x_1 - (1.0 - self._sigma_min) * x_0
+        v_t_hat = self._net(x_t, t)
 
         if v_t.shape != x_t.shape:
             raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but x_t has shape"
                              f" {tuple(x_t.shape)}.")
 
-        return self._reduce(self._loss_fn(self._net(x_t, t), v_t, t))
+        if v_t.shape != v_t_hat.shape:
+            raise ValueError(f"Shape mismatch: v_t has shape {tuple(v_t.shape)} but v_t_hat has shape"
+                             f" {tuple(v_t_hat.shape)}.")
+
+        return v_t_hat, v_t, t
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
+        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z)
+        return self._reduce(self._loss_fn(v_t_hat, v_t, t))

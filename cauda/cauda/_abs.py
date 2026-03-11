@@ -118,14 +118,17 @@ class FlowAbstract(Base):
         if not (0.0 <= self._t_min < self._t_max <= 1.0):
             raise ValueError(f"Need 0 <= t_min < t_max <= 1, got {self._t_min}, {self._t_max}")
 
+    def _t(self, n_samples):
+        t = torch.rand((n_samples, 1), device=self._device, dtype=self._dtype)
+        return self._t_min + (self._t_max - self._t_min) * t
+
     def _latent(self, x_1: torch.Tensor, x_0: torch.Tensor = None) -> torch.Tensor:
         x_1 = x_1.to(device=self._device, dtype=self._dtype)
         if x_1.ndim != 2 or x_1.size(1) != self._dim:
             raise ValueError(f"Expected x1 shape (N,{self._dim}), got {tuple(x_1.shape)}")
 
         n_samples = x_1.size(0)
-        t = torch.rand((n_samples, 1), device=self._device, dtype=self._dtype)
-        t = self._t_min + (self._t_max - self._t_min) * t
+        t = self._t(n_samples)
 
         x_0 = self._sample_source(n_samples) if x_0 is None else x_0.to(device=self._device,
                                                                         dtype=self._dtype)
