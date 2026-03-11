@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 
 # Artifacts / outputs
+_figures/
+_tables/
 benchmarks/_results/
 benchmarks/_figures/
 benchmarks/_tables/
