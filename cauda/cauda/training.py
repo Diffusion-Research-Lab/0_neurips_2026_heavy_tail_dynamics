@@ -1,11 +1,177 @@
-""""Training utilities for diffusion models."""
+"""Training utilities for diffusion models."""
 
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+from .visitor import CoreMetricsVisitor, TrainVisitor
+
+
+def _validate_train_inputs(
+    generative_model: Any,
+    target_data: torch.Tensor,
+    source_data: Optional[torch.Tensor],
+    use_adamw: bool,
+    weight_decay: float,
+) -> None:
+    if not hasattr(generative_model, "_net") or not isinstance(generative_model._net, torch.nn.Module):
+        raise ValueError("generative_model must have a torch.nn.Module attribute `_net`.")
+    if not hasattr(generative_model, "loss") or not callable(generative_model.loss):
+        raise ValueError("generative_model must have a callable method `loss(x, z=...)`.")
+    if not isinstance(target_data, torch.Tensor):
+        raise TypeError(f"target_data must be a torch.Tensor, got {type(target_data)}")
+    if source_data is not None and not isinstance(source_data, torch.Tensor):
+        raise TypeError(f"source_data must be a torch.Tensor or None, got {type(source_data)}")
+    if (not use_adamw) and float(weight_decay) != 0.0:
+        raise ValueError("weight_decay is only supported with AdamW in this trainer.")
+
+
+def _prepare_target_source(
+    target_data: torch.Tensor,
+    source_data: Optional[torch.Tensor],
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.dtype]:
+    target = target_data.detach().contiguous().cpu()
+    dtype = target.dtype
+    dim = target.size(-1)
+
+    source = None
+    if source_data is not None:
+        source = source_data.detach().contiguous().cpu()
+        if source.size(-1) != dim:
+            raise ValueError(f"source_data dim {source.size(-1)} != target_data dim {dim}")
+    return target, source, dtype
+
+
+def _build_loader(
+    target: torch.Tensor,
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool,
+) -> DataLoader:
+    return DataLoader(
+        TensorDataset(target),
+        batch_size=int(batch_size),
+        shuffle=True,
+        drop_last=True,
+        num_workers=int(num_workers),
+        pin_memory=pin_memory,
+        persistent_workers=bool(int(num_workers) > 0),
+    )
+
+
+def _lr_mult(step: int, lr_schedule: str, warmup_steps: int, total_steps: int) -> float:
+    if lr_schedule in (None, "none"):
+        return 1.0
+    if warmup_steps > 0 and step < warmup_steps:
+        return float(step + 1) / float(warmup_steps)
+
+    denom = max(1, total_steps - max(warmup_steps, 0))
+    p = float(step - max(warmup_steps, 0)) / float(denom)
+    p = min(max(p, 0.0), 1.0)
+
+    if lr_schedule == "cosine":
+        return 0.5 * (1.0 + math.cos(math.pi * p))
+    if lr_schedule == "linear":
+        return 1.0 - p
+    if lr_schedule == "constant":
+        return 1.0
+    raise ValueError(f"Unknown lr_schedule='{lr_schedule}'")
+
+
+def _build_train_config(
+    batch_size: int,
+    n_epochs: int,
+    lr: float,
+    lr_schedule: str,
+    warmup_steps: int,
+    weight_decay: float,
+    use_adamw: bool,
+    grad_clip_norm: Optional[float],
+    dtype: torch.dtype,
+    device: torch.device,
+    num_workers: int,
+) -> Dict[str, Any]:
+    return {
+        "batch_size": int(batch_size),
+        "n_epochs": int(n_epochs),
+        "lr": float(lr),
+        "lr_schedule": str(lr_schedule),
+        "warmup_steps": int(warmup_steps),
+        "weight_decay": float(weight_decay),
+        "use_adamw": bool(use_adamw),
+        "grad_clip_norm": None if grad_clip_norm is None else float(grad_clip_norm),
+        "dtype": str(dtype),
+        "device": str(device),
+        "num_workers": int(num_workers),
+    }
+
+
+def _compute_grad_stats(net: torch.nn.Module) -> Tuple[Optional[float], Optional[float]]:
+    grad_count = 0
+    grad_sum = 0.0
+    grad_sq_sum = 0.0
+
+    for p in net.parameters():
+        if p.grad is None:
+            continue
+        g = p.grad.detach()
+        grad_count += int(g.numel())
+        grad_sum += float(g.sum().item())
+        grad_sq_sum += float((g * g).sum().item())
+
+    if grad_count == 0:
+        return None, None
+
+    mean_g = grad_sum / float(grad_count)
+    grad_var = max(0.0, (grad_sq_sum / float(grad_count)) - (mean_g * mean_g))
+    grad_norm = math.sqrt(grad_sq_sum)
+    return grad_var, grad_norm
+
+
+def _save_ckpt(
+    ckpt_path: Optional[Path],
+    ckpt_keep_last: int,
+    epoch_idx: int,
+    global_step: int,
+    last_loss: float,
+    net: torch.nn.Module,
+    opt,
+    scheduler,
+    train_config: Dict[str, Any],
+) -> None:
+    if ckpt_path is None:
+        return
+
+    payload = {
+        "epoch": int(epoch_idx),
+        "global_step": int(global_step),
+        "loss": float(last_loss),
+        "model_state": net.state_dict(),
+        "opt_state": opt.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "train_config": train_config,
+    }
+    fname = ckpt_path / f"ckpt_epoch_{epoch_idx:04d}.pt"
+    torch.save(payload, fname)
+
+    last = ckpt_path / "ckpt_last.pt"
+    try:
+        if last.exists() or last.is_symlink():
+            last.unlink()
+        last.symlink_to(fname.name)
+    except Exception:
+        torch.save(payload, last)
+
+    if ckpt_keep_last > 0:
+        ckpts = sorted(ckpt_path.glob("ckpt_epoch_*.pt"))
+        excess = len(ckpts) - int(ckpt_keep_last)
+        for p in ckpts[: max(excess, 0)]:
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
 
 def train(
@@ -26,121 +192,59 @@ def train(
     ckpt_dir: Optional[str] = None,
     ckpt_freq_epochs: int = 10,
     ckpt_keep_last: int = 3,
-) -> Tuple[Any, Dict[str, List[float]]]:
+    visitors: Optional[Sequence[TrainVisitor]] = None,
+) -> Tuple[Any, Dict[str, Any]]:
     logger = logging.getLogger(__name__)
-
-    if not hasattr(generative_model, "_net") or not isinstance(generative_model._net, torch.nn.Module):
-        raise ValueError("generative_model must have a torch.nn.Module attribute `_net`.")
-    if not hasattr(generative_model, "loss") or not callable(generative_model.loss):
-        raise ValueError("generative_model must have a callable method `loss(x, z=...)`.")
-    if not isinstance(target_data, torch.Tensor):
-        raise TypeError(f"target_data must be a torch.Tensor, got {type(target_data)}")
-    if source_data is not None and not isinstance(source_data, torch.Tensor):
-        raise TypeError(f"source_data must be a torch.Tensor or None, got {type(source_data)}")
-
+    _validate_train_inputs(
+        generative_model=generative_model,
+        target_data=target_data,
+        source_data=source_data,
+        use_adamw=use_adamw,
+        weight_decay=weight_decay,
+    )
     device = torch.device(device)
-    target = target_data.detach().contiguous().cpu()
-    dtype = target.dtype
-    dim = target.size(-1)
+    target, source, dtype = _prepare_target_source(target_data=target_data, source_data=source_data)
 
     net = generative_model._net.to(device=device, dtype=dtype)
     net.train()
 
-    source = None
-    if source_data is not None:
-        source = source_data.detach().contiguous().cpu()
-        if source.size(-1) != dim:
-            raise ValueError(f"source_data dim {source.size(-1)} != target_data dim {dim}")
-
     pin = device.type == "cuda"
-
-    loader = DataLoader(
-        TensorDataset(target),
-        batch_size=int(batch_size),
-        shuffle=True,
-        drop_last=True,
-        num_workers=int(num_workers),
-        pin_memory=pin,
-        persistent_workers=bool(int(num_workers) > 0),
-    )
-
-    if (not use_adamw) and float(weight_decay) != 0.0:
-        raise ValueError("weight_decay is only supported with AdamW in this trainer.")
-
+    loader = _build_loader(target=target, batch_size=batch_size, num_workers=num_workers, pin_memory=pin)
     opt_cls = torch.optim.AdamW if use_adamw else torch.optim.Adam
     opt = opt_cls(net.parameters(), lr=float(lr), weight_decay=float(weight_decay))
-
     steps_per_epoch = max(len(loader), 1)
     total_steps = int(n_epochs) * steps_per_epoch
-
-    def _lr_mult(step: int) -> float:
-        if lr_schedule in (None, "none"):
-            return 1.0
-        if warmup_steps > 0 and step < warmup_steps:
-            return float(step + 1) / float(warmup_steps)
-        denom = max(1, total_steps - max(warmup_steps, 0))
-        p = float(step - max(warmup_steps, 0)) / float(denom)
-        p = min(max(p, 0.0), 1.0)
-        if lr_schedule == "cosine":
-            return 0.5 * (1.0 + math.cos(math.pi * p))
-        if lr_schedule == "linear":
-            return 1.0 - p
-        if lr_schedule == "constant":
-            return 1.0
-        raise ValueError(f"Unknown lr_schedule='{lr_schedule}'")
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=_lr_mult)
-
-    training_loss: List[float] = []
-    lr_hist: List[float] = []
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer=opt,
+        lr_lambda=lambda step: _lr_mult(
+            step=step,
+            lr_schedule=lr_schedule,
+            warmup_steps=warmup_steps,
+            total_steps=total_steps,
+        ),
+    )
 
     ckpt_path = None
     if ckpt_dir is not None:
         ckpt_path = Path(ckpt_dir)
         ckpt_path.mkdir(parents=True, exist_ok=True)
 
-    def _save_ckpt(epoch_idx: int, global_step: int, last_loss: float) -> None:
-        if ckpt_path is None:
-            return
-        payload = {
-            "epoch": int(epoch_idx),
-            "global_step": int(global_step),
-            "loss": float(last_loss),
-            "model_state": net.state_dict(),
-            "opt_state": opt.state_dict(),
-            "scheduler_state": scheduler.state_dict(),
-            "meta": {
-                "batch_size": int(batch_size),
-                "n_epochs": int(n_epochs),
-                "lr": float(lr),
-                "lr_schedule": str(lr_schedule),
-                "warmup_steps": int(warmup_steps),
-                "weight_decay": float(weight_decay),
-                "use_adamw": bool(use_adamw),
-                "grad_clip_norm": None if grad_clip_norm is None else float(grad_clip_norm),
-                "dtype": str(dtype),
-                "device": str(device),
-            },
-        }
-        fname = ckpt_path / f"ckpt_epoch_{epoch_idx:04d}.pt"
-        torch.save(payload, fname)
-
-        last = ckpt_path / "ckpt_last.pt"
-        try:
-            if last.exists() or last.is_symlink():
-                last.unlink()
-            last.symlink_to(fname.name)
-        except Exception:
-            torch.save(payload, last)
-
-        if ckpt_keep_last > 0:
-            ckpts = sorted(ckpt_path.glob("ckpt_epoch_*.pt"))
-            excess = len(ckpts) - int(ckpt_keep_last)
-            for p in ckpts[: max(excess, 0)]:
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+    if visitors is None:
+        visitors = [CoreMetricsVisitor()]
+    visitors = list(visitors)
+    train_config = _build_train_config(
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        lr=lr,
+        lr_schedule=lr_schedule,
+        warmup_steps=warmup_steps,
+        weight_decay=weight_decay,
+        use_adamw=use_adamw,
+        grad_clip_norm=grad_clip_norm,
+        dtype=dtype,
+        device=device,
+        num_workers=num_workers,
+    )
 
     logger.info(
         f"train | epochs={n_epochs} bs={batch_size} lr={float(lr):g} "
@@ -149,46 +253,86 @@ def train(
         f"device={device} dtype={dtype} ckpt_dir={ckpt_dir}"
     )
 
-    global_step = 0
-    for epoch in range(int(n_epochs)):
-        losses_epoch: List[float] = []
+    for v in visitors:
+        v.on_train_start(target=target, source=source, config=train_config)
 
+    global_step = 0
+    last_epoch_loss = float("nan")
+
+    for epoch in range(int(n_epochs)):
+        for v in visitors:
+            v.on_epoch_start()
+        epoch_losses: List[float] = []
         for (x_cpu,) in loader:
             x = x_cpu.to(device=device, dtype=dtype, non_blocking=pin)
-
-            z = None
-            if source is not None:
+            if source is None:
+                z = None
+            else:
                 idx = torch.randint(0, source.size(0), (x.size(0),), device="cpu")
                 z = source.index_select(0, idx).to(device=device, dtype=dtype, non_blocking=pin)
 
             opt.zero_grad(set_to_none=True)
-
             loss = generative_model.loss(x, z=z)
             if loss.ndim != 0:
                 raise ValueError(f"generative_model.loss must return a scalar, got shape {tuple(loss.shape)}")
-
             loss.backward()
+            grad_var, grad_norm_val = _compute_grad_stats(net=net)
+
             if grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=float(grad_clip_norm))
             opt.step()
             scheduler.step()
 
-            losses_epoch.append(float(loss.detach().item()))
-            lr_hist.append(float(opt.param_groups[0]["lr"]))
+            loss_f = float(loss.detach().item())
+            epoch_losses.append(loss_f)
             global_step += 1
 
-        m = sum(losses_epoch) / max(len(losses_epoch), 1)
-        training_loss.append(m)
+            for v in visitors:
+                v.on_batch_end(loss=loss_f, grad_var=grad_var, grad_norm=grad_norm_val)
+
+        last_epoch_loss = float(sum(epoch_losses) / float(len(epoch_losses))) if epoch_losses else float("nan")
+        for v in visitors:
+            v.on_epoch_end()
 
         if (epoch + 1) % int(freq_logging) == 0:
-            logger.info(f"epoch {epoch + 1:3d}/{n_epochs:3d} | loss {m:.6f} | lr {opt.param_groups[0]['lr']:.3e}")
+            details = " | ".join([s for s in (v.format_epoch_log() for v in visitors) if s])
+            if details:
+                logger.info(f"epoch {epoch + 1:3d}/{int(n_epochs):3d} | {details} | lr {opt.param_groups[0]['lr']:.3e}")
+            else:
+                logger.info(f"epoch {epoch + 1:3d}/{int(n_epochs):3d} | lr {opt.param_groups[0]['lr']:.3e}")
 
         if ckpt_path is not None and (epoch + 1) % int(ckpt_freq_epochs) == 0:
-            _save_ckpt(epoch_idx=epoch + 1, global_step=global_step, last_loss=m)
+            _save_ckpt(
+                ckpt_path=ckpt_path,
+                ckpt_keep_last=ckpt_keep_last,
+                epoch_idx=epoch + 1,
+                global_step=global_step,
+                last_loss=last_epoch_loss,
+                net=net,
+                opt=opt,
+                scheduler=scheduler,
+                train_config=train_config,
+            )
 
     if ckpt_path is not None:
-        last_loss = training_loss[-1] if training_loss else float("nan")
-        _save_ckpt(epoch_idx=n_epochs, global_step=global_step, last_loss=last_loss)
+        _save_ckpt(
+            ckpt_path=ckpt_path,
+            ckpt_keep_last=ckpt_keep_last,
+            epoch_idx=n_epochs,
+            global_step=global_step,
+            last_loss=last_epoch_loss,
+            net=net,
+            opt=opt,
+            scheduler=scheduler,
+            train_config=train_config,
+        )
+
+    for v in visitors:
+        v.on_train_end()
 
     logger.info("train | done")
-    return generative_model, {"training_loss": training_loss, "lr": lr_hist}
+    diagnostics = {
+        "train_config": train_config,
+        "visitors": {v.name: v.get_records() for v in visitors},
+    }
+    return generative_model, diagnostics
