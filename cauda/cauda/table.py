@@ -73,19 +73,25 @@ def dict_to_double_entry_latex_table(
     nan_str: str = "--",
 ) -> str:
     """Format `results[(approach, metric)]` into LaTeX; rows=metrics, cols=approaches; arrows by metric; optional bold best per row."""
-    metrics = list(row_order) if row_order is not None else {k[1] for k in results}
-    approaches = list(col_order) if col_order is not None else {k[0] for k in results}
+    metrics = list(row_order) if row_order is not None else sorted({k[1] for k in results}, key=str)
+    approaches = list(col_order) if col_order is not None else sorted({k[0] for k in results}, key=str)
 
     if not approaches:
         raise ValueError("No columns (approaches) inferred from `results`.")
+
+    if isinstance(metric_direction, str):
+        if metric_direction not in ["down", "up"]:
+            raise ValueError(f"'metric_direction' must be in ['down', 'up'], got {metric_direction}")
+        metric_direction = {m: metric_direction for m in metrics}
 
     for k, v in metric_direction.items():
         if v not in ['down', 'up']:
             raise ValueError(f"'metric_direction' for metric '{k}' not in ['down', 'up'], {v}")
 
+    norm_results: dict[tuple[Any, Any], Any] = {}
     for m in metrics:
         for a in approaches:
-            results[(a, m)] = to_numpy(results[(a, m)])
+            norm_results[(a, m)] = to_numpy(results[(a, m)])
 
     best_in_row: dict[Any, float] = {}
     best_name_in_row: dict[Any, float] = {}
@@ -94,7 +100,7 @@ def dict_to_double_entry_latex_table(
 
             vals = []
             for a in approaches:
-                vals.append(np.mean(results[(a, m)]))
+                vals.append(np.mean(norm_results[(a, m)]))
 
             if vals:
                 best = np.argmin(vals) if metric_direction[m] == "down" else np.argmax(vals)
@@ -106,12 +112,15 @@ def dict_to_double_entry_latex_table(
             return "-"
         return f"{np.sign(x) * 10:.0f}" + r"^{" + f"{np.ceil(np.log10(np.abs(x))):.0f}" + r"}"
 
+    def _fmt_value(v: float) -> str:
+        if callable(fmt):
+            return fmt(v)
+        return fmt.format(v)
+
     def _is_best(v: Any, m: Any) -> bool:
         if not bold_best_in_row or m not in best_in_row:
             return False
         fv = float(v)
-        if fv is None:
-            return False
         b = best_in_row[m]
         if bold_ties:
             return abs(fv - b) <= float(bold_atol)
@@ -142,18 +151,25 @@ def dict_to_double_entry_latex_table(
 
         cells = []
         for a in approaches:
-            mean_v = np.mean(results[(a, m)])
-            std_v = np.std(results[(a, m)])
-            s_mean = fmt.format(mean_v)
-            s_std = fmt.format(std_v)
+            mean_v = np.mean(norm_results[(a, m)])
+            std_v = np.std(norm_results[(a, m)])
+            s_mean = _fmt_value(mean_v)
+            s_std = _fmt_value(std_v)
 
             if _is_best(mean_v, m) and s_mean != nan_str and s_std != nan_str:
                 s = r"\textbf{" + s_mean + r"$\pm$" + s_std + "}"
-
             else:
-                _, p = ttest_ind(results[best_name_in_row[m], m], results[(a, m)],
-                                 equal_var=False, alternative='two-sided', nan_policy='omit')
-                s = "$" + s_mean + r"\pm" + s_std + r"\;{\scriptstyle " + _fmt_ceil(p) + "}$"
+                if bold_best_in_row:
+                    _, p = ttest_ind(
+                        norm_results[(best_name_in_row[m], m)],
+                        norm_results[(a, m)],
+                        equal_var=False,
+                        alternative='two-sided',
+                        nan_policy='omit',
+                    )
+                    s = "$" + s_mean + r"\pm" + s_std + r"\;{\scriptstyle " + _fmt_ceil(p) + "}$"
+                else:
+                    s = "$" + s_mean + r"\pm" + s_std + "$"
 
             cells.append(s)
 
