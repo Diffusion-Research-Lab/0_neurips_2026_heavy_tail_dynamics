@@ -39,6 +39,12 @@ if [[ ! -d "${SRC_DIR}" ]]; then
     exit 1
 fi
 
+if [[ ! -d "${SRC_DIR}/src/cauda" || ! -d "${SRC_DIR}/src/labkit" ]]; then
+    echo -e "${RED}Expected src layout not found.${RESET}" >&2
+    echo "Missing: ${SRC_DIR}/src/cauda and/or ${SRC_DIR}/src/labkit" >&2
+    exit 1
+fi
+
 if [[ -z "${MODE}" ]]; then
     echo -e "${RED}Missing option.${RESET} Choose one of: send, fetch, supp." >&2
     echo "Usage: ${SCRIPT_NAME} [send|fetch|supp]" >&2
@@ -78,6 +84,11 @@ prepare_common_staging() {
       --exclude '.pytest_cache/' \
       --exclude '.mypy_cache/' \
       --exclude '.ruff_cache/' \
+      --exclude '.venv/' \
+      --exclude 'venv/' \
+      --exclude 'build/' \
+      --exclude 'dist/' \
+      --exclude '*.egg-info/' \
       --exclude '__pycache__/' \
       --exclude '*.py[cod]' \
       --exclude '*~' \
@@ -88,7 +99,9 @@ prepare_common_staging() {
       --exclude 'benchmarks/_tables*/' \
       --exclude 'benchmarks/_results*/' \
       --exclude 'benchmarks/_reports*/' \
-      --exclude 'cauda/examples/_figures/' \
+      --exclude 'benchmarks/_data/' \
+      --exclude 'benchmarks/_weights/' \
+      --exclude 'examples/_figures/' \
       "${SRC_DIR}/" "${target_dir}/"
 
     cd "${target_dir}"

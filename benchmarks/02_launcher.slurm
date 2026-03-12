@@ -22,10 +22,10 @@ set -euo pipefail
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
-if [[ -d "${SUBMIT_DIR}/cauda" && -d "${SUBMIT_DIR}/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
+if [[ -d "${SUBMIT_DIR}/src/cauda" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
   PROJECT_ROOT="${SUBMIT_DIR}"
   SCRIPT_DIR="${SUBMIT_DIR}/benchmarks"
-elif [[ -d "${SUBMIT_DIR}/../cauda" && -d "${SUBMIT_DIR}/../labkit" ]]; then
+elif [[ -d "${SUBMIT_DIR}/../src/cauda" && -d "${SUBMIT_DIR}/../src/labkit" ]]; then
   PROJECT_ROOT="$(cd -- "${SUBMIT_DIR}/.." && pwd)"
   SCRIPT_DIR="${SUBMIT_DIR}"
 else
@@ -35,10 +35,10 @@ else
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-cauda}"
 
-if [[ ! -d "${PROJECT_ROOT}/cauda" || ! -d "${PROJECT_ROOT}/labkit" ]]; then
+if [[ ! -d "${PROJECT_ROOT}/src/cauda" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
   echo "[slurm] Expected directories not found:" >&2
-  echo "  ${PROJECT_ROOT}/cauda" >&2
-  echo "  ${PROJECT_ROOT}/labkit" >&2
+  echo "  ${PROJECT_ROOT}/src/cauda" >&2
+  echo "  ${PROJECT_ROOT}/src/labkit" >&2
   exit 1
 fi
 
@@ -66,7 +66,7 @@ fi
 
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
-export PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 if ! command -v python >/dev/null 2>&1; then
   echo "[slurm] python command not found after venv activation." >&2

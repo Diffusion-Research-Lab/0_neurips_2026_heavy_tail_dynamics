@@ -9,8 +9,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-CAUDA_REQ_FILE="${PROJECT_ROOT}/cauda/requirements.txt"
-LABKIT_REQ_FILE="${PROJECT_ROOT}/labkit/requirements.txt"
 BENCH_REQ_FILE="${PROJECT_ROOT}/benchmarks/requirements.txt"
 BENCH_DATA_DIR="${PROJECT_ROOT}/benchmarks/_data"
 BENCH_WEIGHTS_DIR="${PROJECT_ROOT}/benchmarks/_weights"
@@ -51,16 +49,6 @@ USAGE
       exit 2 ;;
   esac
 done
-
-if [[ ! -f "${CAUDA_REQ_FILE}" ]]; then
-  echo "[setup] Missing file: ${CAUDA_REQ_FILE}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${LABKIT_REQ_FILE}" ]]; then
-  echo "[setup] Missing file: ${LABKIT_REQ_FILE}" >&2
-  exit 1
-fi
 
 if [[ ! -f "${BENCH_REQ_FILE}" ]]; then
   echo "[setup] Missing file: ${BENCH_REQ_FILE}" >&2
@@ -107,38 +95,22 @@ else
   python -m pip install --upgrade pip setuptools wheel --no-input
 fi
 
-TMP_CAUDA_REQ="$(mktemp)"
-TMP_LABKIT_REQ="$(mktemp)"
 TMP_BENCH_REQ="$(mktemp)"
 cleanup_tmp() {
-  rm -f "${TMP_CAUDA_REQ}" "${TMP_LABKIT_REQ}" "${TMP_BENCH_REQ}"
+  rm -f "${TMP_BENCH_REQ}"
 }
 trap cleanup_tmp EXIT
 
-if [[ "${USE_JZ_MODULE}" == "1" ]]; then
-  awk 'BEGIN{IGNORECASE=1} !($0 ~ /^[[:space:]]*torch([[:space:]]*[<>=!~].*)?$/) {print}' "${CAUDA_REQ_FILE}" > "${TMP_CAUDA_REQ}"
-  awk 'BEGIN{IGNORECASE=1} !($0 ~ /^[[:space:]]*torch([[:space:]]*[<>=!~].*)?$/) {print}' "${LABKIT_REQ_FILE}" > "${TMP_LABKIT_REQ}"
-  awk 'BEGIN{IGNORECASE=1} !($0 ~ /^[[:space:]]*torch([[:space:]]*[<>=!~].*)?$/) {print}' "${BENCH_REQ_FILE}" > "${TMP_BENCH_REQ}"
-else
-  cp "${CAUDA_REQ_FILE}" "${TMP_CAUDA_REQ}"
-  cp "${LABKIT_REQ_FILE}" "${TMP_LABKIT_REQ}"
-  cp "${BENCH_REQ_FILE}" "${TMP_BENCH_REQ}"
-fi
-
-echo "[setup] Installing cauda requirements"
-pip install -r "${TMP_CAUDA_REQ}" --no-input
-
-echo "[setup] Installing labkit requirements"
-pip install -r "${TMP_LABKIT_REQ}" --no-input
+cp "${BENCH_REQ_FILE}" "${TMP_BENCH_REQ}"
 
 echo "[setup] Installing benchmark requirements"
 pip install -r "${TMP_BENCH_REQ}" --no-input
 
-echo "[setup] Installing cauda package"
-pip install -e "${PROJECT_ROOT}/cauda" --no-deps --no-input
+echo "[setup] Installing project packages (cauda + labkit)"
+pip install -e "${PROJECT_ROOT}[dev]" --no-input
 
 echo "[setup] Verifying imports (cauda + labkit + torchvision)"
-PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
+PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 python - <<'PY'
 import cauda
 import torch
@@ -149,7 +121,7 @@ PY
 
 echo "[setup] Prefetching benchmark assets (_data and _weights)"
 mkdir -p "${BENCH_DATA_DIR}" "${BENCH_WEIGHTS_DIR}"
-PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
+PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 BENCH_DATA_DIR="${BENCH_DATA_DIR}" \
 BENCH_WEIGHTS_DIR="${BENCH_WEIGHTS_DIR}" \
 python - <<'PY'
@@ -168,12 +140,12 @@ PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then
   echo "[setup] Running unit tests"
-  PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
-  pytest -q "${PROJECT_ROOT}/cauda/cauda/tests"
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+  pytest -q "${PROJECT_ROOT}/tests"
 
   echo "[setup] Running cauda example"
-  PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:${PYTHONPATH}}" \
-  python "${PROJECT_ROOT}/cauda/examples/spiral_example.py" --smoke
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+  python "${PROJECT_ROOT}/examples/spiral_example.py" --smoke
 
   echo "[setup] Running benchmark blank pipeline"
   bash "${SCRIPT_DIR}/03_launcher.sh" --blank
@@ -184,6 +156,6 @@ cat <<NEXT
 [setup] Done.
 To use this environment in your current shell:
   source "${VENV_DIR}/bin/activate"
-  export PYTHONPATH=${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit\${PYTHONPATH:+:\$PYTHONPATH}
+  export PYTHONPATH=${PROJECT_ROOT}/src\${PYTHONPATH:+:\$PYTHONPATH}
 
 NEXT

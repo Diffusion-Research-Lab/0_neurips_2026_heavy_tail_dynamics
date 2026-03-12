@@ -48,10 +48,10 @@ if [[ -z "${MODE}" ]]; then
   exit 2
 fi
 
-if [[ ! -d "${PROJECT_ROOT}/cauda" || ! -d "${PROJECT_ROOT}/labkit" ]]; then
+if [[ ! -d "${PROJECT_ROOT}/src/cauda" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
   echo "[launcher] Expected directories not found:" >&2
-  echo "  ${PROJECT_ROOT}/cauda" >&2
-  echo "  ${PROJECT_ROOT}/labkit" >&2
+  echo "  ${PROJECT_ROOT}/src/cauda" >&2
+  echo "  ${PROJECT_ROOT}/src/labkit" >&2
   exit 1
 fi
 
@@ -107,7 +107,7 @@ if ! command -v python >/dev/null 2>&1; then
   exit 1
 fi
 
-export PYTHONPATH="${PROJECT_ROOT}/cauda:${PROJECT_ROOT}/labkit${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 if [[ -n "${CPUS}" ]]; then
   export OMP_NUM_THREADS="${CPUS}"
