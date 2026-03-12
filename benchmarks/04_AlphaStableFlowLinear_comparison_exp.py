@@ -6,15 +6,21 @@ from pathlib import Path
 from cauda.model import LightNet
 from cauda.datasets import fetch_synthetic_data
 from cauda.training import train
-from cauda.metrics import msle_at_quantile
+from cauda.metrics import msle, msle_90, msle_99
 from cauda.flow import GaussianFlowLinear, AlphaStableFlowLinear
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
 from tqdm import tqdm
 
 
-def msle(x, x_ref):
-    return msle_at_quantile(x.abs(), x_ref.abs())
+def compute_msle_metrics(x, x_ref):
+    x_abs = x.abs()
+    x_ref_abs = x_ref.abs()
+    return {
+        "MSLE": msle(x_abs, x_ref_abs),
+        "MSLE_90": msle_90(x_abs, x_ref_abs),
+        "MSLE_99": msle_99(x_abs, x_ref_abs),
+    }
 
 
 if __name__ == "__main__":
@@ -43,7 +49,8 @@ if __name__ == "__main__":
         },
     ]
 
-    raw = {(gen.__name__, "MSLE"): [] for gen in l_cls}
+    metric_names = ["MSLE", "MSLE_90", "MSLE_99"]
+    raw = {(gen.__name__, metric): [] for gen in l_cls for metric in metric_names}
 
     for trial_idx in tqdm(range(cfg.n_trials), desc="bench1/trials", unit="trial"):
         print(f"[INFO] bench_1 trial {trial_idx + 1}/{cfg.n_trials}: generating synthetic data")
@@ -82,8 +89,9 @@ if __name__ == "__main__":
             )
 
             x_test_gen = generator.sample(n_samples=cfg.n_samples)
-            m = 10.0 * msle(x_test.clone(), x_test_gen)
-            raw[(gen_cls.__name__, "MSLE")].append(float(m))
+            metrics = compute_msle_metrics(x_test.clone(), x_test_gen)
+            for metric_name, metric_value in metrics.items():
+                raw[(gen_cls.__name__, metric_name)].append(float(10.0 * metric_value))
 
     results_payload = {
         "benchmark": "bench_1",

@@ -31,7 +31,11 @@ if __name__ == "__main__":
         "GaussianFlowLinear": "Lipman et al",
         "AlphaStableFlowLinear": rf"Our approach ($\alpha = {float(cfg['alpha_model']):.1f}$)",
     }
-    metric_name = {"MSLE": r"$10 \times \mathrm{MSLE}_{\xi=0.95}$"}
+    metric_name = {
+        "MSLE": r"$10 \times \mathrm{MSLE}$",
+        "MSLE_90": r"$10 \times \mathrm{MSLE}_{\xi=0.90}$",
+        "MSLE_99": r"$10 \times \mathrm{MSLE}_{\xi=0.99}$",
+    }
     caption = (
         "Comparison on "
         rf"$\alpha$-stable synthetic data ($\alpha_{{data}} = {float(cfg['alpha_data']):.1f}$, "
@@ -45,7 +49,7 @@ if __name__ == "__main__":
         caption=caption,
         label=f"tab:synthetic_alpha_data_{float(cfg['alpha_data']):.1f}_model_{float(cfg['alpha_model']):.1f}",
         col_order=col_order,
-        metric_direction={"MSLE": "down"},
+        metric_direction={k: "down" for k in metric_name.keys()},
         col_name=col_name,
         metric_name=metric_name,
         show_metric_arrows=True,
