@@ -1,6 +1,7 @@
 """Training module unittests."""
 
 import torch
+import pytest
 from cauda.training import train
 from cauda.visitor import CoreMetricsVisitor, TrainVisitor
 
@@ -144,3 +145,45 @@ def test_train_accepts_custom_visitors():
 
     assert "core" in diagnostics["visitors"]
     assert "counter" in diagnostics["visitors"]
+
+
+def test_train_tiny_dataset_with_large_batch_still_trains():
+    dim = 3
+    gm = _DummyGenerativeModel(dim=dim)
+    x = torch.randn(3, dim, dtype=torch.float32)
+
+    _, diagnostics = train(
+        gm,
+        target_data=x,
+        batch_size=16,
+        n_epochs=2,
+        lr=1e-3,
+        device="cpu",
+        num_workers=0,
+        lr_schedule="constant",
+        freq_logging=10,
+        visitors=[CoreMetricsVisitor()],
+    )
+
+    core = diagnostics["visitors"]["core"]
+    assert len(core["training_loss"]) == 2
+    assert torch.isfinite(torch.tensor(core["training_loss"])).all().item()
+
+
+def test_train_empty_dataset_raises_clear_error():
+    dim = 3
+    gm = _DummyGenerativeModel(dim=dim)
+    x = torch.empty(0, dim, dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="target_data is empty"):
+        train(
+            gm,
+            target_data=x,
+            batch_size=8,
+            n_epochs=1,
+            lr=1e-3,
+            device="cpu",
+            num_workers=0,
+            lr_schedule="constant",
+            freq_logging=10,
+        )

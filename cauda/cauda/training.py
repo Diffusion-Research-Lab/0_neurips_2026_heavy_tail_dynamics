@@ -33,12 +33,16 @@ def _prepare_target_source(
     source_data: Optional[torch.Tensor],
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.dtype]:
     target = target_data.detach().contiguous().cpu()
+    if target.size(0) == 0:
+        raise ValueError("target_data is empty; at least one sample is required for training.")
     dtype = target.dtype
     dim = target.size(-1)
 
     source = None
     if source_data is not None:
         source = source_data.detach().contiguous().cpu()
+        if source.size(0) == 0:
+            raise ValueError("source_data is empty; at least one sample is required when provided.")
         if source.size(-1) != dim:
             raise ValueError(f"source_data dim {source.size(-1)} != target_data dim {dim}")
     return target, source, dtype
@@ -54,7 +58,7 @@ def _build_loader(
         TensorDataset(target),
         batch_size=int(batch_size),
         shuffle=True,
-        drop_last=True,
+        drop_last=False,
         num_workers=int(num_workers),
         pin_memory=pin_memory,
         persistent_workers=bool(int(num_workers) > 0),
