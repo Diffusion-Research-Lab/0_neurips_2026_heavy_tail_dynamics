@@ -19,15 +19,20 @@ if __name__ == "__main__":
     fig_dir.mkdir(parents=True, exist_ok=True)
     payload = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
 
-    results = {}
-    for item in payload["grid"]:
-        results[(float(item["alpha_data"]), float(item["alpha_model"]))] = item["values"]
+    metric_names = ["MSLE", "MSLE_90", "MSLE_99"]
+    filenames = []
+    for metric_name in metric_names:
+        results = {}
+        for item in payload["grid"]:
+            results[(float(item["alpha_data"]), float(item["alpha_model"]))] = item["metrics"][metric_name]["values"]
 
-    filename = plot_heatmap(
-        results=results,
-        plot_dir=str(fig_dir),
-        xlabel=r"$\alpha$-model",
-        ylabel=r"$\alpha$-data",
-        fontsize=16,
-    )
-    print(f"[INFO] Saved figure artifact: {filename}")
+        filename = plot_heatmap(
+            results=results,
+            plot_dir=str(fig_dir),
+            xlabel=r"$\alpha$-model",
+            ylabel=r"$\alpha$-data",
+            fontsize=16,
+            suffix=f"{metric_name.lower()}",
+        )
+        filenames.append(filename)
+        print(f"[INFO] Saved figure artifact: {filename}")

@@ -6,15 +6,21 @@ from pathlib import Path
 from cauda.model import LightNet
 from cauda.datasets import fetch_synthetic_data
 from cauda.training import train
-from cauda.metrics import msle_at_quantile
+from cauda.metrics import msle, msle_90, msle_99
 from cauda.flow import AlphaStableFlowLinear
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
 from tqdm import tqdm
 
 
-def msle(x, x_ref):
-    return msle_at_quantile(x.abs(), x_ref.abs())
+def compute_msle_metrics(x, x_ref):
+    x_abs = x.abs()
+    x_ref_abs = x_ref.abs()
+    return {
+        "MSLE": msle(x_abs, x_ref_abs),
+        "MSLE_90": msle_90(x_abs, x_ref_abs),
+        "MSLE_99": msle_99(x_abs, x_ref_abs),
+    }
 
 
 if __name__ == "__main__":
@@ -30,8 +36,9 @@ if __name__ == "__main__":
     print(f"[INFO] bench_2 config loaded: {args.config}")
     print(f"[INFO] bench_2 run directory: {run_dir}")
 
+    metric_names = ["MSLE", "MSLE_90", "MSLE_99"]
     results = {
-        (float(a_d), float(a_g)): []
+        (float(a_d), float(a_g)): {metric: [] for metric in metric_names}
         for a_d in cfg.l_alpha_data
         for a_g in cfg.l_alpha_generator
     }
@@ -86,8 +93,14 @@ if __name__ == "__main__":
                     device=cfg.device,
                 )
 
-                m = 10.0 * msle(x_test.clone(), generator.sample(n_samples=cfg.n_samples))
-                results[(float(alpha_data), float(alpha_generator))].append(float(m))
+                metrics = compute_msle_metrics(
+                    x_test.clone(),
+                    generator.sample(n_samples=cfg.n_samples),
+                )
+                for metric_name, metric_value in metrics.items():
+                    results[(float(alpha_data), float(alpha_generator))][metric_name].append(
+                        float(10.0 * metric_value)
+                    )
 
     payload = {
         "benchmark": "bench_2",
@@ -96,8 +109,13 @@ if __name__ == "__main__":
             {
                 "alpha_data": a_d,
                 "alpha_model": a_g,
-                "values": vals,
-                "mean": float(sum(vals) / max(len(vals), 1)),
+                "metrics": {
+                    metric_name: {
+                        "values": vals[metric_name],
+                        "mean": float(sum(vals[metric_name]) / max(len(vals[metric_name]), 1)),
+                    }
+                    for metric_name in metric_names
+                },
             }
             for (a_d, a_g), vals in results.items()
         ],
