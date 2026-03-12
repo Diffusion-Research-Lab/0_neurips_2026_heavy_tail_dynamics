@@ -36,7 +36,7 @@ def fetch_synthetic_data(target_data: str, **kwargs):
         X_test = sample_gaussian(**kwargs_sampling)
 
     elif target_data == "spiral":
-        kwargs_sampling['spiral_turns'] = float(getpop(kwargs, "dim", 3.0))
+        kwargs_sampling['spiral_turns'] = float(getpop(kwargs, "spiral_turns", 3.0))
         kwargs_sampling['spiral_radius'] = float(getpop(kwargs, "spiral_radius", 4.0))
         kwargs_sampling['spiral_noise'] = float(getpop(kwargs, "spiral_noise", 0.2))
         X_train = sample_spiral(**kwargs_sampling)
@@ -45,14 +45,14 @@ def fetch_synthetic_data(target_data: str, **kwargs):
 
     elif target_data == "alpha_stable":
         kwargs_sampling['dim'] = int(getpop(kwargs, "dim", 1))
-        kwargs_sampling['alpha'] = float(getpop(kwargs, "alpha", 2.0))
+        kwargs_sampling['alpha'] = float(getpop(kwargs, "alpha", 1.99))
         X_train = sample_scaled_isotropic_alpha_stable(**kwargs_sampling)
         X_val = sample_scaled_isotropic_alpha_stable(**kwargs_sampling)
         X_test = sample_scaled_isotropic_alpha_stable(**kwargs_sampling)
 
     elif target_data == "student":
         kwargs_sampling['dim'] = int(getpop(kwargs, "dim", 1))
-        kwargs_sampling['nu'] = float(getpop(kwargs, "nu_source", 10.0))
+        kwargs_sampling['nu'] = float(getpop(kwargs, "nu", 10.0))
         X_train = sample_student_t(**kwargs_sampling)
         X_val = sample_student_t(**kwargs_sampling)
         X_test = sample_student_t(**kwargs_sampling)

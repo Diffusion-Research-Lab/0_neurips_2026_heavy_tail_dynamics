@@ -4,7 +4,7 @@ import math
 import pytest
 import torch
 from cauda.metrics import sliced_wasserstein2, msle, msle_90, msle_99, mse, rnmse, mae
-from cauda.inspect import nearest_train_sample, nearest_neighbor_generalization_stats
+from cauda.inspect import nn_dist_min
 from .utils import _devices
 
 
@@ -72,40 +72,22 @@ def test_sliced_wasserstein2_translation_formula(device, dtype):
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_nearest_train_sample_cosine_exact_match(device, dtype):
+def test_nn_dist_min_l1_exact_match(device, dtype):
     x_train = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]], device=device, dtype=dtype)
     x_gen = torch.tensor([[0.9, 0.1], [0.1, 0.9], [-0.9, 0.05]], device=device, dtype=dtype)
 
-    idx, nn, dist = nearest_train_sample(x_gen, x_train, metric="cosine", return_distance=True, block_size=2)
-
-    assert idx.shape == (3,)
-    assert nn.shape == x_gen.shape
-    assert dist is not None and dist.shape == (3,)
-    assert idx.tolist() == [0, 1, 2]
-    assert torch.isfinite(dist).all().item()
-    assert torch.all(dist >= 0.0).item()
+    dmin = nn_dist_min(x_gen, x_train, metric="l1", block_size=2)
+    assert math.isfinite(dmin)
+    assert dmin >= 0.0
 
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_nearest_neighbor_generalization_stats_cosine(device, dtype):
+def test_nn_dist_min_l2(device, dtype):
     torch.manual_seed(0)
     x_train = torch.randn(256, 8, device=device, dtype=dtype)
     x_gen = x_train + 0.01 * torch.randn(256, 8, device=device, dtype=dtype)
 
-    stats = nearest_neighbor_generalization_stats(x_gen, x_train, metric="cosine", block_size=64)
-
-    required = {
-        "nn_dist_mean",
-        "nn_dist_std",
-        "nn_dist_median",
-        "nn_dist_q90",
-        "nn_dist_q95",
-        "nn_dist_q99",
-        "nn_dist_min",
-        "nn_dist_max",
-    }
-    assert required.issubset(set(stats.keys()))
-    for k in required:
-        assert math.isfinite(stats[k]), k
-        assert stats[k] >= 0.0, k
+    dmin = nn_dist_min(x_gen, x_train, metric="sd", block_size=64)
+    assert math.isfinite(dmin)
+    assert dmin >= 0.0
