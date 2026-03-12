@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.python-version
 
 # Artifacts / outputs
 _figures/
@@ -26,3 +27,16 @@ Thumbs.db
 # Test / coverage / tooling caches
 .pytest_cache/
 .coverage
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/

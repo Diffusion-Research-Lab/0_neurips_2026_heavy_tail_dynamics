@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include Makefile
+include transfer.sh
+
+recursive-include src *.py
+recursive-include tests *.py
+recursive-include benchmarks *.py *.sh *.slurm *.md *.txt *.yml *.yaml
+recursive-include sandbox *.py *.ipynb
+recursive-include examples *.py
+
+global-exclude __pycache__
+global-exclude *.py[cod]

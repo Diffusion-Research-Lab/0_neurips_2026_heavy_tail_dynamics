@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heavytail-flow-matching"
+version = "0.1.0"
+description = "Heavy-tail flow matching research codebase."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.7.1",
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "scikit-learn>=1.3",
+  "scipy>=1.10",
+  "torch>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "flake8>=7.0",
+  "pytest>=8.2.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["cauda", "labkit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
