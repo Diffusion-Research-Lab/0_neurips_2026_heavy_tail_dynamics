@@ -221,7 +221,7 @@ class DLPMEps(Base):
                           "(z = A G are sampled internally).")
 
         # draw time (shared across MC replicates for each data point)
-        t = torch.randint(1, self._n_steps, (self._n,), device=self._device)  # (_n,)
+        t = torch.randint(1, self._n_steps + 1, (self._n,), device=self._device)  # (_n,)
         t_norm_1d = self._normalize_t(t)
 
         # expand it for monte carlo estimation
@@ -265,10 +265,10 @@ class DLPMEps(Base):
         A0 = self._draw_A(n_samples).squeeze(-1)
         G0 = self._draw_G(n_samples, self._dim)
         eps0 = self._safe_eps(A0.sqrt().unsqueeze(-1) * G0)
-        x_t = self._sigma_1_t[self._n_steps - 1] * eps0
+        x_t = self._sigma_1_t[self._n_steps] * eps0
 
         # Reverse recursion (Table 4 DLPM): mean update divided by gamma_t, then add Gaussian innovation
-        for t in range(self._n_steps - 1, 0, -1):
+        for t in range(self._n_steps, 0, -1):
             t_norm = torch.full((n_samples, 1), (t - 1) / float(max(self._n_steps - 1, 1)), device=self._device, dtype=self._dtype)
 
             Sigma_hat, gamma_t, Gamma_t = self._g_Sigma_hat_Gamma(Sigma_1_t, t)
