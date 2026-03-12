@@ -47,8 +47,14 @@ def sample_scaled_scalar_alpha_stable(
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """
-    Sample an scaled alpha-stable random scalar:
-        A ~ S_{alpha/2,1}(0, cos^{2/alpha}(pi alpha / 4))
+    Sample positive scalar mixing coefficients for isotropic alpha-stable sampling.
+
+    Uses
+        c_A = 2 * cos(pi * alpha / 4)^(2/alpha),
+        A ~ S_{alpha/2,1}(0, c_A),
+    then returns
+        clamp_min(A, eps).unsqueeze(-1),
+    so the output has shape (n_samples, 1).
     """
     alpha = float(alpha)
     c_A = 2.0 * (math.cos(math.pi * alpha / 4.0) ** (2.0 / alpha))
@@ -66,8 +72,14 @@ def sample_scaled_isotropic_alpha_stable(
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """
-    Sample an scaled alpha-stable random scalar: X = sqrt(A) G
-        A ~ S_{alpha/2,1}(0, cos^2(pi alpha / 4)) and G ~ N(O, I)
+    Sample isotropic alpha-stable vectors via Gaussian scale mixing.
+
+    Draws
+        G ~ N(0, I) in R^dim
+    and
+        A from sample_scaled_scalar_alpha_stable(...),
+    then returns
+        X = sqrt(A) * G.
     """
     G = torch.randn(n_samples, dim, device=device, dtype=dtype)
     A = sample_scaled_scalar_alpha_stable(n_samples, alpha=alpha, device=device, dtype=dtype)
