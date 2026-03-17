@@ -57,6 +57,19 @@ def _parse_dtype(name: str) -> torch.dtype:
     return m[key]
 
 
+def _parse_idtype(name: str) -> torch.dtype:
+    m = {
+        "int32": torch.int32,
+        "int": torch.int32,
+        "int64": torch.int64,
+        "long": torch.int64,
+    }
+    key = str(name).lower()
+    if key not in m:
+        raise ValueError(f"Unsupported integer dtype: {name!r}")
+    return m[key]
+
+
 def _resolve_authors_root(auth_cfg: Dict[str, Any]) -> Path:
     mode = auth_cfg.get("mode", "home_subpath")
     if mode == "explicit":
@@ -100,7 +113,9 @@ class Config:
             os.environ[str(self.authors_root_env_var)] = str(self.AUTHORS_ROOT)
         if hasattr(self, "seed"):
             set_seed(self.seed)
-        if hasattr(self, "dtype"):
+        if hasattr(self, "fdtype"):
+            torch.set_default_dtype(self.fdtype)
+        elif hasattr(self, "dtype"):
             torch.set_default_dtype(self.dtype)
         return self
 
@@ -114,6 +129,8 @@ def load_config(path: Union[str, Path], defaults: Dict[str, Any] = DEFAULTS) -> 
     merged = _deep_merge(defaults, raw)
 
     dtype = _parse_dtype(merged.get("dtype", "float64"))
+    fdtype = _parse_dtype(merged.get("fdtype", merged.get("dtype", "float64")))
+    idtype = _parse_idtype(merged.get("idtype", "int32"))
     merged = _materialize_specials(merged, dtype=dtype)
 
     # resolve runtime fields (kept generic; no per-key testing beyond these)
@@ -122,5 +139,7 @@ def load_config(path: Union[str, Path], defaults: Dict[str, Any] = DEFAULTS) -> 
     merged["authors_root_env_var"] = auth_cfg.get("env_var", "DLPM_AUTHORS_ROOT")
     merged["device"] = get_device(merged.get("device", "auto"))
     merged["dtype"] = dtype
+    merged["fdtype"] = fdtype
+    merged["idtype"] = idtype
 
     return Config(merged)

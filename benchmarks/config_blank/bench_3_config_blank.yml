@@ -36,3 +36,5 @@ minority_k: 3
 seed: 0
 device: auto
 dtype: float32
+fdtype: float32
+idtype: int32

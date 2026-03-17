@@ -7,9 +7,9 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
-from cauda.flow import AlphaStableFlowLinear, GaussianFlowLinear
-from cauda.model import FlowNet
-from cauda.training import train
+from genkit.flow import AlphaStableFlowLinear, GaussianFlowLinear
+from genkit.model import FlowNet
+from genkit.training import train
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
 from tqdm import tqdm
@@ -191,7 +191,7 @@ if __name__ == "__main__":
         device=device,
     )
 
-    x_feat = x_feat.to(dtype=cfg.dtype)
+    x_feat = x_feat.to(dtype=cfg.fdtype)
     feat_dim = x_feat.size(1)
     print(f"[INFO] bench_3 feature tensor: n={x_feat.size(0)} dim={feat_dim}")
     centroids = torch.stack([x_feat[y_label == c].mean(dim=0) for c in range(100)], dim=0)
@@ -214,13 +214,14 @@ if __name__ == "__main__":
             depth=int(cfg.net_depth),
             tdim=int(cfg.net_tdim),
             dropout=float(cfg.net_dropout),
-        ).to(device=cfg.device, dtype=cfg.dtype)
+        ).to(device=cfg.device, dtype=cfg.fdtype)
 
         generator = cls(
             net=net,
             dim=feat_dim,
             n_steps=int(cfg.n_steps),
-            dtype=cfg.dtype,
+            fdtype=cfg.fdtype,
+            idtype=cfg.idtype,
             device=cfg.device,
             **extra,
         )

@@ -3,11 +3,11 @@
 import argparse
 import time
 from pathlib import Path
-from cauda.model import LightNet
-from cauda.datasets import fetch_synthetic_data
-from cauda.training import train
-from cauda.metrics import msle, msle_90, msle_99
-from cauda.flow import AlphaStableFlowLinear
+from genkit.model import LightNet
+from genkit.datasets import fetch_synthetic_data
+from genkit.training import train
+from genkit.metrics import msle, msle_90, msle_99
+from genkit.flow import AlphaStableFlowLinear
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
 from tqdm import tqdm
@@ -58,7 +58,7 @@ if __name__ == "__main__":
                 dim=cfg.dim,
                 alpha=alpha_data,
                 device=cfg.device,
-                dtype=cfg.dtype,
+                dtype=cfg.fdtype,
             )
 
             for alpha_generator in tqdm(
@@ -71,12 +71,13 @@ if __name__ == "__main__":
                     f"[INFO] bench_2 trial {trial_idx + 1}: "
                     f"train AlphaStableFlowLinear(alpha_model={float(alpha_generator):.3f})"
                 )
-                net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.dtype)
+                net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.fdtype)
                 generator = AlphaStableFlowLinear(
                     net=net,
                     dim=cfg.dim,
                     alpha=alpha_generator,
-                    dtype=cfg.dtype,
+                    fdtype=cfg.fdtype,
+                    idtype=cfg.idtype,
                     device=cfg.device,
                     n_steps=cfg.n_steps,
                 )

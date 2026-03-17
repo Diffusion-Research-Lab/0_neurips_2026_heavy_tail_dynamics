@@ -3,11 +3,11 @@
 import argparse
 import time
 from pathlib import Path
-from cauda.model import LightNet
-from cauda.datasets import fetch_synthetic_data
-from cauda.training import train
-from cauda.metrics import msle, msle_90, msle_99
-from cauda.flow import GaussianFlowLinear, AlphaStableFlowLinear
+from genkit.model import LightNet
+from genkit.datasets import fetch_synthetic_data
+from genkit.training import train
+from genkit.metrics import msle, msle_90, msle_99
+from genkit.flow import GaussianFlowLinear, AlphaStableFlowLinear
 from labkit.config import load_config
 from results_utils import create_run_dir, write_artifacts
 from tqdm import tqdm
@@ -39,10 +39,17 @@ if __name__ == "__main__":
 
     l_cls = [GaussianFlowLinear, AlphaStableFlowLinear]
     l_kwargs = [
-        {"dim": cfg.dim, "dtype": cfg.dtype, "device": cfg.device, "n_steps": cfg.n_steps},
         {
             "dim": cfg.dim,
-            "dtype": cfg.dtype,
+            "fdtype": cfg.fdtype,
+            "idtype": cfg.idtype,
+            "device": cfg.device,
+            "n_steps": cfg.n_steps,
+        },
+        {
+            "dim": cfg.dim,
+            "fdtype": cfg.fdtype,
+            "idtype": cfg.idtype,
             "device": cfg.device,
             "n_steps": cfg.n_steps,
             "alpha": float(cfg.alpha_model),
@@ -60,7 +67,7 @@ if __name__ == "__main__":
             dim=cfg.dim,
             alpha=float(cfg.alpha_data),
             device=cfg.device,
-            dtype=cfg.dtype,
+            dtype=cfg.fdtype,
         )
 
         for kwargs, gen_cls in tqdm(
@@ -71,7 +78,7 @@ if __name__ == "__main__":
             unit="model",
         ):
             print(f"[INFO] bench_1 trial {trial_idx + 1}: training {gen_cls.__name__}")
-            net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.dtype)
+            net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.fdtype)
             kwargs = dict(kwargs)
             kwargs["net"] = net
             generator = gen_cls(**kwargs)

@@ -29,3 +29,5 @@ num_workers: 0
 # general
 device: auto
 dtype: float64
+fdtype: float64
+idtype: int32

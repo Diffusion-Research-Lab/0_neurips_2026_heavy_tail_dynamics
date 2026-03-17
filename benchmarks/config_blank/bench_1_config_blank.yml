@@ -25,3 +25,5 @@ num_workers: 0
 # general
 device: cpu
 dtype: float32
+fdtype: float32
+idtype: int32
