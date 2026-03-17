@@ -22,10 +22,10 @@ set -euo pipefail
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
-if [[ -d "${SUBMIT_DIR}/src/cauda" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
+if [[ -d "${SUBMIT_DIR}/src/genkit" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
   PROJECT_ROOT="${SUBMIT_DIR}"
   SCRIPT_DIR="${SUBMIT_DIR}/benchmarks"
-elif [[ -d "${SUBMIT_DIR}/../src/cauda" && -d "${SUBMIT_DIR}/../src/labkit" ]]; then
+elif [[ -d "${SUBMIT_DIR}/../src/genkit" && -d "${SUBMIT_DIR}/../src/labkit" ]]; then
   PROJECT_ROOT="$(cd -- "${SUBMIT_DIR}/.." && pwd)"
   SCRIPT_DIR="${SUBMIT_DIR}"
 else
@@ -33,11 +33,11 @@ else
   echo "[slurm] Submit from repo root or benchmarks directory." >&2
   exit 1
 fi
-VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-cauda}"
+VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
 
-if [[ ! -d "${PROJECT_ROOT}/src/cauda" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
+if [[ ! -d "${PROJECT_ROOT}/src/genkit" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
   echo "[slurm] Expected directories not found:" >&2
-  echo "  ${PROJECT_ROOT}/src/cauda" >&2
+  echo "  ${PROJECT_ROOT}/src/genkit" >&2
   echo "  ${PROJECT_ROOT}/src/labkit" >&2
   exit 1
 fi
@@ -57,9 +57,9 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     VENV_DIR="${PROJECT_ROOT}/.venv"
   else
     echo "[slurm] Missing virtual environment." >&2
-    echo "[slurm] Expected: ${PROJECT_ROOT}/.venv-cauda (or ${PROJECT_ROOT}/.venv)" >&2
+    echo "[slurm] Expected: ${PROJECT_ROOT}/.venv-genkit (or ${PROJECT_ROOT}/.venv)" >&2
     echo "[slurm] Run setup first on login node:" >&2
-    echo "  bash benchmarks/01_setup.sh --env-name cauda --use-jz-module" >&2
+    echo "  bash benchmarks/01_setup.sh --env-name genkit --use-jz-module" >&2
     exit 1
   fi
 fi
@@ -75,7 +75,7 @@ fi
 
 python - <<'PY'
 import torch
-import cauda
+import genkit
 from labkit.config import load_config
 print(f"[slurm] Runtime preflight OK - python/torch={torch.__version__}")
 PY

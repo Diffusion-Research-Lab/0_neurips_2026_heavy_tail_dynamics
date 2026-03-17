@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import yaml
-from cauda.table import save_double_entry_table
+from genkit.table import save_double_entry_table
 from results_utils import resolve_run_dir
 
 

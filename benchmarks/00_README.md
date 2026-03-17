@@ -5,13 +5,13 @@
 From `benchmarks/`:
 
 ```bash
-bash 01_setup.sh --env-name cauda --use-jz-module
+bash 01_setup.sh --env-name genkit --use-jz-module
 ```
 
 Or:
 
 ```bash
-bash 01_setup.sh --env-name cauda --use-jz-module --check
+bash 01_setup.sh --env-name genkit --use-jz-module --check
 ```
 
 ### 2) Run

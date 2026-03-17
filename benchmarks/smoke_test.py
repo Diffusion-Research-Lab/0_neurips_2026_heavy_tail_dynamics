@@ -2,10 +2,10 @@
 
 from pathlib import Path
 import torch
-import cauda
+import genkit
 import labkit
-from cauda.datasets import fetch_synthetic_data
-from cauda.metrics import mse
+from genkit.datasets import fetch_synthetic_data
+from genkit.metrics import mse
 from labkit.config import load_config
 
 
@@ -32,7 +32,7 @@ def main() -> None:
 
     print(
         "smoke_ok",
-        f"cauda={cauda.__name__}",
+        f"genkit={genkit.__name__}",
         f"labkit={labkit.__name__}",
         f"config={cfg_path.name}",
     )

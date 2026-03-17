@@ -32,7 +32,7 @@ make install
 Check imports:
 
 ```bash
-python -c "import cauda, labkit; print(cauda.__name__, labkit.__name__)"
+python -c "import genkit, labkit; print(genkit.__name__, labkit.__name__)"
 ```
 
 Run smoke test:

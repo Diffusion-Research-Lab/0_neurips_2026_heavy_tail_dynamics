@@ -5,7 +5,7 @@ import torch
 from .utils import getpop
 from ._sampling import (sample_balanced_bimodal_gaussian, sample_unbalanced_bimodal_gaussian,
                         sample_gaussian, sample_scaled_isotropic_alpha_stable, sample_student_t,
-                        sample_spiral)
+                        sample_spiral, sample_exponential)
 
 
 def fetch_synthetic_data(target_data: str, **kwargs):
@@ -56,6 +56,13 @@ def fetch_synthetic_data(target_data: str, **kwargs):
         X_train = sample_student_t(**kwargs_sampling)
         X_val = sample_student_t(**kwargs_sampling)
         X_test = sample_student_t(**kwargs_sampling)
+
+    elif target_data == "exponential":
+        kwargs_sampling['dim'] = int(getpop(kwargs, "dim", 1))
+        kwargs_sampling['rate'] = float(getpop(kwargs, "rate", 1.0))
+        X_train = sample_exponential(**kwargs_sampling)
+        X_val = sample_exponential(**kwargs_sampling)
+        X_test = sample_exponential(**kwargs_sampling)
 
     else:
         raise ValueError(f"target_data not understood, got {target_data!r}")

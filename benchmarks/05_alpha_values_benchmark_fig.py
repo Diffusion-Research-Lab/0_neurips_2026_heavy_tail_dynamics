@@ -3,7 +3,7 @@
 import argparse
 import json
 from pathlib import Path
-from cauda.plotting import plot_heatmap
+from genkit.plotting import plot_heatmap
 from results_utils import resolve_run_dir
 
 

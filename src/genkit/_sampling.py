@@ -127,6 +127,22 @@ def sample_student_t(
     return z / scale
 
 
+def sample_exponential(
+    n_samples: int,
+    dim: int,
+    rate: float = 1.0,
+    device: torch.device = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """
+    Sample from an exponential distribution Exp(rate).
+    """
+    if rate <= 0:
+        raise ValueError("rate must be > 0.")
+
+    return torch.empty(n_samples, dim, device=device, dtype=dtype).exponential_(rate)
+
+
 def sample_gaussian(
     n_samples: int,
     dim: int,

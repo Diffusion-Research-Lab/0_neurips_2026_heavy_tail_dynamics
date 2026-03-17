@@ -48,9 +48,9 @@ if [[ -z "${MODE}" ]]; then
   exit 2
 fi
 
-if [[ ! -d "${PROJECT_ROOT}/src/cauda" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
+if [[ ! -d "${PROJECT_ROOT}/src/genkit" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
   echo "[launcher] Expected directories not found:" >&2
-  echo "  ${PROJECT_ROOT}/src/cauda" >&2
+  echo "  ${PROJECT_ROOT}/src/genkit" >&2
   echo "  ${PROJECT_ROOT}/src/labkit" >&2
   exit 1
 fi
@@ -86,7 +86,7 @@ activate_venv_if_available() {
   if [[ -n "${VENV_DIR}" ]]; then
     candidates+=("${VENV_DIR}")
   else
-    candidates+=("${PROJECT_ROOT}/.venv-cauda" "${PROJECT_ROOT}/.venv")
+    candidates+=("${PROJECT_ROOT}/.venv-genkit" "${PROJECT_ROOT}/.venv")
   fi
 
   local vdir
@@ -164,7 +164,7 @@ if [[ "${MODE}" == "blank" ]]; then
   echo "[Blank] Import checks"
   step_t0="$(date +%s)"
   python - <<'PY'
-import cauda
+import genkit
 from labkit.config import load_config
 print("blank_imports_ok")
 PY

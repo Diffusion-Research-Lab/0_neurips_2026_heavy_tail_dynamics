@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Usage:
 #   bash benchmarks/01_setup.sh
-#   bash benchmarks/01_setup.sh --env-name cauda --check
+#   bash benchmarks/01_setup.sh --env-name genkit --check
 #   bash benchmarks/01_setup.sh --venv-dir /path/to/.venv --check
 #   bash benchmarks/01_setup.sh --use-jz-module --check
 
@@ -106,13 +106,13 @@ cp "${BENCH_REQ_FILE}" "${TMP_BENCH_REQ}"
 echo "[setup] Installing benchmark requirements"
 pip install -r "${TMP_BENCH_REQ}" --no-input
 
-echo "[setup] Installing project packages (cauda + labkit)"
+echo "[setup] Installing project packages (genkit + labkit)"
 pip install -e "${PROJECT_ROOT}[dev]" --no-input
 
-echo "[setup] Verifying imports (cauda + labkit + torchvision)"
+echo "[setup] Verifying imports (genkit + labkit + torchvision)"
 PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 python - <<'PY'
-import cauda
+import genkit
 import torch
 import torchvision
 from labkit.config import load_config
@@ -143,7 +143,7 @@ if [[ "${DO_CHECK}" == "1" ]]; then
   PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
   pytest -q "${PROJECT_ROOT}/tests"
 
-  echo "[setup] Running cauda example"
+  echo "[setup] Running genkit example"
   PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
   python "${PROJECT_ROOT}/examples/spiral_example.py" --smoke
 

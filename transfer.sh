@@ -39,9 +39,9 @@ if [[ ! -d "${SRC_DIR}" ]]; then
     exit 1
 fi
 
-if [[ ! -d "${SRC_DIR}/src/cauda" || ! -d "${SRC_DIR}/src/labkit" ]]; then
+if [[ ! -d "${SRC_DIR}/src/genkit" || ! -d "${SRC_DIR}/src/labkit" ]]; then
     echo -e "${RED}Expected src layout not found.${RESET}" >&2
-    echo "Missing: ${SRC_DIR}/src/cauda and/or ${SRC_DIR}/src/labkit" >&2
+    echo "Missing: ${SRC_DIR}/src/genkit and/or ${SRC_DIR}/src/labkit" >&2
     exit 1
 fi
 
