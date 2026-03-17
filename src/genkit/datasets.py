@@ -16,6 +16,14 @@ def fetch_synthetic_data(target_data: str, **kwargs):
     device = getpop(kwargs, "device", 'cpu')
     dtype = getpop(kwargs, "dtype", torch.float32)
     kwargs_sampling = dict(n_samples=n_samples, device=device, dtype=dtype)
+    valid_target_data = ["balanced_bimodal_gaussian",
+                         "unbalanced_bimodal_gaussian",
+                         "gaussian",
+                         "spiral",
+                         "alpha_stable",
+                         "student",
+                         "exponential",
+                         ]
 
     if target_data == "balanced_bimodal_gaussian":
         kwargs_sampling['dim'] = int(getpop(kwargs, "dim", 1))
@@ -65,7 +73,7 @@ def fetch_synthetic_data(target_data: str, **kwargs):
         X_test = sample_exponential(**kwargs_sampling)
 
     else:
-        raise ValueError(f"target_data not understood, got {target_data!r}")
+        raise ValueError(f"target_data not understood, got {target_data!r}, valid target_data are {valid_target_data}")
 
     if len(kwargs) > 0:
         warnings.warn(f"In 'fetch_synthetic_data', {kwargs.keys()} arguments were ignored.")
