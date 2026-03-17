@@ -2,9 +2,9 @@
 
 import pytest
 import torch
-from cauda._sampling import (sample_scalar_alpha_stable, sample_scaled_scalar_alpha_stable,
-                             sample_scaled_isotropic_alpha_stable, sample_spiral, sample_student_t,
-                             sample_gaussian, sample_balanced_bimodal_gaussian)
+from genkit._sampling import (sample_scalar_alpha_stable, sample_scaled_scalar_alpha_stable,
+                              sample_scaled_isotropic_alpha_stable, sample_spiral, sample_student_t,
+                              sample_gaussian, sample_balanced_bimodal_gaussian)
 
 
 def _assert_allclose_scalar(x: torch.Tensor, y: float, atol: float, rtol: float = 0.0):

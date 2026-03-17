@@ -2,8 +2,8 @@
 
 import torch
 import pytest
-from cauda.training import train
-from cauda.visitor import CoreMetricsVisitor, TrainVisitor
+from genkit.training import train
+from genkit.visitor import CoreMetricsVisitor, TrainVisitor
 
 
 class _DummyGenerativeModel:

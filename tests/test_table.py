@@ -1,7 +1,7 @@
 """Table module unittests."""
 
 import torch
-from cauda.table import dict_to_double_entry_latex_table
+from genkit.table import dict_to_double_entry_latex_table
 
 
 def _toy_results():

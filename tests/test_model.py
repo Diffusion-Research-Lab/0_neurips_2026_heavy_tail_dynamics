@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from cauda.model import TimeEmbedding
+from genkit.model import TimeEmbedding
 from .utils import _devices
 
 

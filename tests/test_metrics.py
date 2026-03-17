@@ -3,8 +3,8 @@
 import math
 import pytest
 import torch
-from cauda.metrics import sliced_wasserstein2, msle, msle_90, msle_99, mse, rnmse, mae
-from cauda.inspect import nn_dist_min
+from genkit.metrics import sliced_wasserstein2, msle, msle_90, msle_99, mse, rnmse, mae
+from genkit.inspect import nn_dist_min
 from .utils import _devices
 
 
