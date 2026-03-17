@@ -110,18 +110,6 @@ class DLPMEps(Base):
         else:
             return A
 
-    def _safe_eps(self, eps):
-        if self._clamp_eps is not None:
-            return eps.clamp(min=self._eps_min, max=self._eps_max)
-        else:
-            return eps
-
-    def _sample_source_default(self, n_samples: int) -> torch.Tensor:
-        raise NotImplementedError("In 'DLPMEps', '_sample_source_default' should not be used.")
-
-    def _sample_source(self, n_samples: int) -> torch.Tensor:
-        raise NotImplementedError("In 'DLPMEps', '_sample_source' should not be used.")
-
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
         loss_values = loss_values.reshape(self._n_trial_A, self._n_trial_G, self._n)
         inner_rms = loss_values.mean(dim=1).clamp_min(self._eps).sqrt()
@@ -193,7 +181,7 @@ class DLPMEps(Base):
         return self._reduce(self._loss_fn(eps_hat, eps, t))
 
     @torch.no_grad()
-    def sample(self, n_samples: int) -> torch.Tensor:
+    def _sample_all_traj(self, n_samples: int) -> torch.Tensor:
         self._net.eval()
 
         # Sample latent stable path A_{1:T} used to build Sigma_{1->t}(A_{1:t})
@@ -201,11 +189,12 @@ class DLPMEps(Base):
         A_path = self._safe_A(A_path).reshape(self._n_steps, n_samples)
         Sigma_1_t = self._Sigma_1_t(A_path)
 
-        # x_T = \bar \sigma_{T} sqrt(A0) G0
+        # x = \bar \sigma_{T} sqrt(A0) G0
         A0 = self._draw_A(n_samples).squeeze(-1)
         G0 = self._draw_G(n_samples, self._dim)
         eps0 = A0.sqrt().unsqueeze(-1) * G0
-        x_t = self._sigma_1_t[self._n_steps] * eps0
+        x = self._sigma_1_t[self._n_steps] * eps0
+        l_x = [x]
 
         # Reverse recursion (Table 4 DLPM): mean update divided by gamma_t, then add Gaussian innovation
         for t in range(self._n_steps, 0, -1):
@@ -213,10 +202,17 @@ class DLPMEps(Base):
 
             Sigma_hat, gamma_t, Gamma_t = self._g_Sigma_hat_Gamma(Sigma_1_t, t)
 
-            x_t = x_t / gamma_t.clamp_min(self._eps) - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * self._net(x_t, t_norm)
+            x = x / gamma_t.clamp_min(self._eps) - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * self._net(x, t_norm)
 
             if t > 1:
                 G = self._draw_G(n_samples, self._dim)
-                x_t = x_t + Sigma_hat.clamp_min(self._eps).sqrt().unsqueeze(-1) * G
+                x = x + Sigma_hat.clamp_min(self._eps).sqrt().unsqueeze(-1) * G
 
-        return x_t
+            l_x.append(x)
+
+        return x, l_x
+
+    @torch.no_grad()
+    def sample(self, n_samples: int) -> torch.Tensor:
+        x, _ = self._sample_all_traj(n_samples)
+        return x

@@ -104,10 +104,11 @@ class DDPMAbstarct(Base):
         return loss_values.mean()
 
     @torch.no_grad()
-    def sample(self, n_samples: int) -> torch.Tensor:
+    def _sample_all_traj(self, n_samples: int) -> torch.Tensor:
         self._net.eval()
 
         x = self._sample_source(n_samples)
+        l_x = [x]
 
         for t in range(1, self._n_steps + 1)[::-1]:
 
@@ -119,6 +120,13 @@ class DDPMAbstarct(Base):
             x = (x - self._betas[t_idx] / torch.sqrt(1.0 - self._alpha_bar[t_idx]) * eps_hat) / torch.sqrt(self._alphas[t_idx])
             x = x + self._sqrt_post_var[t_idx] * torch.randn_like(x)  # self._sqrt_post_var[0] = 0
 
+            l_x.append(x)
+
+        return x, l_x
+
+    @torch.no_grad()
+    def sample(self, n_samples: int) -> torch.Tensor:
+        x, _ = self._sample_all_traj(n_samples)
         return x
 
 
@@ -165,10 +173,11 @@ class FlowAbstract(Base):
         return x_0, x_1, t
 
     @torch.no_grad()
-    def sample(self, n_samples: int) -> torch.Tensor:
+    def _sample_all_traj(self, n_samples: int) -> torch.Tensor:
         self._net.eval()
 
         x = self._sample_source(n_samples)
+        l_x = [x]
 
         t0, t1 = self._t_min, self._t_max
         dt = (t1 - t0) / float(self._n_steps)
@@ -185,6 +194,13 @@ class FlowAbstract(Base):
             x = x + 0.5 * dt * (v0 + v1)
             t = t_next
 
+            l_x.append(x)
+
+        return x, l_x
+
+    @torch.no_grad()
+    def sample(self, n_samples: int) -> torch.Tensor:
+        x, _ = self._sample_all_traj(n_samples)
         return x
 
 
