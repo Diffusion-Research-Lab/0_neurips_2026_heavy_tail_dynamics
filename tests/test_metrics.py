@@ -1,93 +1,86 @@
 """Metrics module unittests."""
 
-import math
 import pytest
 import torch
-from genkit.metrics import sliced_wasserstein2, msle, msle_90, msle_99, mse, rnmse, mae
-from genkit.inspect import nn_dist_min
+
+from genkit.metrics import mssle_90, mssle_95, sliced_wasserstein2, wasserstein_distance
 from .utils import _devices
 
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_mse_mae_basic(device, dtype):
-    x = torch.tensor([1.0, 2.0, 3.0], device=device, dtype=dtype)
-    y = torch.tensor([2.0, 2.0, 1.0], device=device, dtype=dtype)
+def test_mssle_tail_variants_zero_for_identical_samples(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(2048, 2, device=device, dtype=dtype)
 
-    assert torch.allclose(mse(x, y), torch.tensor((1.0 + 0.0 + 4.0) / 3.0, device=device, dtype=dtype))
-    assert torch.allclose(mae(x, y), torch.tensor((1.0 + 0.0 + 2.0) / 3.0, device=device, dtype=dtype))
+    v90 = mssle_90(x, x)
+    v95 = mssle_95(x, x)
+
+    assert isinstance(v90, float)
+    assert isinstance(v95, float)
+    assert v90 >= 0.0 and v95 >= 0.0
+    assert v90 == pytest.approx(0.0, abs=1e-12)
+    assert v95 == pytest.approx(0.0, abs=1e-12)
 
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_rnmse_scale_invariant(device, dtype):
+def test_mssle_tail_detects_tail_rescaling(device, dtype):
     torch.manual_seed(0)
-    x = torch.randn(256, 4, device=device, dtype=dtype)
-    y = x + 0.1
-    a = 7.0
+    x = torch.randn(4096, 2, device=device, dtype=dtype)
+    y = 3.0 * x
 
-    v1 = rnmse(x, y)
-    v2 = rnmse(a * x, a * y)
-    assert torch.allclose(v1, v2, rtol=1e-5, atol=1e-6)
+    v90 = mssle_90(x, y)
+    v95 = mssle_95(x, y)
+
+    assert torch.isfinite(torch.tensor(v90))
+    assert torch.isfinite(torch.tensor(v95))
+    assert v90 > 0.0
+    assert v95 > 0.0
 
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_msle_quantile_variants(device, dtype):
+def test_wasserstein_distance_1d_translation_formula(device, dtype):
     torch.manual_seed(0)
-    x = torch.exp(torch.randn(4096, device=device, dtype=dtype))
-    c = 3.5
-    y = c * x
+    x = torch.randn(4096, 1, device=device, dtype=dtype)
+    shift = torch.tensor(2.5, device=device, dtype=dtype)
+    y = x + shift
 
-    v = msle(x, y)
-    v90 = msle_90(x, y)
-    v99 = msle_99(x, y)
+    w1 = wasserstein_distance(x, y, p=1, n_grid=2048)
+    w2 = wasserstein_distance(x, y, p=2, n_grid=2048)
 
-    assert v.shape == ()
-    assert v90.shape == ()
-    assert v99.shape == ()
-    assert torch.isfinite(v) and torch.isfinite(v90) and torch.isfinite(v99)
-    assert v90 >= 0 and v99 >= 0
+    assert isinstance(w1, float)
+    assert isinstance(w2, float)
+    assert w1 == pytest.approx(shift.item(), rel=5e-2, abs=5e-2)
+    assert w2 == pytest.approx(shift.item(), rel=5e-2, abs=5e-2)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_sliced_wasserstein2_zero_for_identical_samples(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(1024, 3, device=device, dtype=dtype)
+
+    sw2 = sliced_wasserstein2(x, x, n_projections=64, n_grid=512, seed=123)
+
+    assert isinstance(sw2, float)
+    assert sw2 >= 0.0
+    assert sw2 == pytest.approx(0.0, abs=1e-12)
 
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_sliced_wasserstein2_translation_formula(device, dtype):
     torch.manual_seed(0)
-    n, d = 512, 4
-    n_proj = 256
-
+    n, d = 1024, 4
     x = torch.randn(n, d, device=device, dtype=dtype)
-    c = torch.tensor([2.0, -1.0, 0.5, 0.0], device=device, dtype=dtype)
-    y = x + c
+    shift = torch.tensor([2.0, -1.0, 0.5, 0.0], device=device, dtype=dtype)
+    y = x + shift
 
-    sw2_sq = sliced_wasserstein2(x, y, n_projections=n_proj, sqrt=False, seed=123)
-    expected = (c @ c) / float(d)
+    sw2 = sliced_wasserstein2(x, y, n_projections=256, n_grid=1024, seed=123)
+    expected = (shift @ shift).item() / float(d)
 
-    assert sw2_sq.shape == ()
-    assert torch.isfinite(sw2_sq)
-    assert sw2_sq >= 0
-    assert torch.allclose(sw2_sq, expected, rtol=0.15, atol=1e-2)
-
-
-@pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_nn_dist_min_l1_exact_match(device, dtype):
-    x_train = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]], device=device, dtype=dtype)
-    x_gen = torch.tensor([[0.9, 0.1], [0.1, 0.9], [-0.9, 0.05]], device=device, dtype=dtype)
-
-    dmin = nn_dist_min(x_gen, x_train, metric="l1", block_size=2)
-    assert math.isfinite(dmin)
-    assert dmin >= 0.0
-
-
-@pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_nn_dist_min_l2(device, dtype):
-    torch.manual_seed(0)
-    x_train = torch.randn(256, 8, device=device, dtype=dtype)
-    x_gen = x_train + 0.01 * torch.randn(256, 8, device=device, dtype=dtype)
-
-    dmin = nn_dist_min(x_gen, x_train, metric="sd", block_size=64)
-    assert math.isfinite(dmin)
-    assert dmin >= 0.0
+    assert isinstance(sw2, float)
+    assert sw2 >= 0.0
+    assert sw2 == pytest.approx(expected, rel=0.15, abs=1e-2)

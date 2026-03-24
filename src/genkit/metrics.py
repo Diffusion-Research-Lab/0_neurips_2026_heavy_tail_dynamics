@@ -1,148 +1,146 @@
 """Classical evaluation metrics."""
 
-from typing import Optional
 import torch
 
+
 __all__ = [
+    "mssle_90",
+    "mssle_95",
+    "wasserstein_distance",
     "sliced_wasserstein2",
-    "msle",
-    "msle_90",
-    "msle_99",
-    "mse",
-    "rnmse",
-    "mae",
 ]
 
 
-def _as_pair(x_true: torch.Tensor, x_pred: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    if not isinstance(x_true, torch.Tensor) or not isinstance(x_pred, torch.Tensor):
-        raise TypeError("x_true and x_pred must be torch.Tensor.")
-    x_true = x_true.detach()
-    x_pred = x_pred.detach()
-    if x_pred.device != x_true.device:
-        x_pred = x_pred.to(device=x_true.device)
-    if x_true.shape != x_pred.shape:
-        raise ValueError(f"Shape mismatch: {tuple(x_true.shape)} vs {tuple(x_pred.shape)}")
-    return x_true, x_pred
+def _to_tensor(x, device=None, dtype=torch.float64):
+    x = x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
+    return x.to(device=device, dtype=dtype)
 
 
-def _out_dtype(x: torch.Tensor) -> torch.dtype:
-    return x.dtype if x.dtype.is_floating_point else torch.float32
+def _to_2d_tensor(x, device=None, dtype=torch.float64):
+    x = _to_tensor(x, device=device, dtype=dtype)
+    if x.ndim == 0:
+        x = x.reshape(1, 1)
+    elif x.ndim == 1:
+        x = x[:, None]
+    elif x.ndim > 2:
+        x = x.reshape(x.shape[0], -1)
+    if x.shape[0] == 0 or x.shape[1] == 0:
+        raise ValueError("Input must be non-empty.")
+    return x
 
 
-@torch.no_grad()
-def mse(x_true: torch.Tensor, x_pred: torch.Tensor) -> torch.Tensor:
-    x_true, x_pred = _as_pair(x_true, x_pred)
-    return ((x_true - x_pred) ** 2).mean().to(dtype=_out_dtype(x_true))
+def _reduce(x, reduction="mean"):
+    if reduction == "mean":
+        return x.mean().item()
+    if reduction == "sum":
+        return x.sum().item()
+    if reduction == "none":
+        return x
+    raise ValueError("reduction must be one of {'mean', 'sum', 'none'}.")
 
 
-@torch.no_grad()
-def mae(x_true: torch.Tensor, x_pred: torch.Tensor) -> torch.Tensor:
-    x_true, x_pred = _as_pair(x_true, x_pred)
-    return (x_true - x_pred).abs().mean().to(dtype=_out_dtype(x_true))
+def _ssle_tail(x_ref, x_gen, xi=0.95, scale=1.0, n_grid=1000, eps=1e-12, reduction="mean"):
+    x_ref = _to_2d_tensor(x_ref)
+    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
+
+    if x_ref.shape[1] != x_gen.shape[1]:
+        raise ValueError("x_ref and x_gen must have the same feature dimension.")
+    if not 0.0 <= xi < 1.0:
+        raise ValueError("xi must satisfy 0 <= xi < 1.")
+    if scale <= 0.0:
+        raise ValueError("scale must be strictly positive.")
+
+    p = torch.linspace(xi, 1.0 - eps, n_grid, device=x_ref.device, dtype=x_ref.dtype)
+    q_ref, q_gen = torch.quantile(x_ref, p, dim=0), torch.quantile(x_gen, p, dim=0)
+    g_ref = torch.sign(q_ref) * torch.log1p(torch.abs(q_ref) / scale)
+    g_gen = torch.sign(q_gen) * torch.log1p(torch.abs(q_gen) / scale)
+    scores = torch.trapz((g_ref - g_gen).pow(2), p, dim=0)
+
+    return _reduce(scores, reduction=reduction)
 
 
-@torch.no_grad()
-def rnmse(x_true: torch.Tensor, x_pred: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
-    x_true, x_pred = _as_pair(x_true, x_pred)
-    rmse = torch.sqrt(((x_true - x_pred) ** 2).mean())
-    denom = torch.sqrt((x_true ** 2).mean()).clamp_min(float(eps))
-    return (rmse / denom).to(dtype=_out_dtype(x_true))
+def mssle_90(x_ref, x_gen, n_grid=1000, eps=1e-12, reduction="mean"):
+    """Compute the tail mean squared log error between two empirical distributions above the 0.90 quantile."""
+    return _ssle_tail(x_ref=x_ref, x_gen=x_gen, xi=0.90, n_grid=n_grid, eps=eps, reduction=reduction)
 
 
-def _msle_at_quantile(
-    x_true: torch.Tensor,
-    x_pred: torch.Tensor,
-    xi: float,
-    n_grid: int = 256,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    if not (0.0 < xi < 1.0):
-        raise ValueError(f"xi must be in (0,1), got {xi}.")
-    if n_grid <= 0:
-        raise ValueError("n_grid must be positive.")
-
-    x_true, x_pred = _as_pair(x_true, x_pred)
-    a = x_true.reshape(-1)
-    b = x_pred.reshape(-1)
-
-    p = torch.linspace(xi, 1.0, n_grid, device=a.device, dtype=a.dtype)
-    qa = torch.quantile(a, p)
-    qb = torch.quantile(b, p)
-    diff2 = (torch.log(qa.clamp_min(eps)) - torch.log(qb.clamp_min(eps))) ** 2
-
-    if n_grid == 1:
-        out = (1.0 - xi) * diff2[0]
-    else:
-        dp = (1.0 - xi) / float(n_grid - 1)
-        out = diff2.sum() * dp
-    return out.to(dtype=_out_dtype(x_true))
+def mssle_95(x_ref, x_gen, n_grid=1000, eps=1e-12, reduction="mean"):
+    """Compute the tail mean squared log error between two empirical distributions above the 0.95 quantile."""
+    return _ssle_tail(x_ref=x_ref, x_gen=x_gen, xi=0.95, n_grid=n_grid, eps=eps, reduction=reduction)
 
 
-@torch.no_grad()
-def msle(
-    x_true: torch.Tensor,
-    x_pred: torch.Tensor,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    x_true, x_pred = _as_pair(x_true, x_pred)
-    a = x_true.reshape(-1)
-    b = x_pred.reshape(-1)
-    out = (torch.log(a.clamp_min(eps)) - torch.log(b.clamp_min(eps))) ** 2
-    return out.mean().to(dtype=_out_dtype(x_true))
+def _wasserstein_1d(x_ref, x_gen, p=1, n_grid=1000, eps=1e-12, reduction="mean"):
+    x_ref = _to_2d_tensor(x_ref)
+    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
+
+    if x_ref.shape[1] != x_gen.shape[1]:
+        raise ValueError("x_ref and x_gen must have the same feature dimension.")
+    if p < 1:
+        raise ValueError("p must satisfy p >= 1.")
+
+    q = torch.linspace(0.0, 1.0 - eps, n_grid, device=x_ref.device, dtype=x_ref.dtype)
+    q_ref, q_gen = torch.quantile(x_ref, q, dim=0), torch.quantile(x_gen, q, dim=0)
+    scores = torch.trapz((q_ref - q_gen).abs().pow(p), q, dim=0).pow(1.0 / p)
+
+    return _reduce(scores, reduction=reduction)
 
 
-@torch.no_grad()
-def msle_90(
-    x_true: torch.Tensor,
-    x_pred: torch.Tensor,
-    n_grid: int = 256,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    return _msle_at_quantile(x_true=x_true, x_pred=x_pred, xi=0.90, n_grid=n_grid, eps=eps)
+def _sinkhorn_wasserstein(x_ref, x_gen, p=1, reg=1e-2, n_iters=200, tol=1e-7):
+    x_ref = _to_2d_tensor(x_ref)
+    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
+
+    if x_ref.shape[1] != x_gen.shape[1]:
+        raise ValueError("x_ref and x_gen must have the same feature dimension.")
+    if p < 1:
+        raise ValueError("p must satisfy p >= 1.")
+
+    n_ref, n_gen = x_ref.shape[0], x_gen.shape[0]
+    a = torch.full((n_ref,), 1.0 / n_ref, device=x_ref.device, dtype=x_ref.dtype)
+    b = torch.full((n_gen,), 1.0 / n_gen, device=x_ref.device, dtype=x_ref.dtype)
+    cost = torch.cdist(x_ref, x_gen, p=2).pow(p)
+
+    K = torch.exp(-cost / reg).clamp_min(tol)
+    u, v = torch.ones_like(a), torch.ones_like(b)
+    for _ in range(n_iters):
+        u_prev = u
+        u = a / (K @ v).clamp_min(tol)
+        v = b / (K.t() @ u).clamp_min(tol)
+        if (u - u_prev).abs().max() < tol:
+            break
+    pi = u[:, None] * K * v[None, :]
+
+    return (pi.mul(cost).sum().clamp_min(0.0)).pow(1.0 / p).item()
 
 
-@torch.no_grad()
-def msle_99(
-    x_true: torch.Tensor,
-    x_pred: torch.Tensor,
-    n_grid: int = 256,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    return _msle_at_quantile(x_true=x_true, x_pred=x_pred, xi=0.99, n_grid=n_grid, eps=eps)
+def wasserstein_distance(x_ref, x_gen, p=1, n_grid=1000, eps=1e-12, reg=1e-2, n_iters=200, tol=1e-7, reduction="mean"):
+    """Compute the p-Wasserstein distance between two empirical distributions in 1D or higher dimensions."""
+    x_ref = _to_2d_tensor(x_ref)
+    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
+
+    if x_ref.shape[1] != x_gen.shape[1]:
+        raise ValueError("x_ref and x_gen must have the same feature dimension.")
+    if x_ref.shape[1] == 1:
+        return _wasserstein_1d(x_ref=x_ref, x_gen=x_gen, p=p, n_grid=n_grid, eps=eps, reduction=reduction)
+
+    return _sinkhorn_wasserstein(x_ref=x_ref, x_gen=x_gen, p=p, reg=reg, n_iters=n_iters, tol=tol)
 
 
-@torch.no_grad()
-def sliced_wasserstein2(
-    x: torch.Tensor,
-    y: torch.Tensor,
-    n_projections: int = 128,
-    sqrt: bool = True,
-    seed: Optional[int] = None,
-) -> torch.Tensor:
-    x, y = _as_pair(x, y)
-    if x.ndim != 2:
-        raise ValueError("x and y must be 2D tensors with shape (n, d).")
-    if n_projections <= 0:
-        raise ValueError("n_projections must be positive.")
+def sliced_wasserstein2(x_ref, x_gen, n_projections=128, n_grid=1000, eps=1e-12, seed=None):
+    """Compute the sliced 2-Wasserstein distance by averaging 1D projected Wasserstein-2 costs."""
+    x_ref = _to_2d_tensor(x_ref)
+    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
 
-    n, d = x.shape
-    if y.shape[0] != n:
-        raise ValueError(f"Use same #samples for SW2, got {n} vs {y.shape[0]}.")
+    if x_ref.shape[1] != x_gen.shape[1]:
+        raise ValueError("x_ref and x_gen must have the same feature dimension.")
 
-    gen = None
-    if seed is not None:
-        gen = torch.Generator(device=x.device)
-        gen.manual_seed(int(seed))
+    d = x_ref.shape[1]
 
-    theta = torch.randn((n_projections, d), device=x.device, dtype=x.dtype, generator=gen)
-    theta = theta / theta.norm(dim=1, keepdim=True).clamp_min(torch.finfo(x.dtype).tiny)
+    generator = None if seed is None else torch.Generator(device=x_ref.device).manual_seed(seed)
+    dirs = torch.randn(n_projections, d, device=x_ref.device, dtype=x_ref.dtype, generator=generator)
+    dirs = dirs / torch.linalg.vector_norm(dirs, dim=1, keepdim=True).clamp_min(1e-12)
+    proj_ref, proj_gen = x_ref @ dirs.t(), x_gen @ dirs.t()
 
-    x_proj = x @ theta.T
-    y_proj = y @ theta.T
-    x_sort = torch.sort(x_proj, dim=0).values
-    y_sort = torch.sort(y_proj, dim=0).values
+    q = torch.linspace(0.0, 1.0 - eps, n_grid, device=x_ref.device, dtype=x_ref.dtype)
+    q_ref, q_gen = torch.quantile(proj_ref, q, dim=0), torch.quantile(proj_gen, q, dim=0)
 
-    w2_sq = ((x_sort - y_sort) ** 2).mean()
-    out = torch.sqrt(w2_sq) if sqrt else w2_sq
-    return out.to(dtype=_out_dtype(x))
+    return torch.trapz((q_ref - q_gen).pow(2), q, dim=0).mean().item()
