@@ -5,8 +5,31 @@ import math
 import pytest
 import torch
 
-from genkit.utils import cosine_schedule
+from genkit.utils import cosine_schedule, getpop
 from .utils import _devices
+
+
+def test_getpop_returns_value_and_removes_key():
+    payload = {"alpha": 1.5, "other": 3}
+
+    value = getpop(payload, "alpha")
+
+    assert value == 1.5
+    assert payload == {"other": 3}
+
+
+def test_getpop_returns_default_for_missing_key():
+    payload = {"other": 3}
+
+    value = getpop(payload, "alpha", 2.0)
+
+    assert value == 2.0
+    assert payload == {"other": 3}
+
+
+def test_getpop_raises_keyerror_without_default():
+    with pytest.raises(KeyError):
+        getpop({}, "missing")
 
 
 @pytest.mark.parametrize("fdtype", [torch.float32, torch.float64])
@@ -41,18 +64,22 @@ def test_cosine_schedule_matches_definition(fdtype, idtype, device):
     n_steps = 123
     s = 0.01
     eps = 1e-8
+    beta_max = 0.999
     alpha_bar, alphas, betas, sqrt_post_var = cosine_schedule(
-        n_steps=n_steps, device=device, fdtype=fdtype, idtype=idtype, s=s, eps=eps
+        n_steps=n_steps, device=device, fdtype=fdtype, idtype=idtype, s=s, eps=eps, beta_max=beta_max
     )
 
     t = torch.arange(0, n_steps + 1, device=device, dtype=idtype)
     ref_alpha_bar = torch.cos(((t / n_steps) + s) / (1.0 + s) * (math.pi / 2.0)).pow(2).clamp(min=eps)
     ref_alpha_bar = (ref_alpha_bar / ref_alpha_bar[0]).to(device=device, dtype=fdtype)
     ref_alphas = (ref_alpha_bar[1:] / ref_alpha_bar[:-1]).clamp(min=eps)
-    ref_betas = 1.0 - ref_alphas
-    ref_sqrt_post_var = torch.sqrt(ref_betas * (1.0 - ref_alpha_bar[:-1]) / (1.0 - ref_alpha_bar[1:]))
+    ref_betas = (1.0 - ref_alphas).clamp(min=eps, max=beta_max)
+    ref_alphas = 1.0 - ref_betas
+    ref_alpha_bar = torch.cumprod(ref_alphas, dim=0)
+    ref_alpha_bar_prev = torch.cat([torch.ones(1, device=device, dtype=fdtype), ref_alpha_bar[:-1]])
+    ref_sqrt_post_var = torch.sqrt(ref_betas * (1.0 - ref_alpha_bar_prev) / (1.0 - ref_alpha_bar))
 
-    assert torch.allclose(alpha_bar, ref_alpha_bar[1:], atol=0.0, rtol=0.0)
+    assert torch.allclose(alpha_bar, ref_alpha_bar, atol=0.0, rtol=0.0)
     assert torch.allclose(alphas, ref_alphas, atol=0.0, rtol=0.0)
     assert torch.allclose(betas, ref_betas, atol=0.0, rtol=0.0)
     assert torch.allclose(sqrt_post_var, ref_sqrt_post_var, atol=0.0, rtol=0.0)
@@ -83,6 +110,18 @@ def test_cosine_schedule_identities_and_bounds(fdtype, idtype, device):
 
     diffs = alpha_bar[1:] - alpha_bar[:-1]
     assert (diffs <= 1e-12).all()
+
+
+def test_cosine_schedule_caps_beta():
+    _, _, betas, _ = cosine_schedule(
+        n_steps=100,
+        device=torch.device("cpu"),
+        fdtype=torch.float32,
+        idtype=torch.int64,
+        beta_max=0.999,
+    )
+
+    assert betas.max() <= torch.tensor(0.999, dtype=betas.dtype)
 
 
 def test_cosine_schedule_n_steps_zero_returns_empty_tensors():

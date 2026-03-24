@@ -1,5 +1,6 @@
 """Diffusion module indexing tests."""
 
+import pytest
 import torch
 from genkit.diffusion import DLPMEps
 
@@ -50,3 +51,31 @@ def test_dlpmeps_sample_uses_terminal_sigma_index():
     out = model.sample(n_samples=n_samples)
     expected = torch.full((n_samples, dim), 7.0, dtype=model._fdtype, device=model._device)
     assert torch.allclose(out, expected, atol=2e-3, rtol=0.0)
+
+
+def test_dlpmeps_loss_accepts_integer_t():
+    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    x = torch.randn(5, 2, dtype=torch.float32)
+
+    loss = model.loss(x, t=3)
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss).item()
+
+
+def test_dlpmeps_loss_accepts_normalized_float_t():
+    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    x = torch.randn(5, 2, dtype=torch.float32)
+
+    loss = model.loss(x, t=0.5)
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss).item()
+
+
+def test_dlpmeps_loss_rejects_invalid_t():
+    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    x = torch.randn(5, 2, dtype=torch.float32)
+
+    with pytest.raises(ValueError):
+        model.loss(x, t=0)

@@ -9,9 +9,10 @@ from ._sampling import sample_scaled_scalar_alpha_stable
 
 class GaussianFlowLinear(GaussianFlowAbstract):
     """Gaussian source flow with a linear path (Flow Matching)."""
+    _family = "flow"
 
-    def _precompute_loss(self, x, z):
-        x_0, x_1, t = self._latent(x_1=x, x_0=z)
+    def _precompute_loss(self, x, z, t=None):
+        x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
         x_t = (1.0 - t) * x_0 + t * x_1
         v_t = x_1 - x_0
@@ -27,13 +28,17 @@ class GaussianFlowLinear(GaussianFlowAbstract):
 
         return v_t_hat, v_t, t
 
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
-        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z)
-        return self._reduce(self._loss_fn(v_t_hat, v_t, t))
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z, t=t)
+        return self._loss_fn(v_t_hat, v_t, t)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        return self._reduce(self._loss(x=x, z=z, t=t))
 
 
 class GaussianFlowOT(GaussianFlowAbstract):
     """Gaussian source flow with minibatch Sinkhorn OT coupling + linear path."""
+    _family = "flow"
 
     def __init__(
         self,
@@ -57,8 +62,8 @@ class GaussianFlowOT(GaussianFlowAbstract):
 
         self._sigma_min = float(sigma_min)
 
-    def _precompute_loss(self, x, z):
-        x_0, x_1, t = self._latent(x_1=x, x_0=z)
+    def _precompute_loss(self, x, z, t=None):
+        x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
         x_t = (1.0 - (1.0 - self._sigma_min) * t) * x_0 + t * x_1
         v_t = x_1 - (1.0 - self._sigma_min) * x_0
@@ -74,13 +79,17 @@ class GaussianFlowOT(GaussianFlowAbstract):
 
         return v_t_hat, v_t, t
 
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
-        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z)
-        return self._reduce(self._loss_fn(v_t_hat, v_t, t))
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z, t=t)
+        return self._loss_fn(v_t_hat, v_t, t)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        return self._reduce(self._loss(x=x, z=z, t=t))
 
 
 class GaussianFlowDDPM(GaussianFlowAbstract):
     """Gaussian-source flow on the VP diffusion path (beta schedule)."""
+    _family = "flow"
 
     def __init__(
         self,
@@ -118,8 +127,8 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
 
         return beta_s, abar, a, sigma
 
-    def _precompute_loss(self, x, z):
-        x_0, x_1, t = self._latent(x_1=x, x_0=z)
+    def _precompute_loss(self, x, z, t=None):
+        x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
         beta_s, abar, a, sigma = self._vp_coefs(t)
         x_t = a * x_1 + sigma * x_0
@@ -136,13 +145,17 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
 
         return v_t_hat, v_t, t
 
-    def loss(self, x: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
-        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z)
-        return self._reduce(self._loss_fn(v_t_hat, v_t, t))
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        v_t_hat, v_t, t = self._precompute_loss(x=x, z=z, t=t)
+        return self._loss_fn(v_t_hat, v_t, t)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        return self._reduce(self._loss(x=x, z=z, t=t))
 
 
 class AlphaStableFlowLinear(GaussianFlowLinear):
     """Alpha source flow with a linear path (Flow Matching)."""
+    _family = "flow"
 
     def __init__(
         self,
@@ -183,10 +196,7 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
 
     def _safe_A(self, A):
         A = A.clamp_min(self._eps)  # by default
-        if self._clamp_A is not None:
-            return A.clamp(min=self._A_min, max=self._A_max)
-        else:
-            return A
+        return A.clamp(min=self._A_min, max=self._A_max) if self._clamp_A is not None else A
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         A = sample_scaled_scalar_alpha_stable(n_samples=n_samples, alpha=self._a,
@@ -195,10 +205,11 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
         G = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
         return A.sqrt() * G
 
-    def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
+    def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:  # XXX to be check
         if self._reduce_type == "mean":
             return loss_values.sqrt().mean()
         return loss_values.sqrt().median()
 
-    def _loss_fn(self, x_0_hat: torch.Tensor, x_0: torch.Tensor, t: int) -> torch.Tensor:
-        return (x_0_hat - x_0).square().sum(dim=-1)
+    def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
+        loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
+        return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()
