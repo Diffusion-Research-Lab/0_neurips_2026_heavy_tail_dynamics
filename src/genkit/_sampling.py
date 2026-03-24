@@ -111,6 +111,24 @@ def sample_spiral(
     return pts
 
 
+def sample_checker(
+    n_samples: int,
+    device: torch.device = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """
+    Sample a 2d checker cloud points.
+    """
+    x1 = torch.rand(n_samples, device=device, dtype=dtype) * 4 - 2
+    x2_ = torch.rand(n_samples, device=device, dtype=dtype)
+    x2_ -= torch.randint(high=2, size=(n_samples, ), device=device, dtype=dtype) * 2
+    x2 = x2_ + (torch.floor(x1) % 2)
+
+    pts = 1.0 * torch.cat([x1[:, None], x2[:, None]], dim=1) / 0.45
+
+    return pts.float()
+
+
 def sample_student_t(
     n_samples: int,
     dim: int,

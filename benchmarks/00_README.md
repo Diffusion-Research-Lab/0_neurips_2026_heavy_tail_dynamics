@@ -2,7 +2,19 @@
 
 ### 1) Setup
 
-From `benchmarks/`:
+From the repo root:
+
+```bash
+make install-bench
+```
+
+Or, if you want the benchmark environment, asset prefetch, and optional checks handled for you:
+
+```bash
+make bench-setup
+```
+
+From `benchmarks/`, the underlying setup script is:
 
 ```bash
 bash 01_setup.sh --env-name genkit --use-jz-module
@@ -19,13 +31,13 @@ bash 01_setup.sh --env-name genkit --use-jz-module --check
 Locally with bash:
 
 ```bash
-bash 03_launcher.sh --run
+make bench-run
 ```
 
 Or smoke-only pipeline:
 
 ```bash
-bash 03_launcher.sh --blank
+make bench-blank
 ```
 
 Or with Slurm:
@@ -37,5 +49,5 @@ sbatch 02_launcher.slurm
 ### 3) Clean artifacts
 
 ```bash
-bash 03_launcher.sh --clean
+make bench-clean
 ```

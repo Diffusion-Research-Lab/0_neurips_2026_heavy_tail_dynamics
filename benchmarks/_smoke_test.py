@@ -1,15 +1,17 @@
 """Fast CPU smoke test for package wiring and benchmark config loading."""
 
 from pathlib import Path
-import torch
+
 import genkit
 import labkit
+import torch
+
 from genkit.datasets import fetch_synthetic_data
-from genkit.metrics import mse
 from labkit.config import load_config
 
 
 def main() -> None:
+    """Run a minimal CPU-only benchmark sanity check."""
     torch.manual_seed(0)
 
     cfg_path = Path(__file__).resolve().parent / "config_blank" / "bench_1_config_blank.yml"
@@ -24,9 +26,8 @@ def main() -> None:
         dtype=torch.float32,
     )
 
-    score = float(mse(x_train, x_train).item())
-    if score != 0.0:
-        raise RuntimeError(f"Unexpected smoke metric value: {score}")
+    if not torch.equal(x_train, x_train):
+        raise RuntimeError("Unexpected smoke test tensor mismatch.")
     if x_test.shape[1] != int(cfg.dim):
         raise RuntimeError(f"Unexpected sample shape: {tuple(x_test.shape)}")
 

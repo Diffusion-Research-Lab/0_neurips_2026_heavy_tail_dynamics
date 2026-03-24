@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 from genkit.plotting import plot_heatmap
-from results_utils import resolve_run_dir
+from _utils import resolve_run_dir
 
 
 if __name__ == "__main__":
@@ -19,7 +19,7 @@ if __name__ == "__main__":
     fig_dir.mkdir(parents=True, exist_ok=True)
     payload = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
 
-    metric_names = ["MSLE", "MSLE_90", "MSLE_99"]
+    metric_names = ["MSSLE_90", "MSSLE_95"]
     filenames = []
     for metric_name in metric_names:
         results = {}

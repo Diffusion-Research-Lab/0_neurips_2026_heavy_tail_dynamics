@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
 Usage: bash benchmarks/03_launcher.sh [--run|--blank|--clean] [--cpus N] [--venv-dir DIR]
 
 Options:
-  --run       Run full benchmark (experiments 1, 2 and 3)
+  --run       Run full benchmark (experiments 1 and 2)
   --blank     Run minimal benchmark smoke test (uses *_blank.yml)
   --clean     Remove benchmark-generated artifacts and run pyclean
   --cpus N    Thread controls for OMP/MKL/OPENBLAS/NUMEXPR
@@ -122,18 +122,14 @@ RUN_CFG_1="${CFG_RUN_DIR}/bench_1_config.yaml"
 RUN_CFG_2="${CFG_RUN_DIR}/bench_2_config.yaml"
 BLANK_CFG_1="${CFG_BLANK_DIR}/bench_1_config_blank.yml"
 BLANK_CFG_2="${CFG_BLANK_DIR}/bench_2_config_blank.yml"
-RUN_CFG_3="${CFG_RUN_DIR}/bench_3_config.yaml"
-BLANK_CFG_3="${CFG_BLANK_DIR}/bench_3_config_blank.yml"
 
 if [[ "${MODE}" == "blank" ]]; then
   CFG_1="${BLANK_CFG_1}"
   CFG_2="${BLANK_CFG_2}"
-  CFG_3="${BLANK_CFG_3}"
   MODE_TAG="Blank"
 else
   CFG_1="${RUN_CFG_1}"
   CFG_2="${RUN_CFG_2}"
-  CFG_3="${RUN_CFG_3}"
   MODE_TAG="Run"
 fi
 
@@ -173,40 +169,16 @@ PY
 fi
 
 echo "-------------------------------------------------------------------------------"
-echo "[${MODE_TAG}] Experiment 1"
+echo "[${MODE_TAG}] Experiment"
 step_t0="$(date +%s)"
 (
   cd "${SCRIPT_DIR}"
-  python 04_AlphaStableFlowLinear_comparison_exp.py --config "${CFG_1}"
-  python 04_AlphaStableFlowLinear_comparison_fig.py
+  python 04_alpha_values_benchmark_exp.py --config "${CFG_2}"
+  python 04_alpha_values_benchmark_fig.py
 )
-echo "[✓] ${MODE_TAG} Experiment 1"
+echo "[✓] ${MODE_TAG} Experiment"
 step_dt=$(( $(date +%s) - step_t0 ))
-echo "[time] ${MODE_TAG} Experiment 1: $(fmt_duration "${step_dt}") (${step_dt}s)"
-
-echo "-------------------------------------------------------------------------------"
-echo "[${MODE_TAG}] Experiment 2"
-step_t0="$(date +%s)"
-(
-  cd "${SCRIPT_DIR}"
-  python 05_alpha_values_benchmark_exp.py --config "${CFG_2}"
-  python 05_alpha_values_benchmark_fig.py
-)
-echo "[✓] ${MODE_TAG} Experiment 2"
-step_dt=$(( $(date +%s) - step_t0 ))
-echo "[time] ${MODE_TAG} Experiment 2: $(fmt_duration "${step_dt}") (${step_dt}s)"
-
-echo "-------------------------------------------------------------------------------"
-echo "[${MODE_TAG}] Experiment 3 (CIFAR100)"
-step_t0="$(date +%s)"
-(
-  cd "${SCRIPT_DIR}"
-  python 06_cifar100_longtail_benchmark_exp.py --config "${CFG_3}"
-  python 06_cifar100_longtail_benchmark_fig.py
-)
-echo "[✓] ${MODE_TAG} Experiment 3"
-step_dt=$(( $(date +%s) - step_t0 ))
-echo "[time] ${MODE_TAG} Experiment 3: $(fmt_duration "${step_dt}") (${step_dt}s)"
+echo "[time] ${MODE_TAG} Experiment: $(fmt_duration "${step_dt}") (${step_dt}s)"
 
 END_TIME="$(date)"
 TOTAL_DT=$(( $(date +%s) - TOTAL_T0 ))

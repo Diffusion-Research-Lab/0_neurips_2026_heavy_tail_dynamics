@@ -5,7 +5,7 @@ import torch
 from .utils import getpop
 from ._sampling import (sample_balanced_bimodal_gaussian, sample_unbalanced_bimodal_gaussian,
                         sample_gaussian, sample_scaled_isotropic_alpha_stable, sample_student_t,
-                        sample_spiral, sample_exponential)
+                        sample_spiral, sample_exponential, sample_checker)
 
 
 def fetch_synthetic_data(target_data: str, **kwargs):
@@ -19,6 +19,7 @@ def fetch_synthetic_data(target_data: str, **kwargs):
     valid_target_data = ["balanced_bimodal_gaussian",
                          "unbalanced_bimodal_gaussian",
                          "gaussian",
+                         "checker",
                          "spiral",
                          "alpha_stable",
                          "student",
@@ -42,6 +43,11 @@ def fetch_synthetic_data(target_data: str, **kwargs):
         X_train = sample_gaussian(**kwargs_sampling)
         X_val = sample_gaussian(**kwargs_sampling)
         X_test = sample_gaussian(**kwargs_sampling)
+
+    elif target_data == "checker":
+        X_train = sample_checker(**kwargs_sampling)
+        X_val = sample_checker(**kwargs_sampling)
+        X_test = sample_checker(**kwargs_sampling)
 
     elif target_data == "spiral":
         kwargs_sampling['spiral_turns'] = float(getpop(kwargs, "spiral_turns", 3.0))

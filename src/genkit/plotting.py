@@ -65,6 +65,7 @@ def plot_scatter(
     plot_dir: str,
     perc_to_plot: float = 0.99,
     pad: float = 1.05,
+    alpha: float = 0.5,
     figsize: Tuple = (5, 4),
     fontsize: int = 18,
     suffix: str = "experiment",
@@ -83,8 +84,8 @@ def plot_scatter(
 
     plt.figure(figsize=figsize)
 
-    plt.scatter(x_ref[:, 0], x_ref[:, 1], s=6, label="Target", alpha=0.5)
-    plt.scatter(x[:, 0], x[:, 1], s=6, label="Generated", alpha=0.25)
+    plt.scatter(x_ref[:, 0], x_ref[:, 1], s=6, label="Target", alpha=alpha)
+    plt.scatter(x[:, 0], x[:, 1], s=6, label="Generated", alpha=alpha)
 
     plt.xlim(center[0] - pad * half, center[0] + pad * half)
     plt.ylim(center[1] - pad * half, center[1] + pad * half)

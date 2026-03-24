@@ -9,9 +9,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-BENCH_REQ_FILE="${PROJECT_ROOT}/benchmarks/requirements.txt"
-BENCH_DATA_DIR="${PROJECT_ROOT}/benchmarks/_data"
-BENCH_WEIGHTS_DIR="${PROJECT_ROOT}/benchmarks/_weights"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 DO_CHECK=0
 USE_JZ_MODULE=0
@@ -49,11 +46,6 @@ USAGE
       exit 2 ;;
   esac
 done
-
-if [[ ! -f "${BENCH_REQ_FILE}" ]]; then
-  echo "[setup] Missing file: ${BENCH_REQ_FILE}" >&2
-  exit 1
-fi
 
 if [[ "${USE_JZ_MODULE}" == "1" ]]; then
   if ! type module >/dev/null 2>&1; then
@@ -95,47 +87,16 @@ else
   python -m pip install --upgrade pip setuptools wheel --no-input
 fi
 
-TMP_BENCH_REQ="$(mktemp)"
-cleanup_tmp() {
-  rm -f "${TMP_BENCH_REQ}"
-}
-trap cleanup_tmp EXIT
+echo "[setup] Installing project packages with benchmark extras"
+pip install -e "${PROJECT_ROOT}[dev,bench]" --no-input
 
-cp "${BENCH_REQ_FILE}" "${TMP_BENCH_REQ}"
-
-echo "[setup] Installing benchmark requirements"
-pip install -r "${TMP_BENCH_REQ}" --no-input
-
-echo "[setup] Installing project packages (genkit + labkit)"
-pip install -e "${PROJECT_ROOT}[dev]" --no-input
-
-echo "[setup] Verifying imports (genkit + labkit + torchvision)"
+echo "[setup] Verifying imports (genkit + labkit)"
 PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 python - <<'PY'
 import genkit
 import torch
-import torchvision
 from labkit.config import load_config
-print(f"imports_ok torch={torch.__version__} torchvision={torchvision.__version__}")
-PY
-
-echo "[setup] Prefetching benchmark assets (_data and _weights)"
-mkdir -p "${BENCH_DATA_DIR}" "${BENCH_WEIGHTS_DIR}"
-PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-BENCH_DATA_DIR="${BENCH_DATA_DIR}" \
-BENCH_WEIGHTS_DIR="${BENCH_WEIGHTS_DIR}" \
-python - <<'PY'
-import os
-import torch
-from torchvision import datasets, models
-
-data_dir = os.environ["BENCH_DATA_DIR"]
-weights_dir = os.environ["BENCH_WEIGHTS_DIR"]
-torch.hub.set_dir(weights_dir)
-
-datasets.CIFAR100(root=data_dir, train=True, download=True)
-models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-print(f"assets_ok data={data_dir} weights={weights_dir}")
+print(f"imports_ok torch={torch.__version__}")
 PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then
@@ -145,7 +106,7 @@ if [[ "${DO_CHECK}" == "1" ]]; then
 
   echo "[setup] Running genkit example"
   PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-  python "${PROJECT_ROOT}/examples/spiral_example.py" --smoke
+  python "${PROJECT_ROOT}/examples/02_visu_2d.py" --blank
 
   echo "[setup] Running benchmark blank pipeline"
   bash "${SCRIPT_DIR}/03_launcher.sh" --blank

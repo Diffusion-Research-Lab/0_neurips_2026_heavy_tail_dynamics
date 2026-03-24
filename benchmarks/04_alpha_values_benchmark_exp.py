@@ -3,23 +3,22 @@
 import argparse
 import time
 from pathlib import Path
-from genkit.model import LightNet
+from genkit.nn import MLPModel
 from genkit.datasets import fetch_synthetic_data
 from genkit.training import train
-from genkit.metrics import msle, msle_90, msle_99
+from genkit.metrics import mssle_90, mssle_95
 from genkit.flow import AlphaStableFlowLinear
 from labkit.config import load_config
-from results_utils import create_run_dir, write_artifacts
+from _utils import create_run_dir, write_artifacts
 from tqdm import tqdm
 
 
-def compute_msle_metrics(x, x_ref):
+def compute_mssle_metrics(x, x_ref):
     x_abs = x.abs()
     x_ref_abs = x_ref.abs()
     return {
-        "MSLE": msle(x_abs, x_ref_abs),
-        "MSLE_90": msle_90(x_abs, x_ref_abs),
-        "MSLE_99": msle_99(x_abs, x_ref_abs),
+        "MSSLE_90": mssle_90(x_abs, x_ref_abs),
+        "MSSLE_95": mssle_95(x_abs, x_ref_abs),
     }
 
 
@@ -36,7 +35,7 @@ if __name__ == "__main__":
     print(f"[INFO] bench_2 config loaded: {args.config}")
     print(f"[INFO] bench_2 run directory: {run_dir}")
 
-    metric_names = ["MSLE", "MSLE_90", "MSLE_99"]
+    metric_names = ["MSSLE", "MSSLE_90", "MSSLE_95"]
     results = {
         (float(a_d), float(a_g)): {metric: [] for metric in metric_names}
         for a_d in cfg.l_alpha_data
@@ -71,7 +70,7 @@ if __name__ == "__main__":
                     f"[INFO] bench_2 trial {trial_idx + 1}: "
                     f"train AlphaStableFlowLinear(alpha_model={float(alpha_generator):.3f})"
                 )
-                net = LightNet(dim=cfg.dim).to(device=cfg.device, dtype=cfg.fdtype)
+                net = MLPModel(dim=cfg.dim).to(device=cfg.device, dtype=cfg.fdtype)
                 generator = AlphaStableFlowLinear(
                     net=net,
                     dim=cfg.dim,
@@ -94,7 +93,7 @@ if __name__ == "__main__":
                     device=cfg.device,
                 )
 
-                metrics = compute_msle_metrics(
+                metrics = compute_mssle_metrics(
                     x_test.clone(),
                     generator.sample(n_samples=cfg.n_samples),
                 )
