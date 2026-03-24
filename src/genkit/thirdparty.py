@@ -1,32 +1,21 @@
-"""Wrapper module for https://github.com/darioShar/DLPM/."""
+"""Optional adapters around vendored third-party generative backends."""
 
-import os
 import sys
 import warnings
 from pathlib import Path
 from typing import Optional
 import torch
 from ._abs import Base
+from ._sampling import sample_gaussian
 
 
-def _resolve_dlpm_authors_root(authors_root: Optional[str] = None) -> str:
-    if authors_root is None:
-        authors_root = os.environ.get("DLPM_AUTHORS_ROOT", None)
-    if authors_root is None:
-        raise RuntimeError(
-            "Set DLPM_AUTHORS_ROOT to the authors repo root that contains the `dlpm/` package "
-            "(e.g. .../DLPM/DLPM)."
-        )
-    root = Path(authors_root).expanduser().resolve()
-    if not (root / "dlpm").is_dir():
-        raise RuntimeError(f"Invalid DLPM_AUTHORS_ROOT={root} (missing `dlpm/` directory),"
-                           f" download it from 'https://github.com/darioShar/DLPM'.")
-    return str(root)
-
-
-def _ensure_on_syspath(path: str) -> None:
-    if path not in sys.path:
-        sys.path.insert(0, path)
+def _resolve_fdtype(fdtype: torch.dtype, dtype: Optional[torch.dtype]) -> torch.dtype:
+    if dtype is None:
+        return fdtype
+    if fdtype != torch.float32 and fdtype != dtype:
+        raise ValueError(f"Conflicting fdtype={fdtype} and legacy dtype={dtype}.")
+    warnings.warn("`dtype` is deprecated in thirdparty adapters; use `fdtype` instead.")
+    return dtype
 
 
 class _NetAdapter(torch.nn.Module):
@@ -53,9 +42,8 @@ class _NetAdapter(torch.nn.Module):
 
 
 class DLPMEpsOrigin(Base):
-    """
-    Adapter around the authors' GenerativeLevyProcess(DLPM).
-    """
+    """Adapter around the vendored authors' GenerativeLevyProcess(DLPM)."""
+    _family = "vendor"
 
     def __init__(
         self,
@@ -67,7 +55,7 @@ class DLPMEpsOrigin(Base):
         time_spacing: str = "linear",
         rescale_timesteps: bool = True,
         isotropic: bool = True,
-        loss_monte_carlo: bool = 'mean',
+        loss_monte_carlo: str = "mean",
         monte_carlo_outer: int = 5,
         monte_carlo_inner: int = 1,
         lploss: float = 2.0,
@@ -75,15 +63,20 @@ class DLPMEpsOrigin(Base):
         clamp_eps: Optional[float] = None,
         scale: str = "scale_preserving",
         base_or_sample: torch.Tensor = None,
-        dtype: torch.dtype = torch.float32,
+        fdtype: torch.dtype = torch.float32,
+        idtype: torch.dtype = torch.int32,
+        dtype: Optional[torch.dtype] = None,
         device: torch.device = torch.device("cpu"),
     ):
+        fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
-                         dtype=dtype, device=device)
+                         fdtype=fdtype, idtype=idtype, device=device)
 
-        root = _resolve_dlpm_authors_root(authors_root)
-        _ensure_on_syspath(root)
-
+        root = Path(authors_root).expanduser().resolve() if authors_root is not None else (
+            Path(__file__).resolve().parent / "_vendor" / "DLPM"
+        )
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
         from dlpm.methods.GenerativeLevyProcess import GenerativeLevyProcess  # noqa: E402
 
         self._net_auth = _NetAdapter(self._net)
@@ -94,32 +87,36 @@ class DLPMEpsOrigin(Base):
         self._clamp_a = clamp_a
         self._clamp_eps = clamp_eps
 
-        self._glp = GenerativeLevyProcess(alpha=float(alpha),
-                                          device=self._device,
-                                          reverse_steps=int(n_steps),
-                                          time_spacing=str(time_spacing),
-                                          rescale_timesteps=bool(rescale_timesteps),
-                                          isotropic=bool(isotropic),
-                                          scale=str(scale))
+        self._glp = GenerativeLevyProcess(
+            alpha=float(alpha),
+            device=self._device,
+            reverse_steps=int(n_steps),
+            time_spacing=str(time_spacing),
+            rescale_timesteps=bool(rescale_timesteps),
+            isotropic=bool(isotropic),
+            scale=str(scale),
+        )
+
+    def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
-
         if z is not None:
-            warnings.warn("In 'DLPMEpsOrigin.loss', input 'z' is ignored (z = A G are "
-                          "sampled internally).")
+            warnings.warn("In 'DLPMEpsOrigin.loss', input 'z' is ignored (z = A G are sampled internally).")
 
-        x = x.to(device=self._device, dtype=self._dtype)
-        out = self._glp.training_losses(models={"default": self._net_auth},
-                                        x_start=x,
-                                        loss_type="EPS_LOSS",
-                                        lploss=self._lploss,
-                                        loss_monte_carlo=self._loss_monte_carlo,
-                                        monte_carlo_outer=self._monte_carlo_outer,
-                                        monte_carlo_inner=self._monte_carlo_inner,
-                                        clamp_a=self._clamp_a,
-                                        clamp_eps=self._clamp_eps)
-
-        return out["loss"].to(dtype=self._dtype)
+        x = x.to(device=self._device, dtype=self._fdtype)
+        out = self._glp.training_losses(
+            models={"default": self._net_auth},
+            x_start=x,
+            loss_type="EPS_LOSS",
+            lploss=self._lploss,
+            loss_monte_carlo=self._loss_monte_carlo,
+            monte_carlo_outer=self._monte_carlo_outer,
+            monte_carlo_inner=self._monte_carlo_inner,
+            clamp_a=self._clamp_a,
+            clamp_eps=self._clamp_eps,
+        )
+        return out["loss"].to(device=self._device, dtype=self._fdtype).mean()
 
     @torch.no_grad()
     def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
@@ -131,8 +128,206 @@ class DLPMEpsOrigin(Base):
         if self._clamp_eps is not None:
             self._glp.dlpm.gen_eps.setParams(clamp_eps=self._clamp_eps)
 
-        x = self._glp.p_sample_loop(model=self._net_auth,
-                                    shape=(int(n_samples), int(self._dim)),
-                                    progress=bool(kwargs.get("progress", False)))
+        x = self._glp.p_sample_loop(
+            model=self._net_auth,
+            shape=(int(n_samples), int(self._dim)),
+            progress=bool(kwargs.get("progress", False)),
+        )
+        return x.to(device=self._device, dtype=self._fdtype)
 
-        return x.to(device=self._device, dtype=self._dtype)
+
+class FlowMatchingOrigin(Base):
+    """Minimal adapter around Meta's flow_matching 2D example components."""
+    _family = "vendor"
+
+    def __init__(
+        self,
+        net: torch.nn.Module,
+        dim: int,
+        n_steps: int = 100,
+        t_min: float = 0.0,
+        t_max: float = 1.0,
+        package_root: Optional[str] = None,
+        base_or_sample: torch.Tensor = None,
+        fdtype: torch.dtype = torch.float32,
+        idtype: torch.dtype = torch.int32,
+        dtype: Optional[torch.dtype] = None,
+        device: torch.device = torch.device("cpu"),
+    ):
+        fdtype = _resolve_fdtype(fdtype, dtype)
+        super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
+                         fdtype=fdtype, idtype=idtype, device=device)
+        self._t_min = float(t_min)
+        self._t_max = float(t_max)
+        if not (0.0 <= self._t_min < self._t_max <= 1.0):
+            raise ValueError(f"Need 0 <= t_min < t_max <= 1, got {self._t_min}, {self._t_max}")
+
+        root = Path(package_root).expanduser().resolve() if package_root is not None else (
+            Path(__file__).resolve().parent / "_vendor" / "flow_matching"
+        )
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from flow_matching.path import AffineProbPath  # noqa: E402
+        from flow_matching.path.scheduler import CondOTScheduler  # noqa: E402
+        from flow_matching.solver import ODESolver  # noqa: E402
+        from flow_matching.utils import ModelWrapper  # noqa: E402
+
+        class _WrappedModel(ModelWrapper):
+            def forward(adapter_self, x: torch.Tensor, t: torch.Tensor, **extras) -> torch.Tensor:
+                if t.ndim == 0:
+                    t = t.expand(x.size(0))
+                if t.ndim == 1:
+                    t = t.unsqueeze(-1)
+                return self._net(x, t)
+
+        self._path = AffineProbPath(scheduler=CondOTScheduler())
+        self._solver = ODESolver(velocity_model=_WrappedModel(self._net))
+
+    def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        x_1 = x.to(device=self._device, dtype=self._fdtype)
+        x_0 = self._sample_source(x_1.size(0)) if z is None else z.to(device=self._device, dtype=self._fdtype)
+        t = self._t_min + (self._t_max - self._t_min) * torch.rand(
+            (x_1.size(0),), device=self._device, dtype=self._fdtype
+        )
+        path_sample = self._path.sample(x_0=x_0, x_1=x_1, t=t)
+
+        v_hat = self._net(path_sample.x_t, path_sample.t.unsqueeze(-1))
+        if v_hat.shape != path_sample.dx_t.shape:
+            raise ValueError(
+                f"Shape mismatch: v_hat={tuple(v_hat.shape)} vs dx_t={tuple(path_sample.dx_t.shape)}"
+            )
+        return torch.nn.functional.mse_loss(v_hat, path_sample.dx_t, reduction="none").mean()
+
+    @torch.no_grad()
+    def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
+        self._net.eval()
+
+        x_init = self._sample_source(int(n_samples))
+        time_grid = torch.tensor([self._t_min, self._t_max], device=self._device, dtype=self._fdtype)
+        step_size = (self._t_max - self._t_min) / float(max(self._n_steps, 1))
+
+        x = self._solver.sample(
+            x_init=x_init,
+            time_grid=time_grid,
+            method="midpoint",
+            step_size=step_size,
+            return_intermediates=False,
+        )
+        return x.to(device=self._device, dtype=self._fdtype)
+
+
+class ScoreSDEOrigin(Base):
+    """Adapter around yang-song/score_sde_pytorch using a VE-SDE parameterization."""
+    _family = "vendor"
+
+    def __init__(
+        self,
+        net: torch.nn.Module,
+        dim: int,
+        n_steps: int = 100,
+        sigma_min: Optional[float] = None,
+        sigma_max: Optional[float] = None,
+        time_eps: float = 1e-3,
+        use_corrector: Optional[bool] = None,
+        snr: Optional[float] = None,
+        corrector_steps: int = 1,
+        package_root: Optional[str] = None,
+        base_or_sample: torch.Tensor = None,
+        fdtype: torch.dtype = torch.float32,
+        idtype: torch.dtype = torch.int32,
+        dtype: Optional[torch.dtype] = None,
+        device: torch.device = torch.device("cpu"),
+    ):
+        fdtype = _resolve_fdtype(fdtype, dtype)
+        super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
+                         fdtype=fdtype, idtype=idtype, device=device)
+
+        if not (0.0 < float(time_eps) < 1.0):
+            raise ValueError(f"time_eps must be in (0,1), got {time_eps}.")
+
+        root = Path(package_root).expanduser().resolve() if package_root is not None else (
+            Path(__file__).resolve().parent / "_vendor" / "score_sde_pytorch"
+        )
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from sde_lib import VESDE  # noqa: E402
+        from losses import get_sde_loss_fn  # noqa: E402
+        from sampling import ReverseDiffusionPredictor, NoneCorrector, get_pc_sampler  # noqa: E402
+        try:
+            from sampling import LangevinCorrector  # noqa: E402
+        except ImportError:
+            LangevinCorrector = None
+
+        low_dim = int(dim) <= 4
+        if sigma_min is None:
+            sigma_min = 1e-3 if low_dim else 1e-2
+        if sigma_max is None:
+            sigma_max = 5.0 if low_dim else 50.0
+
+        self._sigma_min = float(sigma_min)
+        self._sigma_max = float(sigma_max)
+        self._time_eps = float(time_eps)
+        if use_corrector is None:
+            use_corrector = low_dim and LangevinCorrector is not None
+        self._snr = 0.16 if snr is None and use_corrector else 0.0 if snr is None else float(snr)
+        self._corrector_steps = int(corrector_steps)
+        self._sde = VESDE(sigma_min=self._sigma_min, sigma_max=self._sigma_max, N=int(n_steps))
+        self._loss_fn = get_sde_loss_fn(
+            self._sde,
+            train=True,
+            reduce_mean=True,
+            continuous=True,
+            likelihood_weighting=False,
+            eps=self._time_eps,
+        )
+        self._get_pc_sampler = get_pc_sampler
+        self._predictor_cls = ReverseDiffusionPredictor
+        self._corrector_cls = LangevinCorrector if use_corrector and LangevinCorrector is not None else NoneCorrector
+
+        class _ScoreModel(torch.nn.Module):
+            def __init__(self, model: torch.nn.Module, dim: int):
+                super().__init__()
+                self.model = model
+                self.dim = int(dim)
+
+            def forward(self, x: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+                x = x.view(x.size(0), self.dim)
+                if labels.ndim == 1:
+                    labels = labels.unsqueeze(-1)
+                out = self.model(x, labels)
+                return out.view(-1, self.dim, 1, 1)
+
+        self._score_model = _ScoreModel(self._net, self._dim)
+
+    def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        return self._sigma_max * sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        if z is not None:
+            warnings.warn("In 'ScoreSDEOrigin.loss', input 'z' is ignored (Gaussian perturbations are sampled internally).")
+
+        x = x.to(device=self._device, dtype=self._fdtype).view(-1, self._dim, 1, 1)
+        return self._loss_fn(self._score_model, x)
+
+    @torch.no_grad()
+    def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
+        self._net.eval()
+        sampling_fn = self._get_pc_sampler(
+            self._sde,
+            (int(n_samples), int(self._dim), 1, 1),
+            self._predictor_cls,
+            self._corrector_cls,
+            inverse_scaler=lambda x: x,
+            snr=self._snr,
+            n_steps=self._corrector_steps,
+            probability_flow=False,
+            continuous=True,
+            denoise=True,
+            eps=self._time_eps,
+            device=self._device,
+        )
+        x, _ = sampling_fn(self._score_model)
+        return x.view(int(n_samples), int(self._dim)).to(device=self._device, dtype=self._fdtype)
