@@ -12,19 +12,36 @@ Official code release for **FlowBench**.
 FlowBench provides:
 - heavy-tailed samplers and generative model baselines,
 - training/evaluation utilities for flow and diffusion models,
-- benchmark scripts for synthetic and long-tail settings.
+- benchmark scripts for synthetic settings.
 
 ### Install
 
 ```bash
-pip install -e .[dev]
-pip install -r benchmarks/requirements.txt
+pip install -e .
 ```
 
 Or:
 
 ```bash
 make install
+```
+
+Developer install:
+
+```bash
+pip install -e .[dev]
+```
+
+Benchmark install:
+
+```bash
+pip install -e .[dev,bench]
+```
+
+Optional vendor backends:
+
+```bash
+bash scripts/fetch_vendor.sh
 ```
 
 ### Quickstart
@@ -38,13 +55,13 @@ python -c "import genkit, labkit; print(genkit.__name__, labkit.__name__)"
 Run smoke test:
 
 ```bash
-python benchmarks/smoke_test.py
+python benchmarks/_smoke_test.py
 ```
 
 Run tiny example:
 
 ```bash
-python examples/spiral_example.py --smoke
+python examples/02_visu_2d.py --blank
 ```
 
 ### Testing
@@ -64,13 +81,13 @@ make test
 Blank/local pipeline:
 
 ```bash
-bash benchmarks/03_launcher.sh --blank
+make bench-blank
 ```
 
 Full local run:
 
 ```bash
-bash benchmarks/03_launcher.sh --run
+make bench-run
 ```
 
 Slurm:
@@ -83,7 +100,13 @@ sbatch benchmarks/02_launcher.slurm
 
 ```bash
 make install
+make install-dev
+make install-bench
+make install-vendor
 make test
 make smoke
-flake8 --ignore E501 -j1
+make bench-blank
+make bench-run
+make bench-clean
+make lint
 ```

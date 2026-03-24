@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "heavytail-flow-matching"
+name = "flowbench"
 version = "0.1.0"
-description = "Heavy-tail flow matching research codebase."
+description = "Flow-Matching and Diffusion research codebase."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,6 +21,10 @@ dependencies = [
 dev = [
   "flake8>=7.0",
   "pytest>=8.2.1",
+]
+bench = [
+  "torchvision>=0.20",
+  "tqdm>=4.66",
 ]
 
 [tool.setuptools]
