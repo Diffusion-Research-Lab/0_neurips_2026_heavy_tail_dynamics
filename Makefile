@@ -40,7 +40,7 @@ smoke:
 	$(PYTHON) benchmarks/_smoke_test.py
 	$(PYTHON) examples/01_visu_1d_path.py --blank
 	$(PYTHON) examples/02_visu_2d.py --blank
-	$(PYTHON) examples/03_shariatan_et_al.py
+	$(PYTHON) examples/03_shariatan_et_al.py --blank
 
 bench-blank:
 	$(BASH) benchmarks/03_launcher.sh --blank

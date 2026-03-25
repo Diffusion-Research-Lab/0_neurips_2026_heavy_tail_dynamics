@@ -9,22 +9,40 @@ PYTHON_BIN="${PYTHON:-python}"
 
 mkdir -p "${VENDOR_DIR}"
 
+cleanup_git_metadata() {
+    local path="$1"
+
+    find "${path}" -name '.git' -type d -prune -exec rm -rf {} +
+    find "${path}" -name '.gitmodules' -type f -delete
+}
+
+stage_repo() {
+    local name="$1"
+    local repo_url="$2"
+    local stage_root="$3"
+    local stage_dir="${stage_root}/${name}"
+    git clone --depth 1 "${repo_url}" "${stage_dir}"
+    cleanup_git_metadata "${stage_dir}"
+}
+
 clone_or_update() {
     local name="$1"
     local repo_url="$2"
     local target_dir="${VENDOR_DIR}/${name}"
+    local stage_root
+    stage_root="$(mktemp -d)"
 
-    if [[ -d "${target_dir}/.git" ]]; then
-        git -C "${target_dir}" pull --ff-only
-        return 0
-    fi
+    trap 'rm -rf "${stage_root}"' RETURN
+
+    stage_repo "${name}" "${repo_url}" "${stage_root}"
 
     if [[ -e "${target_dir}" ]]; then
-        echo "Refusing to overwrite existing path: ${target_dir}" >&2
-        return 1
+        rm -rf "${target_dir}"
     fi
 
-    git clone "${repo_url}" "${target_dir}"
+    mv "${stage_root}/${name}" "${target_dir}"
+    rm -rf "${stage_root}"
+    trap - RETURN
 }
 
 clone_or_update "DLPM" "https://github.com/hcherkaoui/DLPM"

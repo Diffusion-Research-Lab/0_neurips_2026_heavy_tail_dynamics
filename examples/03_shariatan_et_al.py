@@ -1,5 +1,6 @@
 """Compare DLPM variants on 2D alpha-stable data."""
 
+import argparse
 import time
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -9,22 +10,24 @@ from genkit.datasets import fetch_synthetic_data
 from genkit.nn import MLPModel
 from genkit.plotting import PRETTY_RCPARAMS
 from genkit.training import train
-from genkit.utils import format_duration
 from genkit.visitor import CoreMetricsVisitor
 from _utils import plot_generated_samples
 
 
 plt.rcParams.update(PRETTY_RCPARAMS)
 
-t0_global = time.perf_counter()
+parser = argparse.ArgumentParser()
+parser.add_argument("--blank", action="store_false", help="CI helper.")
+args = parser.parse_args()
+
 figures_dir = Path("_figures")
 figures_dir.mkdir(parents=True, exist_ok=True)
 dim = 2
-alpha_data = 1.8
-n_train_samples = 30_000
-n_steps = 100
+alpha_data = 1.7
+n_train_samples = 30_000 if args.blank else 100
+n_steps = 150
 batch_size = 1024
-n_epochs = 20
+n_epochs = 100
 lr = 5e-3
 n_trials = 2
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -33,8 +36,8 @@ idtype = torch.int32
 
 model_specs = [
     {"name": "DDPM", "cls": DDPMV, "gen_kwargs": {}},
+    {"name": "DLPM(1.5)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.5, "monte_carlo_outer": 1}},
     {"name": "DLPM(1.7)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.7, "monte_carlo_outer": 1}},
-    {"name": "DLPM(1.8)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.8, "monte_carlo_outer": 1}},
     {"name": "DLPM(1.9)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.9, "monte_carlo_outer": 1}},
 ]
 
@@ -58,10 +61,10 @@ for spec in model_specs:
         net = MLPModel(dim=dim, **net_kwargs).to(device=device, dtype=fdtype)
         generator = spec["cls"](net=net, dim=dim, n_steps=n_steps, device=device, fdtype=fdtype, idtype=idtype, **spec["gen_kwargs"])
 
-        t0 = time.perf_counter()
+        t0 = time.time()
         print(f"[{run_idx:02d}/{total_runs:02d}] {spec['name']}: training...", end="")
         generator, diagnostic = train(generative_model=generator, **train_kwargs)
-        print(f" done ({format_duration(time.perf_counter() - t0)}).")
+        print(f" done ({time.time() - t0:.1f} s).")
 
         generators.append(generator)
         diagnostics.append(diagnostic)
@@ -71,4 +74,3 @@ for spec in model_specs:
 plot_generated_samples(results, model_specs, data_kwargs, n_trials, figures_dir / "shariatan_et_al_samples.pdf")
 
 print(f"[INFO] Saved figures in {figures_dir}")
-print(f"[INFO] Total runtime: {format_duration(time.perf_counter() - t0_global)}.")
