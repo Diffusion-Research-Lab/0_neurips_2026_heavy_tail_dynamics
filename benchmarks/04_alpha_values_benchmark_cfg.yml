@@ -1,12 +1,6 @@
-# Shariatan et al DLPM path
-authors_root:
-  mode: home_subpath
-  subpath: ["src", "DLPM"]
-  env_var: DLPM_AUTHORS_ROOT
-
 # data
 dim: 10
-n_samples: 10000
+n_samples: 30_000
 target_data_type: alpha_stable
 l_alpha_data: {type: linspace, start: 0.999, end: 1.999, steps: 4}
 
@@ -15,11 +9,11 @@ n_trials: 5
 seed: 0
 
 # generator
-n_steps: 100
+n_steps: 150
 l_alpha_generator: {type: linspace, start: 0.999, end: 1.999, steps: 4}
 
 # neural net
-batch_size: 512
+batch_size: 1024
 n_epochs: 150
 lr: 0.001
 grad_clip_norm: null
@@ -28,4 +22,5 @@ num_workers: 0
 
 # general
 device: auto
-dtype: float64
+fdtype: float32
+idtype: int32

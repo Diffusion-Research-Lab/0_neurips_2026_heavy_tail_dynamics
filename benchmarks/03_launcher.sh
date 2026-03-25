@@ -30,8 +30,8 @@ while [[ $# -gt 0 ]]; do
 Usage: bash benchmarks/03_launcher.sh [--run|--blank|--clean] [--cpus N] [--venv-dir DIR]
 
 Options:
-  --run       Run full benchmark (experiments 1 and 2)
-  --blank     Run minimal benchmark smoke test (uses *_blank.yml)
+  --run       Run benchmark 04 and benchmark 05 with full configs
+  --blank     Run benchmark 04 and benchmark 05 with *_blank.yml configs
   --clean     Remove benchmark-generated artifacts and run pyclean
   --cpus N    Thread controls for OMP/MKL/OPENBLAS/NUMEXPR
   --venv-dir  Virtual env to activate before running (default: auto)
@@ -62,7 +62,8 @@ clean_outputs() {
          "${SCRIPT_DIR}/_tables" \
          "${SCRIPT_DIR}/_data/cifar-100-batches-py"
 
-  rm -f "${SCRIPT_DIR}"/heavyflow_*.out "${SCRIPT_DIR}"/heavyflow_*.err
+  rm -f "${SCRIPT_DIR}"/heavyflow_*.out "${SCRIPT_DIR}"/heavyflow_*.err \
+        "${SCRIPT_DIR}"/htfm_*.out "${SCRIPT_DIR}"/htfm_*.err
 
   rm -rf "${SCRIPT_DIR}/__pycache__"
 
@@ -116,20 +117,13 @@ if [[ -n "${CPUS}" ]]; then
   export NUMEXPR_NUM_THREADS="${CPUS}"
 fi
 
-CFG_RUN_DIR="${SCRIPT_DIR}/config"
-CFG_BLANK_DIR="${SCRIPT_DIR}/config_blank"
-RUN_CFG_1="${CFG_RUN_DIR}/bench_1_config.yaml"
-RUN_CFG_2="${CFG_RUN_DIR}/bench_2_config.yaml"
-BLANK_CFG_1="${CFG_BLANK_DIR}/bench_1_config_blank.yml"
-BLANK_CFG_2="${CFG_BLANK_DIR}/bench_2_config_blank.yml"
-
 if [[ "${MODE}" == "blank" ]]; then
-  CFG_1="${BLANK_CFG_1}"
-  CFG_2="${BLANK_CFG_2}"
+  CFG_04="${SCRIPT_DIR}/04_alpha_values_benchmark_cfg_blank.yml"
+  CFG_05="${SCRIPT_DIR}/05_loss_H_comparison_benchmark_cfg_blank.yml"
   MODE_TAG="Blank"
 else
-  CFG_1="${RUN_CFG_1}"
-  CFG_2="${RUN_CFG_2}"
+  CFG_04="${SCRIPT_DIR}/04_alpha_values_benchmark_cfg.yml"
+  CFG_05="${SCRIPT_DIR}/05_loss_H_comparison_benchmark_cfg.yml"
   MODE_TAG="Run"
 fi
 
@@ -169,16 +163,28 @@ PY
 fi
 
 echo "-------------------------------------------------------------------------------"
-echo "[${MODE_TAG}] Experiment"
+echo "[${MODE_TAG}] Benchmark 04"
 step_t0="$(date +%s)"
 (
   cd "${SCRIPT_DIR}"
-  python 04_alpha_values_benchmark_exp.py --config "${CFG_2}"
+  python 04_alpha_values_benchmark_exp.py --config "${CFG_04}"
   python 04_alpha_values_benchmark_fig.py
 )
-echo "[✓] ${MODE_TAG} Experiment"
+echo "[✓] ${MODE_TAG} Benchmark 04"
 step_dt=$(( $(date +%s) - step_t0 ))
-echo "[time] ${MODE_TAG} Experiment: $(fmt_duration "${step_dt}") (${step_dt}s)"
+echo "[time] ${MODE_TAG} Benchmark 04: $(fmt_duration "${step_dt}") (${step_dt}s)"
+
+echo "-------------------------------------------------------------------------------"
+echo "[${MODE_TAG}] Benchmark 05"
+step_t0="$(date +%s)"
+(
+  cd "${SCRIPT_DIR}"
+  python 05_loss_H_comparison_benchmark_exp.py --config "${CFG_05}"
+  python 05_loss_H_comparison_benchmark_fig.py
+)
+echo "[✓] ${MODE_TAG} Benchmark 05"
+step_dt=$(( $(date +%s) - step_t0 ))
+echo "[time] ${MODE_TAG} Benchmark 05: $(fmt_duration "${step_dt}") (${step_dt}s)"
 
 END_TIME="$(date)"
 TOTAL_DT=$(( $(date +%s) - TOTAL_T0 ))

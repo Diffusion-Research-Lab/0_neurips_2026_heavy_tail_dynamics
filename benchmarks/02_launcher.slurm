@@ -18,7 +18,7 @@ set -euo pipefail
 #   sbatch benchmarks/02_launcher.slurm
 #
 # This script prepares the Slurm environment and delegates benchmark execution to
-# benchmarks/03_launcher.sh --run.
+# benchmarks/03_launcher.sh --run, which executes benchmark 04 and benchmark 05.
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"

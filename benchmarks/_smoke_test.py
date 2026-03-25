@@ -1,27 +1,24 @@
 """Fast CPU smoke test for package wiring and benchmark config loading."""
 
 from pathlib import Path
-
 import genkit
 import labkit
 import torch
-
 from genkit.datasets import fetch_synthetic_data
 from labkit.config import load_config
 
 
-def main() -> None:
-    """Run a minimal CPU-only benchmark sanity check."""
+if __name__ == "__main__":
     torch.manual_seed(0)
 
-    cfg_path = Path(__file__).resolve().parent / "config_blank" / "bench_1_config_blank.yml"
+    cfg_path = Path(__file__).resolve().parent / "04_alpha_values_benchmark_cfg_blank.yml"
     cfg = load_config(cfg_path).set_up()
 
     x_train, _, x_test = fetch_synthetic_data(
         target_data=cfg.target_data_type,
         n_samples=32,
         dim=cfg.dim,
-        alpha=float(cfg.alpha_data),
+        alpha=float(cfg.l_alpha_data[0]),
         device="cpu",
         dtype=torch.float32,
     )
@@ -37,7 +34,3 @@ def main() -> None:
         f"labkit={labkit.__name__}",
         f"config={cfg_path.name}",
     )
-
-
-if __name__ == "__main__":
-    main()
