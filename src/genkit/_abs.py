@@ -6,6 +6,10 @@ from .utils import cosine_schedule
 
 
 class Base:
+    """Common base class for native generative models.
+
+    It stores shared dtype, device, sampling, and timestep utilities.
+    """
 
     def __init__(
         self,
@@ -17,6 +21,7 @@ class Base:
         idtype: torch.dtype = torch.float32,
         device: torch.device = 'cpu',
     ):
+        """Initialize the shared model state and move the network to the target device."""
         self._dim = int(dim)
         self._base_or_sample = base_or_sample
         self._n_steps = int(n_steps)
@@ -28,15 +33,19 @@ class Base:
         self._net = net.to(device=self._device, dtype=self._fdtype)
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw default source samples for the model family."""
         raise NotImplementedError("'_sample_source_default' not implemented.")
 
     def _loss_fn(self, x_hat: torch.Tensor, x: torch.Tensor, t: int) -> torch.Tensor:
+        """Compute unreduced per-sample losses at timestep `t`."""
         raise NotImplementedError("'_loss_fn' not implemented.")
 
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
+        """Reduce a batch of per-sample losses to a scalar objective."""
         raise NotImplementedError("'_reduce' not implemented.")
 
     def _sample_source(self, n_samples: int) -> torch.Tensor:
+        """Sample source points from a fixed base tensor or the default source law."""
 
         if isinstance(self._base_or_sample, torch.Tensor):
             base = self._base_or_sample.to(device=self._device, dtype=self._fdtype)
@@ -54,6 +63,7 @@ class Base:
         return samples
 
     def _prepare_t(self, t, n_samples: int) -> torch.Tensor:
+        """Validate and normalize user-provided diffusion timesteps."""
         if t is None:
             return torch.randint(1, self._n_steps + 1, (n_samples,), device=self._device, dtype=self._idtype)
 
@@ -107,6 +117,7 @@ class DDPMAbstarct(Base):
         idtype: torch.dtype = torch.int32,
         device: torch.device = 'cpu',
     ):
+        """Build the shared DDPM coefficients and posterior schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
 
@@ -117,9 +128,11 @@ class DDPMAbstarct(Base):
                                                                                           )
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw Gaussian noise used as the DDPM source distribution."""
         return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
     def _latent(self, x_1: torch.Tensor, eps: torch.Tensor = None, t: int = None):
+        """Construct noisy latent states and normalized times for DDPM training."""
         x_1 = x_1.to(device=self._device, dtype=self._fdtype)
         if x_1.size(-1) != self._dim:
             raise ValueError(f"Expected last dim {self._dim}, got {x_1.size(-1)}")
@@ -141,10 +154,12 @@ class DDPMAbstarct(Base):
         return x_1, x_t, eps, t_norm, t_idx, a_bar_t
 
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
+        """Average DDPM losses over the batch."""
         return loss_values.mean()
 
     @torch.no_grad()
     def _sample(self, n_samples: int) -> torch.Tensor:
+        """Run the reverse DDPM chain and collect intermediate states."""
         self._net.eval()
 
         x = self._sample_source(n_samples)
@@ -167,6 +182,7 @@ class DDPMAbstarct(Base):
 
     @torch.no_grad()
     def sample(self, n_samples: int) -> torch.Tensor:
+        """Generate samples by running the reverse DDPM process."""
         x, _ = self._sample(n_samples)
         return x
 
@@ -186,6 +202,7 @@ class FlowAbstract(Base):
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
     ):
+        """Initialize a continuous-time flow model on a bounded time interval."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
 
@@ -195,10 +212,12 @@ class FlowAbstract(Base):
             raise ValueError(f"Need 0 <= t_min < t_max <= 1, got {self._t_min}, {self._t_max}")
 
     def _t(self, n_samples):
+        """Draw random continuous times in the configured training interval."""
         t = torch.rand((n_samples, 1), device=self._device, dtype=self._fdtype)
         return self._t_min + (self._t_max - self._t_min) * t
 
     def _prepare_t(self, t, n_samples: int) -> torch.Tensor:
+        """Validate and normalize user-provided flow times."""
         if t is None:
             return self._t(n_samples)
 
@@ -243,6 +262,7 @@ class FlowAbstract(Base):
         raise TypeError(f"Unsupported type for 't': {type(t).__name__}.")
 
     def _latent(self, x_1: torch.Tensor, x_0: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Prepare paired source/target samples and a time batch for flow losses."""
         x_1 = x_1.to(device=self._device, dtype=self._fdtype)
         if x_1.ndim != 2 or x_1.size(1) != self._dim:
             raise ValueError(f"Expected x1 shape (N,{self._dim}), got {tuple(x_1.shape)}")
@@ -259,6 +279,7 @@ class FlowAbstract(Base):
 
     @torch.no_grad()
     def _sample(self, n_samples: int) -> torch.Tensor:
+        """Integrate the learned velocity field and keep the full trajectory."""
         self._net.eval()
 
         x = self._sample_source(n_samples)
@@ -285,6 +306,7 @@ class FlowAbstract(Base):
 
     @torch.no_grad()
     def sample(self, n_samples: int) -> torch.Tensor:
+        """Generate samples by integrating the learned flow field."""
         x, _ = self._sample(n_samples)
         return x
 
@@ -293,10 +315,13 @@ class GaussianFlowAbstract(FlowAbstract):
     """Abstract Gaussian source flow (Flow Matching)."""
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw Gaussian source samples for Gaussian flow models."""
         return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
     def _loss_fn(self, u_t: torch.Tensor, v_t: torch.Tensor, t: int) -> torch.Tensor:
+        """Compute pointwise mean-squared velocity errors."""
         return torch.nn.functional.mse_loss(u_t, v_t, reduction='none')
 
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
+        """Average Gaussian flow losses over all batch elements."""
         return loss_values.mean()

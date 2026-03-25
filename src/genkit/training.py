@@ -16,6 +16,7 @@ def _validate_train_inputs(
     use_adamw: bool,
     weight_decay: float,
 ) -> None:
+    """Check that the model and tensors are compatible with the training loop."""
     if not hasattr(generative_model, "_net") or not isinstance(generative_model._net, torch.nn.Module):
         raise ValueError("generative_model must have a torch.nn.Module attribute `_net`.")
     if not hasattr(generative_model, "loss") or not callable(generative_model.loss):
@@ -32,6 +33,7 @@ def _prepare_target_source(
     target_data: torch.Tensor,
     source_data: Optional[torch.Tensor],
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.dtype]:
+    """Detach, validate, and move the training tensors to CPU staging memory."""
     target = target_data.detach().contiguous().cpu()
     if target.size(0) == 0:
         raise ValueError("target_data is empty; at least one sample is required for training.")
@@ -54,6 +56,7 @@ def _build_loader(
     num_workers: int,
     pin_memory: bool,
 ) -> DataLoader:
+    """Build the shuffled dataloader used by the training loop."""
     return DataLoader(
         TensorDataset(target),
         batch_size=int(batch_size),
@@ -66,6 +69,7 @@ def _build_loader(
 
 
 def _lr_mult(step: int, lr_schedule: str, warmup_steps: int, total_steps: int) -> float:
+    """Return the scalar learning-rate multiplier for a given global step."""
     if lr_schedule in (None, "none"):
         return 1.0
     if warmup_steps > 0 and step < warmup_steps:
@@ -97,6 +101,7 @@ def _build_train_config(
     device: torch.device,
     num_workers: int,
 ) -> Dict[str, Any]:
+    """Collect the effective training hyperparameters into a serializable dictionary."""
     return {
         "batch_size": int(batch_size),
         "n_epochs": int(n_epochs),
@@ -113,6 +118,7 @@ def _build_train_config(
 
 
 def _compute_grad_stats(net: torch.nn.Module) -> Tuple[Optional[float], Optional[float]]:
+    """Compute simple variance and norm summaries for current parameter gradients."""
     grad_count = 0
     grad_sum = 0.0
     grad_sq_sum = 0.0
@@ -145,6 +151,7 @@ def _save_ckpt(
     scheduler,
     train_config: Dict[str, Any],
 ) -> None:
+    """Persist a training checkpoint and rotate older checkpoint files."""
     if ckpt_path is None:
         return
 
@@ -198,6 +205,7 @@ def train(
     ckpt_keep_last: int = 3,
     visitors: Optional[Sequence[TrainVisitor]] = None,
 ) -> Tuple[Any, Dict[str, Any]]:
+    """Train a native genkit generative model and return diagnostics."""
     logger = logging.getLogger(__name__)
     _validate_train_inputs(
         generative_model=generative_model,

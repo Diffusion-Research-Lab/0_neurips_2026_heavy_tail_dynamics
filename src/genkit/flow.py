@@ -12,6 +12,7 @@ class GaussianFlowLinear(GaussianFlowAbstract):
     _family = "flow"
 
     def _precompute_loss(self, x, z, t=None):
+        """Build linear-path flow targets and corresponding network predictions."""
         x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
         x_t = (1.0 - t) * x_0 + t * x_1
@@ -29,10 +30,12 @@ class GaussianFlowLinear(GaussianFlowAbstract):
         return v_t_hat, v_t, t
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Return unreduced linear flow-matching losses."""
         v_t_hat, v_t, t = self._precompute_loss(x=x, z=z, t=t)
         return self._loss_fn(v_t_hat, v_t, t)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced linear flow-matching objective."""
         return self._reduce(self._loss(x=x, z=z, t=t))
 
 
@@ -53,6 +56,7 @@ class GaussianFlowOT(GaussianFlowAbstract):
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
     ):
+        """Initialize the OT-style Gaussian flow with a minimum variance floor."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
                          base_or_sample=base_or_sample, fdtype=fdtype, idtype=idtype,
                          device=device)
@@ -63,6 +67,7 @@ class GaussianFlowOT(GaussianFlowAbstract):
         self._sigma_min = float(sigma_min)
 
     def _precompute_loss(self, x, z, t=None):
+        """Build OT-path flow targets and corresponding network predictions."""
         x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
         x_t = (1.0 - (1.0 - self._sigma_min) * t) * x_0 + t * x_1
@@ -80,10 +85,12 @@ class GaussianFlowOT(GaussianFlowAbstract):
         return v_t_hat, v_t, t
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Return unreduced OT flow-matching losses."""
         v_t_hat, v_t, t = self._precompute_loss(x=x, z=z, t=t)
         return self._loss_fn(v_t_hat, v_t, t)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced OT flow-matching objective."""
         return self._reduce(self._loss(x=x, z=z, t=t))
 
 
@@ -104,6 +111,7 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
     ):
+        """Initialize the VP-inspired Gaussian flow and its cosine schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
                          base_or_sample=base_or_sample, fdtype=fdtype, idtype=idtype,
                          device=device)
@@ -111,6 +119,7 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         self._s0 = float(cosine_s)
 
     def _vp_coefs(self, t: torch.Tensor):
+        """Evaluate continuous VP coefficients at the requested flow times."""
         s = (1.0 - t).clamp(0.0, 1.0)
 
         f = ((s + self._s0) / (1.0 + self._s0)) * (math.pi / 2.0)
@@ -128,6 +137,7 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         return beta_s, abar, a, sigma
 
     def _precompute_loss(self, x, z, t=None):
+        """Build VP-path velocity targets and network predictions."""
         x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
         beta_s, abar, a, sigma = self._vp_coefs(t)
@@ -146,10 +156,12 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         return v_t_hat, v_t, t
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Return unreduced VP flow-matching losses."""
         v_t_hat, v_t, t = self._precompute_loss(x=x, z=z, t=t)
         return self._loss_fn(v_t_hat, v_t, t)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced VP flow-matching objective."""
         return self._reduce(self._loss(x=x, z=z, t=t))
 
 
@@ -165,13 +177,14 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
         t_min: float = 0.01,
         t_max: float = 0.99,
         alpha: float = 1.5,
-        reduce_type: str = "mean",
-        clamp_A: Tuple[float, float] = (0.0, 1e6),
+        reduce_type: str = "median",
+        clamp_A: Tuple[float, float] = None,
         base_or_sample: torch.Tensor = None,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
     ):
+        """Initialize the alpha-stable linear flow model and its source distribution."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
 
@@ -195,10 +208,12 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
             self._A_min, self._A_max = float(self._clamp_A[0]), float(self._clamp_A[1])
 
     def _safe_A(self, A):
+        """Clamp positive stable coefficients to a safe numeric range."""
         A = A.clamp_min(self._eps)  # by default
         return A.clamp(min=self._A_min, max=self._A_max) if self._clamp_A is not None else A
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Sample alpha-stable source noise via Gaussian scale mixtures."""
         A = sample_scaled_scalar_alpha_stable(n_samples=n_samples, alpha=self._a,
                                               device=self._device, dtype=self._fdtype)
         A = self._safe_A(A)
@@ -206,10 +221,12 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
         return A.sqrt() * G
 
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:  # XXX to be check
+        """Reduce alpha-stable flow losses with the configured aggregation rule."""
         if self._reduce_type == "mean":
             return loss_values.sqrt().mean()
         return loss_values.sqrt().median()
 
     def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
+        """Compute per-sample alpha-stable flow reconstruction losses."""
         loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
         return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()

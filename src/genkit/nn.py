@@ -23,7 +23,10 @@ def timestep_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10_0
 
 
 class _ConditionedMLPBlock(nn.Module):
+    """Residual MLP block conditioned on a time embedding."""
+
     def __init__(self, width: int, time_dim: int, dropout: float, use_norm: bool):
+        """Build the linear, normalization, and time-conditioning layers."""
         super().__init__()
         self.norm1 = nn.LayerNorm(width) if use_norm else nn.Identity()
         self.norm2 = nn.LayerNorm(width) if use_norm else nn.Identity()
@@ -34,6 +37,7 @@ class _ConditionedMLPBlock(nn.Module):
         self.act = nn.SiLU()
 
     def forward(self, x: torch.Tensor, temb: torch.Tensor) -> torch.Tensor:
+        """Apply one residual update conditioned on the time embedding."""
         h = self.fc1(self.drop(x))
         h = self.act(self.norm1(h))
         h = h + self.tproj(self.drop(temb))
@@ -54,6 +58,7 @@ class MLPModel(nn.Module):
         dropout: float = 0.0,
         use_norm: bool = True,
     ):
+        """Build a standalone time-conditioned MLP for vector-valued data."""
         super().__init__()
         self.dim = int(dim)
         self.time_dim = int(time_dim)
@@ -72,6 +77,7 @@ class MLPModel(nn.Module):
         self.act = nn.SiLU()
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Predict outputs for flattened vector inputs conditioned on time."""
         x_shape = x.shape
         x_flat = x.reshape(x.shape[0], -1)
         if x_flat.shape[1] != self.dim:
@@ -89,6 +95,7 @@ class MLPModel(nn.Module):
 
 
 def _conv_nd(dims: int, *args, **kwargs):
+    """Construct an N-dimensional convolution layer."""
     if dims == 1:
         return nn.Conv1d(*args, **kwargs)
     if dims == 2:
@@ -99,6 +106,7 @@ def _conv_nd(dims: int, *args, **kwargs):
 
 
 def _avg_pool_nd(dims: int, *args, **kwargs):
+    """Construct an N-dimensional average-pooling layer."""
     if dims == 1:
         return nn.AvgPool1d(*args, **kwargs)
     if dims == 2:
@@ -109,22 +117,30 @@ def _avg_pool_nd(dims: int, *args, **kwargs):
 
 
 def _norm(channels: int) -> nn.Module:
+    """Create the default normalization layer used in the U-Net blocks."""
     return nn.GroupNorm(min(32, channels), channels)
 
 
 def _zero_module(module: nn.Module) -> nn.Module:
+    """Zero-initialize all parameters of a module and return it."""
     for param in module.parameters():
         param.detach().zero_()
     return module
 
 
 class _TimestepBlock(nn.Module):
+    """Interface for modules that consume a timestep embedding."""
+
     def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        """Apply the block to activations `x` conditioned on embedding `emb`."""
         raise NotImplementedError
 
 
 class _TimestepEmbedSequential(nn.Sequential, _TimestepBlock):
+    """Sequential container that forwards timestep embeddings to compatible layers."""
+
     def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        """Run the sequence while passing embeddings to timestep-aware submodules."""
         for layer in self:
             if isinstance(layer, _TimestepBlock):
                 x = layer(x, emb)
@@ -134,7 +150,10 @@ class _TimestepEmbedSequential(nn.Sequential, _TimestepBlock):
 
 
 class _Upsample(nn.Module):
+    """Nearest-neighbor upsampling block with an optional convolution."""
+
     def __init__(self, channels: int, use_conv: bool, dims: int = 2):
+        """Configure the upsampling path for the requested dimensionality."""
         super().__init__()
         self.channels = channels
         self.use_conv = use_conv
@@ -142,6 +161,7 @@ class _Upsample(nn.Module):
         self.conv = _conv_nd(dims, channels, channels, 3, padding=1) if use_conv else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Upsample activations by a factor of two along spatial dimensions."""
         if self.dims == 3:
             x = F.interpolate(x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest")
         else:
@@ -152,7 +172,10 @@ class _Upsample(nn.Module):
 
 
 class _Downsample(nn.Module):
+    """Downsampling block with either convolutional or average-pooling reduction."""
+
     def __init__(self, channels: int, use_conv: bool, dims: int = 2):
+        """Configure the downsampling operator for the requested dimensionality."""
         super().__init__()
         stride = 2 if dims != 3 else (1, 2, 2)
         if use_conv:
@@ -161,10 +184,13 @@ class _Downsample(nn.Module):
             self.op = _avg_pool_nd(dims, kernel_size=stride, stride=stride)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce spatial resolution by a factor of two."""
         return self.op(x)
 
 
 class _ResBlock(_TimestepBlock):
+    """Residual convolutional block conditioned on a timestep embedding."""
+
     def __init__(
         self,
         channels: int,
@@ -175,6 +201,7 @@ class _ResBlock(_TimestepBlock):
         use_scale_shift_norm: bool = False,
         dims: int = 2,
     ):
+        """Build the residual block and optional scale-shift conditioning path."""
         super().__init__()
         self.out_channels = out_channels or channels
         self.use_scale_shift_norm = use_scale_shift_norm
@@ -203,6 +230,7 @@ class _ResBlock(_TimestepBlock):
             self.skip = _conv_nd(dims, channels, self.out_channels, 1)
 
     def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        """Apply the residual block to activations conditioned on the time embedding."""
         h = self.in_layers(x)
         emb_out = self.emb_layers(emb).to(dtype=h.dtype)
         while emb_out.ndim < h.ndim:
@@ -219,7 +247,10 @@ class _ResBlock(_TimestepBlock):
 
 
 class _AttentionBlock(nn.Module):
+    """Self-attention block over flattened spatial positions."""
+
     def __init__(self, channels: int, num_heads: int = 1):
+        """Initialize multi-head attention over channel activations."""
         super().__init__()
         self.num_heads = num_heads
         self.norm = _norm(channels)
@@ -227,6 +258,7 @@ class _AttentionBlock(nn.Module):
         self.proj_out = _zero_module(_conv_nd(1, channels, channels, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply attention and add the result back to the input activations."""
         b, c, *spatial = x.shape
         h = x.reshape(b, c, -1)
         qkv = self.qkv(self.norm(h)).reshape(b * self.num_heads, -1, h.shape[-1])
@@ -259,6 +291,7 @@ class UNetModel(nn.Module):
         num_heads_upsample: int = -1,
         use_scale_shift_norm: bool = False,
     ):
+        """Build a compact U-Net with residual and attention blocks."""
         super().__init__()
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
@@ -337,6 +370,7 @@ class UNetModel(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, timesteps: torch.Tensor, y: torch.Tensor | None = None) -> torch.Tensor:
+        """Predict outputs for image-like inputs conditioned on timesteps and labels."""
         if timesteps.ndim > 1:
             timesteps = timesteps.reshape(timesteps.shape[0], -1)[:, 0]
 

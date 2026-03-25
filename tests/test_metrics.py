@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from genkit.metrics import mssle_90, mssle_95, sliced_wasserstein2, wasserstein_distance
+from genkit.metrics import gen_separability_roc_auc, mmd_rbf, mssle_90, mssle_95, sliced_wasserstein2, wasserstein_distance
 from .utils import _devices
 
 
@@ -84,3 +84,55 @@ def test_sliced_wasserstein2_translation_formula(device, dtype):
     assert isinstance(sw2, float)
     assert sw2 >= 0.0
     assert sw2 == pytest.approx(expected, rel=0.15, abs=1e-2)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_mmd_rbf_near_zero_for_identical_samples(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(512, 2, device=device, dtype=dtype)
+
+    score = mmd_rbf(x, x)
+
+    assert isinstance(score, float)
+    assert abs(score) < 5e-3
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_mmd_rbf_detects_shifted_samples(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(512, 2, device=device, dtype=dtype)
+    y = x + 2.0
+
+    score = mmd_rbf(x, y)
+
+    assert isinstance(score, float)
+    assert score > 0.0
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_gen_separability_roc_auc_is_chance_for_identical_samples(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(512, 2, device=device, dtype=dtype)
+
+    score = gen_separability_roc_auc(x, x, train_size=0.5, seed=0)
+
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+    assert score == pytest.approx(0.5, abs=0.1)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_gen_separability_roc_auc_is_high_for_poor_coverage(device, dtype):
+    torch.manual_seed(0)
+    x_ref = torch.randn(512, 2, device=device, dtype=dtype)
+    x_gen = x_ref + 4.0
+
+    score = gen_separability_roc_auc(x_ref, x_gen, train_size=0.5, seed=0)
+
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+    assert score > 0.9

@@ -5,12 +5,14 @@ import torch
 
 
 def _mean_or_nan(values: List[float]) -> float:
+    """Return the mean of a list or NaN when the list is empty."""
     if not values:
         return float("nan")
     return float(sum(values) / float(len(values)))
 
 
 def _summary_from_values(values: List[float]) -> Dict[str, float]:
+    """Summarize a list of scalars with standard descriptive statistics."""
     if len(values) == 0:
         return {
             "mean": float("nan"),
@@ -42,9 +44,11 @@ class TrainVisitor:
     name: str = "base"
 
     def on_train_start(self, target, source, config: Dict[str, Any]) -> None:
+        """Hook called once before the training loop starts."""
         pass
 
     def on_epoch_start(self) -> None:
+        """Hook called at the beginning of each epoch."""
         pass
 
     def on_batch_end(
@@ -53,25 +57,33 @@ class TrainVisitor:
         grad_var: Optional[float],
         grad_norm: Optional[float],
     ) -> None:
+        """Hook called after each optimization step."""
         pass
 
     def on_epoch_end(self) -> None:
+        """Hook called after the last batch of an epoch."""
         pass
 
     def on_train_end(self) -> None:
+        """Hook called once after the training loop finishes."""
         pass
 
     def format_epoch_log(self) -> str:
+        """Return a short human-readable summary for the current epoch."""
         return ""
 
     def get_records(self) -> Dict[str, Any]:
+        """Return structured visitor outputs collected during training."""
         return {}
 
 
 class CoreMetricsVisitor(TrainVisitor):
+    """Collect core loss and gradient statistics during training."""
+
     name = "core"
 
     def __init__(self) -> None:
+        """Initialize the public records and per-epoch accumulators."""
         # Public records
         self.training_loss: List[float] = []
         self.training_loss_std: List[float] = []
@@ -84,6 +96,7 @@ class CoreMetricsVisitor(TrainVisitor):
         self._grad_norms: List[float] = []
 
     def on_epoch_start(self) -> None:
+        """Reset per-epoch accumulators before processing a new epoch."""
         self._losses = []
         self._grad_vars = []
         self._grad_norms = []
@@ -94,6 +107,7 @@ class CoreMetricsVisitor(TrainVisitor):
         grad_var: Optional[float],
         grad_norm: Optional[float],
     ) -> None:
+        """Accumulate batch-level loss and gradient statistics."""
         self._losses.append(float(loss))
         if grad_var is not None:
             self._grad_vars.append(float(grad_var))
@@ -101,6 +115,7 @@ class CoreMetricsVisitor(TrainVisitor):
             self._grad_norms.append(float(grad_norm))
 
     def on_epoch_end(self) -> None:
+        """Aggregate the current epoch statistics into the public records."""
         loss_stats = _summary_from_values(self._losses)
         self.training_loss.append(loss_stats["mean"])
         self.training_loss_std.append(loss_stats["std"])
@@ -108,6 +123,7 @@ class CoreMetricsVisitor(TrainVisitor):
         self.grad_norm_epoch.append(_mean_or_nan(self._grad_norms))
 
     def format_epoch_log(self) -> str:
+        """Format the latest epoch statistics for console logging."""
         if not self.training_loss:
             return ""
         return (
@@ -117,6 +133,7 @@ class CoreMetricsVisitor(TrainVisitor):
         )
 
     def get_records(self) -> Dict[str, Any]:
+        """Return all collected loss and gradient histories."""
         return {
             "training_loss": self.training_loss,
             "training_loss_std": self.training_loss_std,

@@ -10,6 +10,7 @@ from ._sampling import sample_gaussian
 
 
 def _resolve_fdtype(fdtype: torch.dtype, dtype: Optional[torch.dtype]) -> torch.dtype:
+    """Resolve the preferred floating dtype while preserving a legacy alias."""
     if dtype is None:
         return fdtype
     if fdtype != torch.float32 and fdtype != dtype:
@@ -19,11 +20,15 @@ def _resolve_fdtype(fdtype: torch.dtype, dtype: Optional[torch.dtype]) -> torch.
 
 
 class _NetAdapter(torch.nn.Module):
+    """Wrap a native genkit network behind the vendor calling convention."""
+
     def __init__(self, net: torch.nn.Module):
+        """Store the wrapped network used by a third-party backend."""
         super().__init__()
         self.net = net
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, **kwargs) -> torch.Tensor:
+        """Move inputs to the wrapped net device/dtype and delegate the forward pass."""
         if t.ndim == 1:
             t = t.unsqueeze(-1)
 
@@ -68,6 +73,7 @@ class DLPMEpsOrigin(Base):
         dtype: Optional[torch.dtype] = None,
         device: torch.device = torch.device("cpu"),
     ):
+        """Configure the vendored DLPM adapter and its training/sampling options."""
         fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
@@ -98,9 +104,11 @@ class DLPMEpsOrigin(Base):
         )
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw Gaussian base samples for the DLPM adapter."""
         return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        """Delegate loss computation to the vendored DLPM implementation."""
         if z is not None:
             warnings.warn("In 'DLPMEpsOrigin.loss', input 'z' is ignored (z = A G are sampled internally).")
 
@@ -120,6 +128,7 @@ class DLPMEpsOrigin(Base):
 
     @torch.no_grad()
     def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
+        """Generate samples with the vendored DLPM reverse sampler."""
         self._net.eval()
 
         if self._clamp_a is not None:
@@ -154,6 +163,7 @@ class FlowMatchingOrigin(Base):
         dtype: Optional[torch.dtype] = None,
         device: torch.device = torch.device("cpu"),
     ):
+        """Configure the flow-matching adapter around the vendored solver stack."""
         fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
@@ -173,7 +183,10 @@ class FlowMatchingOrigin(Base):
         from flow_matching.utils import ModelWrapper  # noqa: E402
 
         class _WrappedModel(ModelWrapper):
+            """Adapt a genkit network to the vendored flow-matching solver API."""
+
             def forward(adapter_self, x: torch.Tensor, t: torch.Tensor, **extras) -> torch.Tensor:
+                """Forward solver states through the wrapped genkit network."""
                 if t.ndim == 0:
                     t = t.expand(x.size(0))
                 if t.ndim == 1:
@@ -184,9 +197,11 @@ class FlowMatchingOrigin(Base):
         self._solver = ODESolver(velocity_model=_WrappedModel(self._net))
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw Gaussian source samples for the flow-matching adapter."""
         return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        """Compute the vendored flow-matching loss on a sampled probability path."""
         x_1 = x.to(device=self._device, dtype=self._fdtype)
         x_0 = self._sample_source(x_1.size(0)) if z is None else z.to(device=self._device, dtype=self._fdtype)
         t = self._t_min + (self._t_max - self._t_min) * torch.rand(
@@ -203,6 +218,7 @@ class FlowMatchingOrigin(Base):
 
     @torch.no_grad()
     def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
+        """Generate samples with the vendored ODE solver."""
         self._net.eval()
 
         x_init = self._sample_source(int(n_samples))
@@ -241,6 +257,7 @@ class ScoreSDEOrigin(Base):
         dtype: Optional[torch.dtype] = None,
         device: torch.device = torch.device("cpu"),
     ):
+        """Configure the vendored VE-SDE adapter for low- or high-dimensional data."""
         fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
@@ -288,12 +305,16 @@ class ScoreSDEOrigin(Base):
         self._corrector_cls = LangevinCorrector if use_corrector and LangevinCorrector is not None else NoneCorrector
 
         class _ScoreModel(torch.nn.Module):
+            """Reshape vector networks to the spatial score-model interface."""
+
             def __init__(self, model: torch.nn.Module, dim: int):
+                """Store the wrapped network and its flattened dimensionality."""
                 super().__init__()
                 self.model = model
                 self.dim = int(dim)
 
             def forward(self, x: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+                """Map score-model inputs to the wrapped vector network and back."""
                 x = x.view(x.size(0), self.dim)
                 if labels.ndim == 1:
                     labels = labels.unsqueeze(-1)
@@ -303,9 +324,11 @@ class ScoreSDEOrigin(Base):
         self._score_model = _ScoreModel(self._net, self._dim)
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw Gaussian prior samples at the VE-SDE terminal scale."""
         return self._sigma_max * sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        """Delegate training loss computation to the vendored score-SDE objective."""
         if z is not None:
             warnings.warn("In 'ScoreSDEOrigin.loss', input 'z' is ignored (Gaussian perturbations are sampled internally).")
 
@@ -314,6 +337,7 @@ class ScoreSDEOrigin(Base):
 
     @torch.no_grad()
     def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
+        """Generate samples with the vendored predictor-corrector sampler."""
         self._net.eval()
         sampling_fn = self._get_pc_sampler(
             self._sde,

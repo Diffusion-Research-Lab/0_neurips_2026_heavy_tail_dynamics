@@ -108,16 +108,19 @@ def dict_to_double_entry_latex_table(
                 best_name_in_row[m] = approaches[best]
 
     def _fmt_ceil(x: float, t: float = 1e-1) -> float:
+        """Format a p-value into a compact scientific-notation superscript string."""
         if (x < 0) or (x > t):
             return "-"
         return f"{np.sign(x) * 10:.0f}" + r"^{" + f"{np.ceil(np.log10(np.abs(x))):.0f}" + r"}"
 
     def _fmt_value(v: float) -> str:
+        """Format a scalar table entry with either a callable or a format string."""
         if callable(fmt):
             return fmt(v)
         return fmt.format(v)
 
     def _is_best(v: Any, m: Any) -> bool:
+        """Check whether a value should be highlighted as the best entry in its row."""
         if not bold_best_in_row or m not in best_in_row:
             return False
         fv = float(v)

@@ -110,6 +110,7 @@ def plot_histogram(
     suffix: str = "experiment",
     clip_quantiles: Tuple[float, float] = (0.01, 0.99),
 ) -> str:
+    """Project samples to 1D and save an overlaid histogram comparison."""
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = plot_dir / f"{suffix}_hist.pdf"

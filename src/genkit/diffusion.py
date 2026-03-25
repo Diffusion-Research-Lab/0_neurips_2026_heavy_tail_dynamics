@@ -13,9 +13,11 @@ class DDPMV(DDPMAbstarct):
     _family = "diffusion"
 
     def _loss_fn(self, v_hat: torch.Tensor, v: torch.Tensor, t: torch.Tensor):
+        """Return unreduced v-prediction losses for a DDPM batch."""
         return torch.nn.functional.mse_loss(v_hat, v, reduction="none")
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Build the DDPM v-target and evaluate the network on noisy inputs."""
         x_1, x_t, eps, t_norm, t_idx, a_bar_t = self._latent(x_1=x, eps=z, t=t)
 
         v = torch.sqrt(a_bar_t) * eps - torch.sqrt(1.0 - a_bar_t) * x_1
@@ -29,9 +31,11 @@ class DDPMV(DDPMAbstarct):
         return self._loss_fn(v_hat, v, t_idx)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced DDPM v-prediction training loss."""
         return self._reduce(self._loss(x=x, z=z, t=t))
 
     def _get_eps_hat(self, x: torch.Tensor, t_norm: torch.Tensor, t_idx: int) -> torch.Tensor:
+        """Recover epsilon predictions from the learned v-parameterization."""
         return torch.sqrt(1.0 - self._alpha_bar[t_idx]) * x + torch.sqrt(self._alpha_bar[t_idx]) * self._net(x, t_norm)
 
 
@@ -40,11 +44,13 @@ class DDPMX0(DDPMAbstarct):
     _family = "diffusion"
 
     def _loss_fn(self, x0_hat: torch.Tensor, x0: torch.Tensor, t: int) -> torch.Tensor:
+        """Return weighted x0-prediction losses for a DDPM batch."""
         alpha_bar = self._alpha_bar.index_select(0, t)
         w = (alpha_bar / (1.0 - alpha_bar)).view(-1, 1).clamp(min=1e-3, max=1e3)
         return w * (x0_hat - x0).square()
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Evaluate x0-prediction losses on noisy DDPM latents."""
         x_1, x_t, _, t_norm, t, _ = self._latent(x_1=x, eps=z, t=t)
 
         x_1_hat = self._net(x_t, t_norm)
@@ -55,9 +61,11 @@ class DDPMX0(DDPMAbstarct):
         return self._loss_fn(x_1_hat, x_1, t)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced DDPM x0-prediction training loss."""
         return self._reduce(self._loss(x=x, z=z, t=t))
 
     def _get_eps_hat(self, x, t_norm, t_idx):
+        """Convert x0 predictions back to epsilon predictions for sampling."""
         return (x - torch.sqrt(self._alpha_bar[t_idx]) * self._net(x, t_norm)) / torch.sqrt(1.0 - self._alpha_bar[t_idx])
 
 
@@ -81,6 +89,7 @@ class DLPMEps(Base):
         idtype: torch.dtype = torch.int32,
         device: torch.device = 'cpu',
     ):
+        """Initialize the native DLPM epsilon model and its stable-noise schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
 
@@ -115,10 +124,12 @@ class DLPMEps(Base):
             self._eps_min, self._eps_max = float(self._clamp_eps[0]), float(self._clamp_eps[1])
 
     def _safe_A(self, A):
+        """Clamp positive stable mixing coefficients to a safe numeric range."""
         A = A.clamp_min(self._eps)  # by default
         return A.clamp(min=self._A_min, max=self._A_max) if self._clamp_A is not None else A
 
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:  # XXX to be check
+        """Aggregate Monte Carlo DLPM losses across stable and Gaussian draws."""
         loss_values = loss_values.reshape(self._n_trial_A, self._n_trial_G, self._n)
         if self._reduce_type == "median":
             loss_values = loss_values.mean(dim=1)
@@ -126,10 +137,12 @@ class DLPMEps(Base):
         return loss_values.mean()
 
     def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
+        """Compute per-sample epsilon reconstruction errors."""
         loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
         return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()
 
     def _Sigma_1_t(self, A: torch.Tensor) -> torch.Tensor:
+        """Build cumulative path variances from a sampled stable path."""
         S = torch.zeros((self._n_steps + 1, A.shape[1]), device=A.device, dtype=A.dtype)
         for t in range(1, self._n_steps + 1):
             S[t] = self._sigma_t[t - 1].square() * A[t - 1]
@@ -137,6 +150,7 @@ class DLPMEps(Base):
         return S
 
     def _g_Sigma_hat_Gamma(self, Sigma_1_t: torch.Tensor, t: int):
+        """Compute reverse-step DLPM coefficients at timestep `t`."""
         Sigma_ratio = Sigma_1_t[t - 1] / Sigma_1_t[t].clamp_min(self._eps)
         Gamma_t = 1.0 - Sigma_ratio * self._gamma_t[t - 1].square()
         Gamma_t = Gamma_t.clamp(0.0, 1.0)
@@ -144,17 +158,21 @@ class DLPMEps(Base):
         return Sigma_hat, self._gamma_t[t - 1], Gamma_t
 
     def _expand(self, x):  # since we stack the Monte Carlo drawing in the different dimension
+        """Broadcast a batch across the configured Monte Carlo axes."""
         return x.expand(self._n_trial_A, self._n_trial_G, self._n)
 
     def _draw_A(self, n):
+        """Sample positive stable mixing coefficients for DLPM noise."""
         A = sample_scaled_scalar_alpha_stable(n_samples=n, alpha=self._a, device=self._device,
                                               dtype=self._fdtype)
         return self._safe_A(A)
 
     def _draw_G(self, *shape):
+        """Sample Gaussian noise tensors with the model dtype and device."""
         return torch.randn(*shape, device=self._device, dtype=self._fdtype)
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Evaluate unreduced DLPM epsilon losses with internal Monte Carlo sampling."""
         x_1 = x.to(device=self._device, dtype=self._fdtype)
         if x_1.ndim != 2 or x_1.size(1) != self._dim:
             raise ValueError(f"Expected x shape (N,{self._dim}), got {tuple(x.shape)}")
@@ -185,10 +203,12 @@ class DLPMEps(Base):
         return self._loss_fn(eps_hat, eps, t)
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced DLPM training loss."""
         return self._reduce(self._loss(x=x, z=z, t=t))
 
     @torch.no_grad()
     def _sample(self, n_samples: int) -> torch.Tensor:
+        """Run the native DLPM reverse chain and keep intermediate states."""
         self._net.eval()
 
         # Sample latent stable path A_{1:T} used to build Sigma_{1->t}(A_{1:t})
@@ -220,5 +240,6 @@ class DLPMEps(Base):
 
     @torch.no_grad()
     def sample(self, n_samples: int) -> torch.Tensor:
+        """Generate samples with the native DLPM reverse sampler."""
         x, _ = self._sample(n_samples)
         return x
