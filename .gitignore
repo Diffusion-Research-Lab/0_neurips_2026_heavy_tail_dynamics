@@ -21,6 +21,7 @@ benchmarks/heavyflow_*.err
 *.pkl
 
 # OS junk
+.codex
 .DS_Store
 Thumbs.db
 

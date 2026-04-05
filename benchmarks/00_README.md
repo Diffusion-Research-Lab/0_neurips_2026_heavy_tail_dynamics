@@ -39,10 +39,6 @@ Locally with bash:
 make bench-run
 ```
 
-This runs:
-- `04_alpha_values_benchmark_exp.py` then `04_alpha_values_benchmark_fig.py`
-- `05_loss_H_comparison_benchmark_exp.py` then `05_loss_H_comparison_benchmark_fig.py`
-
 Or smoke-only pipeline with the `*_blank.yml` configs:
 
 ```bash
@@ -54,10 +50,6 @@ Or with Slurm:
 ```bash
 sbatch 02_launcher.slurm
 ```
-
-Artifacts are written under:
-- `benchmarks/_results/`
-- `benchmarks/_figures/`
 
 ### 3) Clean artifacts
 

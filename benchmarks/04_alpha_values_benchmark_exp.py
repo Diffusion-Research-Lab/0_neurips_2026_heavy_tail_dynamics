@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 from genkit.datasets import fetch_synthetic_data
 from genkit.flow import AlphaStableFlowLinear
-from genkit.metrics import mssle_95
+from genkit.metrics import metric_on_quantile, mssle
 from genkit.nn import MLPModel
 from genkit.training import train
 from labkit.config import load_config
@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
                 x_test_gen = generator.sample(n_samples=cfg.n_samples)
                 metrics = {
-                    "MSSLE_95": float(10.0 * mssle_95(x_test.clone(), x_test_gen)),
+                    "MSSLE_95": float(metric_on_quantile(mssle, x_test.clone(), x_test_gen, xi=0.95)),
                 }
                 for metric_name, metric_value in metrics.items():
                     results[(alpha_data, alpha_model)][metric_name].append(metric_value)

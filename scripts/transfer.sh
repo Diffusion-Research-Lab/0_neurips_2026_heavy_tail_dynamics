@@ -10,14 +10,14 @@ set -euo pipefail
 #===============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="${SCRIPT_DIR}"
-WORK_DIR="/tmp/neurips_2026_heaytail_flow_matching"
-SUPP_DIR="/tmp/neurips_2026_heaytail_flow_matching"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORK_DIR="/tmp/flowbench_send"
+SUPP_DIR="/tmp/anonymous_code_supp"
 REMOTE_ROOT="jz:/lustre/fswork/projects/rech/jcx/uor49lv/src"
-REMOTE_PROJECT="${REMOTE_ROOT}/neurips_2026_heaytail_flow_matching"
+REMOTE_PROJECT="${REMOTE_ROOT}/flowbench"
 REMOTE_FIGURES_DIR="${REMOTE_PROJECT}/benchmarks/_figures/"
 REMOTE_TABLES_DIR="${REMOTE_PROJECT}/benchmarks/_tables/"
-LOCAL_BENCH_DIR="${SRC_DIR}/benchmarks"
+LOCAL_BENCH_DIR="${PROJECT_ROOT}/benchmarks"
 ZIP_NAME="code.zip"
 MODE="${1:-}"
 SCRIPT_NAME="$(basename "$0")"
@@ -34,14 +34,14 @@ else
     BLUE=""; CYAN=""; GREEN=""; YELLOW=""; RED=""; BOLD=""; RESET=""
 fi
 
-if [[ ! -d "${SRC_DIR}" ]]; then
-    echo -e "${RED}Source directory does not exist:${RESET} ${SRC_DIR}" >&2
+if [[ ! -d "${PROJECT_ROOT}" ]]; then
+    echo -e "${RED}Project root does not exist:${RESET} ${PROJECT_ROOT}" >&2
     exit 1
 fi
 
-if [[ ! -d "${SRC_DIR}/src/genkit" || ! -d "${SRC_DIR}/src/labkit" ]]; then
+if [[ ! -d "${PROJECT_ROOT}/src/genkit" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
     echo -e "${RED}Expected src layout not found.${RESET}" >&2
-    echo "Missing: ${SRC_DIR}/src/genkit and/or ${SRC_DIR}/src/labkit" >&2
+    echo "Missing: ${PROJECT_ROOT}/src/genkit and/or ${PROJECT_ROOT}/src/labkit" >&2
     exit 1
 fi
 
@@ -62,12 +62,8 @@ ensure_safe_dir() {
 repair_local_perms() {
     # Ensure benchmark outputs/config dirs are traversable for staging.
     # Make local tree readable/traversable for staging.
-    chmod -R u+rwX "${SRC_DIR}/benchmarks/config" 2>/dev/null || true
-    chmod -R u+rwX "${SRC_DIR}/benchmarks/config_blank" 2>/dev/null || true
-    chmod -R u+rwX "${SRC_DIR}/benchmarks/_data" 2>/dev/null || true
-    chmod -R u+rwX "${SRC_DIR}/benchmarks"/_figures* 2>/dev/null || true
-    chmod -R u+rwX "${SRC_DIR}/benchmarks"/_tables* 2>/dev/null || true
-    chmod -R u+rwX "${SRC_DIR}/benchmarks"/_results* 2>/dev/null || true
+    chmod -R u+rwX "${PROJECT_ROOT}/benchmarks" 2>/dev/null || true
+    chmod -R u+rwX "${PROJECT_ROOT}/examples/_figures" 2>/dev/null || true
 }
 
 prepare_common_staging() {
@@ -93,7 +89,6 @@ prepare_common_staging() {
       --exclude '*.py[cod]' \
       --exclude '*~' \
       --exclude 'code.zip' \
-      --exclude 'transfer.sh' \
       --exclude 'sandbox/' \
       --exclude 'benchmarks/_figures*/' \
       --exclude 'benchmarks/_tables*/' \
@@ -102,7 +97,7 @@ prepare_common_staging() {
       --exclude 'benchmarks/_data/' \
       --exclude 'benchmarks/_weights/' \
       --exclude 'examples/_figures/' \
-      "${SRC_DIR}/" "${target_dir}/"
+      "${PROJECT_ROOT}/" "${target_dir}/"
 
     cd "${target_dir}"
 
@@ -116,7 +111,7 @@ prepare_common_staging() {
 
 send_code() {
     echo -e "${BLUE}${BOLD}Send to Jean Zay${RESET}"
-    echo -e "${BLUE}Source:${RESET} ${SRC_DIR}"
+    echo -e "${BLUE}Source:${RESET} ${PROJECT_ROOT}"
     echo -e "${BLUE}Staging:${RESET} ${WORK_DIR}"
     echo -e "${BLUE}Remote:${RESET} ${REMOTE_ROOT}/"
     echo ""
@@ -152,14 +147,19 @@ fetch_figures() {
 
 build_supp_zip() {
     echo -e "${BLUE}${BOLD}Build supplementary package${RESET}"
-    echo -e "${BLUE}Source:${RESET} ${SRC_DIR}"
+    echo -e "${BLUE}Source:${RESET} ${PROJECT_ROOT}"
     echo -e "${BLUE}Staging:${RESET} ${SUPP_DIR}"
-    echo -e "${BLUE}Output:${RESET} ${SRC_DIR}/${ZIP_NAME}"
+    echo -e "${BLUE}Output:${RESET} ${PROJECT_ROOT}/${ZIP_NAME}"
     echo ""
 
     echo -e "${CYAN}[1/3] Preparing package...${RESET}"
     prepare_common_staging "${SUPP_DIR}"
     cd "${SUPP_DIR}"
+
+    rm -f scripts/transfer.sh scripts/fetch_vendor.sh
+    if [[ -f "pyproject.toml" ]]; then
+        sed -i 's/^name = "flowbench"/name = "anonymous-code-supplement"/' pyproject.toml
+    fi
 
     cat > README.md <<'EORD'
 # Anonymous Code Supplement
@@ -171,7 +171,7 @@ EORD
     local leaked
     leaked="$(
         grep -R -n -E \
-        'Hamza|Cherkaoui|hcherkaoui|uor49lv|github.com/hcherkaoui|neurips_2026_heaytail_flow_matching|Heavy-Tail Flow Matching' \
+        'Hamza|Cherkaoui|hcherkaoui|uor49lv|github.com/hcherkaoui|flowbench|Heavy-Tail Flow Matching' \
         --binary-files=without-match \
         --exclude-dir=.git \
         . || true
@@ -184,15 +184,15 @@ EORD
     fi
 
     echo -e "${CYAN}[2/3] Building ${ZIP_NAME}...${RESET}"
-    rm -f "${SRC_DIR}/${ZIP_NAME}"
+    rm -f "${PROJECT_ROOT}/${ZIP_NAME}"
     (
         cd "${SUPP_DIR}"
-        zip -qr "${SRC_DIR}/${ZIP_NAME}" .
+        zip -qr "${PROJECT_ROOT}/${ZIP_NAME}" .
     )
 
     echo -e "${CYAN}[3/3] Cleanup...${RESET}"
     rm -rf "${SUPP_DIR}"
-    echo -e "${GREEN}${BOLD}Created:${RESET} ${SRC_DIR}/${ZIP_NAME}"
+    echo -e "${GREEN}${BOLD}Created:${RESET} ${PROJECT_ROOT}/${ZIP_NAME}"
 }
 
 case "${MODE}" in

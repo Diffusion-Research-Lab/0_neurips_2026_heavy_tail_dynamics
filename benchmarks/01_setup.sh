@@ -93,26 +93,23 @@ fi
 echo "[setup] Installing project packages with benchmark extras"
 pip install -e "${PROJECT_ROOT}[dev,bench]" --no-input
 
-echo "[setup] Verifying imports (genkit + labkit)"
+echo "[setup] Verifying imports (core + benchmark dataset deps)"
 PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 python - <<'PY'
+import ccxt
 import genkit
+import pandas
 import torch
+import ucimlrepo
+import yfinance
 from labkit.config import load_config
-print(f"imports_ok torch={torch.__version__}")
+print(f"imports_ok torch={torch.__version__} pandas={pandas.__version__} ccxt={ccxt.__version__}")
 PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then
   echo "[setup] Running unit tests"
   PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
   pytest -q "${PROJECT_ROOT}/tests"
-
-  echo "[setup] Running genkit example"
-  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-  python "${PROJECT_ROOT}/examples/02_visu_2d.py" --blank
-
-  echo "[setup] Running benchmark blank pipeline"
-  bash "${SCRIPT_DIR}/03_launcher.sh" --blank
 fi
 
 cat <<NEXT

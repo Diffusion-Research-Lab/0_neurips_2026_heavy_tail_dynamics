@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 from genkit.datasets import fetch_synthetic_data
-from genkit.metrics import mssle_95, wasserstein_distance
+from genkit.metrics import metric_on_quantile, mssle, wasserstein_distance
 from genkit.nn import MLPModel
 from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor
@@ -104,7 +104,7 @@ if __name__ == "__main__":
 
             x_test_gen = generator.sample(n_samples=cfg.n_samples_test)
             metrics = {
-                "MSSLE_95": float(10.0 * mssle_95(x_test.clone(), x_test_gen)),
+                "MSSLE_95": float(metric_on_quantile(mssle, x_test.clone(), x_test_gen, xi=0.95)),
                 "WASS": float(wasserstein_distance(x_test.clone(), x_test_gen)),
             }
             for metric_name, metric_value in metrics.items():

@@ -1,5 +1,7 @@
 """Utilities for benchmark run artifacts and shared benchmark plotting helpers."""
 
+from __future__ import annotations
+
 import json
 import math
 from datetime import datetime
@@ -8,7 +10,8 @@ from typing import Any, Dict
 import numpy as np
 import yaml
 import torch
-from genkit import GaussianFlowLinear, AlphaStableFlowLinear
+from genkit import DLPMEpsOrigin as DLPM
+from genkit import FlowMatchingOrigin as LinearFlow
 from genkit.loss import barron_loss
 
 
@@ -106,7 +109,7 @@ class PreprocessedAsinhTargetMixin:
         return self._inverse_transform(super().sample(n_samples))
 
 
-class PreprocessedGaussianFlowLinear(PreprocessedAsinhTargetMixin, GaussianFlowLinear):
+class PreprocessedGaussianFlowLinear(PreprocessedAsinhTargetMixin, LinearFlow):
     """Gaussian flow with an asinh-preprocessed target space."""
 
     pass
@@ -138,9 +141,9 @@ def _name_tag(name: str) -> str:
 def build_model_specs(cfg):
     """Build benchmark-05 model specifications from a config object."""
     base_specs = {
-        "Gaussian": (GaussianFlowLinear, {}),
+        "Gaussian": (LinearFlow, {}),
         "Gaussian + asinh(x)": (PreprocessedGaussianFlowLinear, {"scale": float(cfg.asinh_scale)}),
-        "AlphaStable": (AlphaStableFlowLinear, {"alpha": float(cfg.stable_alpha_model)}),
+        "AlphaStable": (DLPM, {"alpha": float(cfg.stable_alpha_model)}),
     }
 
     specs = []
@@ -224,10 +227,12 @@ def to_latex_sci(x: float, digits: int = 2) -> str:
 def format_mean_std_latex(mean: float, std: float, bold: bool = False) -> str:
     """Format a mean-plus-std pair as a LaTeX mathtext string."""
     mean_str = to_latex_sci(mean, digits=2)
+    if np.isclose(std, 0.0):
+        return rf"$\mathbf{{{mean_str}}}$" if bold else rf"${mean_str}$"
     std_str = to_latex_sci(std, digits=2)
     if bold:
-        return rf"$\mathbf{{{mean_str}}} \pm \mathbf{{{std_str}}}$"
-    return rf"${mean_str} \pm {std_str}$"
+        return rf"$\mathbf{{{mean_str}}}_{{\pm {std_str}}}$"
+    return rf"${mean_str}_{{\pm {std_str}}}$"
 
 
 def save_figure(fig, fig_dir: Path, stem: str):

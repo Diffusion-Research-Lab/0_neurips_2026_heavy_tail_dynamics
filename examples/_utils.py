@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from genkit._sampling import sample_scaled_isotropic_alpha_stable
 from genkit.datasets import fetch_synthetic_data
-from genkit.metrics import mssle_95, sliced_wasserstein2
+from genkit.metrics import metric_on_quantile, mssle, sliced_wasserstein2
 from genkit.nn import MLPModel
 from genkit.training import train
 
@@ -25,6 +25,13 @@ def to_latex_sci(x: float, digits: int = 1) -> str:
 
 def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, verbose=True):
     """Launch the trainings for an example."""
+    light_tailed_data = ["balanced_bimodal_gaussian",
+                         "unbalanced_bimodal_gaussian",
+                         "gaussian",
+                         "checker",
+                         "spiral",
+                         ]
+
     if exp_kwargs is None:
         exp_kwargs = {}
 
@@ -44,7 +51,13 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
     X_train, X_val, X_test = fetch_synthetic_data(target_data_type, n_samples=n_samples, dim=dim,
                                                   device=device, dtype=fdtype, **extra_data_kwargs)
     train_kwargs = dict(target_data=X_train, batch_size=batch_size, n_epochs=n_epochs, lr=lr, device=device)
-    baseline_w_distance = sliced_wasserstein2(X_test, X_val)
+
+    if target_data_type in light_tailed_data:
+        base_metric_value = sliced_wasserstein2(X_test, X_val)
+        metric_name = "Wasserstein-dist"
+    else:
+        base_metric_value = metric_on_quantile(mssle, X_test, X_val, xi=0.95)
+        metric_name = "MSSLE(95)"
 
     results = {}
     for i, gen_cls in enumerate(models):
@@ -56,13 +69,19 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
         net = MLPModel(dim=dim, width=width, depth=depth).to(device=device, dtype=fdtype)
         generator = gen_cls(net=net, dim=dim, fdtype=fdtype, idtype=idtype, device=device,
                             n_steps=n_steps, **extra_gen_kwargs)
+
         train(generative_model=generator, **train_kwargs)
+
         X_test_gen = generator.sample(n_samples=n_samples)
-        w_distance = sliced_wasserstein2(X_test, X_test_gen)
+
+        if target_data_type in light_tailed_data:
+            metric_value = sliced_wasserstein2(X_test, X_test_gen)
+        else:
+            metric_value = metric_on_quantile(mssle, X_test, X_test_gen, xi=0.95)
 
         if verbose:
-            print(f"[INFO][{i + 1:02d}/{len(models):02d}] Evaluation: W = {w_distance:.2e} "
-                  f"(baseline at {baseline_w_distance:.2e}) ({time.perf_counter() - t0:.1f} s)")
+            print(f"[INFO][{i + 1:02d}/{len(models):02d}] Evaluation: {metric_name} = {metric_value:g} "
+                  f"(baseline at {base_metric_value:.2e}) ({time.perf_counter() - t0:.1f} s)")
 
         results[gen_cls.__name__] = (X_test_gen, X_test)
 
@@ -84,7 +103,7 @@ def plot_generated_samples(results, model_specs, data_kwargs, n_trials: int, out
     for i, (spec, res) in enumerate(zip(model_specs, results)):
         gen_samples = [generator.sample(n_samples) for generator in res["generators"]]
 
-        all_mssle_95 = [mssle_95(x_gen, x_ref) for x_gen, x_ref in zip(gen_samples, ref_samples)]
+        all_mssle_95 = [metric_on_quantile(mssle, x_gen, x_ref, xi=0.95) for x_gen, x_ref in zip(gen_samples, ref_samples)]
         mean_mssle_95 = np.mean(all_mssle_95)
         std_mssle_95 = np.std(all_mssle_95)
 
