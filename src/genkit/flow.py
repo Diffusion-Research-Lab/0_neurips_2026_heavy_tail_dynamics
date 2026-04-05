@@ -1,7 +1,6 @@
 """Flow module."""
 
-from typing import Tuple
-import math
+import numpy as np
 import torch
 from ._abs import GaussianFlowAbstract
 from ._sampling import sample_scaled_scalar_alpha_stable
@@ -122,13 +121,13 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         """Evaluate continuous VP coefficients at the requested flow times."""
         s = (1.0 - t).clamp(0.0, 1.0)
 
-        f = ((s + self._s0) / (1.0 + self._s0)) * (math.pi / 2.0)
-        f0 = (self._s0 / (1.0 + self._s0)) * (math.pi / 2.0)
+        f = ((s + self._s0) / (1.0 + self._s0)) * (np.pi / 2.0)
+        f0 = (self._s0 / (1.0 + self._s0)) * (np.pi / 2.0)
 
-        abar = torch.cos(f).pow(2) / (math.cos(f0) ** 2)
+        abar = torch.cos(f).pow(2) / (np.cos(f0) ** 2)
         abar = abar.clamp(min=self._eps, max=1.0)
 
-        beta_s = (math.pi / (1.0 + self._s0)) * torch.tan(f)
+        beta_s = (np.pi / (1.0 + self._s0)) * torch.tan(f)
         beta_s = beta_s.clamp_min(0.0)
 
         a = torch.sqrt(abar.clamp_min(self._eps))
@@ -178,7 +177,6 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
         t_max: float = 0.99,
         alpha: float = 1.5,
         reduce_type: str = "median",
-        clamp_A: Tuple[float, float] = None,
         base_or_sample: torch.Tensor = None,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
@@ -201,32 +199,20 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
         if not (0.0 < self._a < 2.0):
             raise ValueError(f"'alpha' must be in (0,2), got {self._a}.")
 
-        self._clamp_A = clamp_A
-        if (self._clamp_A is not None):
-            if not (isinstance(self._clamp_A, (tuple, list)) and len(self._clamp_A) == 2):
-                raise ValueError("clamp_A must be a (min,max) tuple or None.")
-            self._A_min, self._A_max = float(self._clamp_A[0]), float(self._clamp_A[1])
-
-    def _safe_A(self, A):
-        """Clamp positive stable coefficients to a safe numeric range."""
-        A = A.clamp_min(self._eps)  # by default
-        return A.clamp(min=self._A_min, max=self._A_max) if self._clamp_A is not None else A
-
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         """Sample alpha-stable source noise via Gaussian scale mixtures."""
         A = sample_scaled_scalar_alpha_stable(n_samples=n_samples, alpha=self._a,
                                               device=self._device, dtype=self._fdtype)
-        A = self._safe_A(A)
         G = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
         return A.sqrt() * G
 
     def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:  # XXX to be check
         """Reduce alpha-stable flow losses with the configured aggregation rule."""
         if self._reduce_type == "mean":
-            return loss_values.sqrt().mean()
-        return loss_values.sqrt().median()
+            return loss_values.mean()
+        return loss_values.median()
 
     def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
-        """Compute per-sample alpha-stable flow reconstruction losses."""
+        """Compute per-sample epsilon reconstruction errors."""
         loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
         return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()

@@ -3,33 +3,8 @@
 from typing import Tuple
 import numpy as np
 import torch
-
-
-@torch.no_grad()
-def linear_flow_velocity_mse_curve(
-    gen_model, x: torch.Tensor,
-    steps: int = 100,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Evaluate mean-squared velocity error along the linear interpolation path from source to data."""
-    x_1 = x
-    x_0 = gen_model._sample_source(len(x_1))
-    v_t = x_1 - x_0
-    tt = torch.linspace(0.0, 1.0, steps=int(steps), device=x.device, dtype=x.dtype)
-
-    was_training = gen_model._net.training
-    gen_model._net.eval()
-
-    err_t = []
-    for t in tt:
-        x_t = (1.0 - t) * x_0 + t * x_1
-        t_batch = torch.full((len(x_1), 1), t.item(), device=x.device, dtype=x.dtype)
-        v_t_hat = gen_model._net(x_t, t_batch)
-        err_t.append(((v_t_hat - v_t) ** 2).mean())
-
-    if was_training:
-        gen_model._net.train()
-
-    return torch.stack(err_t).cpu().numpy(), tt.cpu().numpy()
+from hmmlearn.hmm import GaussianHMM
+from sklearn.preprocessing import StandardScaler
 
 
 @torch.no_grad()
@@ -63,3 +38,49 @@ def model_est_err_curve(
         gen_model._net.train()
 
     return torch.stack(loss_values).cpu().numpy(), t_grid.cpu().numpy()
+
+
+def fit_hmm_on_weight_stats(weight_stats, n_states=None, random_state=0):
+    """Fit an HMM on per-epoch weight statistics to segment training phases."""
+    X = np.asarray(weight_stats, dtype=float)
+    if X.ndim != 2:
+        raise ValueError("weight_stats must be a 2D array-like object of shape (n_epochs, n_stats).")
+    if X.shape[0] < 3:
+        raise ValueError("weight_stats must contain at least 3 epochs.")
+    if X.shape[1] == 0:
+        raise ValueError("weight_stats must contain at least one statistic per epoch.")
+
+    Z = StandardScaler().fit_transform(X)
+    if n_states is None:
+        max_states = min(6, X.shape[0] - 1)
+        candidates = range(2, max_states + 1)
+        scored_models = []
+        for k in candidates:
+            hmm = GaussianHMM(
+                n_components=k,
+                covariance_type="diag",
+                n_iter=200,
+                random_state=random_state,
+            ).fit(Z)
+            scored_models.append((hmm.bic(Z), hmm))
+        _, hmm = min(scored_models, key=lambda item: item[0])
+    else:
+        hmm = GaussianHMM(
+            n_components=int(n_states),
+            covariance_type="diag",
+            n_iter=200,
+            random_state=random_state,
+        ).fit(Z)
+
+    return {
+        "stats": X,
+        "stat_names": (
+            ["mean_l2", "mean_top_singular", "mean_weight", "mean_std"]
+            if X.shape[1] == 4
+            else [f"stat_{i}" for i in range(X.shape[1])]
+        ),
+        "states": hmm.predict(Z),
+        "state_probs": hmm.predict_proba(Z),
+        "n_states": int(hmm.n_components),
+        "hmm": hmm,
+    }

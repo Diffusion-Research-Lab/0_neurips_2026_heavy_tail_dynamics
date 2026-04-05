@@ -62,11 +62,8 @@ class Base:
             samples = self._sample_source_default(n_samples)
         return samples
 
-    def _prepare_t(self, t, n_samples: int) -> torch.Tensor:
+    def _check_t(self, t, n_samples: int) -> torch.Tensor:
         """Validate and normalize user-provided diffusion timesteps."""
-        if t is None:
-            return torch.randint(1, self._n_steps + 1, (n_samples,), device=self._device, dtype=self._idtype)
-
         if isinstance(t, bool):
             raise TypeError("'t' must be an int, float, or tensor, not bool.")
 
@@ -84,7 +81,7 @@ class Base:
         if isinstance(t, torch.Tensor):
             t = t.to(device=self._device)
             if t.ndim == 0:
-                return self._prepare_t(t.item(), n_samples)
+                return self._check_t(t.item(), n_samples)
             if t.ndim != 1 or t.numel() != n_samples:
                 raise ValueError(f"Tensor 't' must have shape ({n_samples},), got {tuple(t.shape)}.")
 
@@ -138,7 +135,10 @@ class DDPMAbstarct(Base):
             raise ValueError(f"Expected last dim {self._dim}, got {x_1.size(-1)}")
 
         n_samples = x_1.size(0)
-        t = self._prepare_t(t, n_samples)
+        if t is None:
+            t = torch.randint(1, self._n_steps + 1, (n_samples,), device=self._device, dtype=self._idtype)
+        else:  # if t is given
+            t = self._check_t(t, n_samples)
         t_idx = (t - 1).to(device=self._device, dtype=self._idtype)
         t_norm = (t / self._n_steps).unsqueeze(-1)
 
@@ -216,7 +216,7 @@ class FlowAbstract(Base):
         t = torch.rand((n_samples, 1), device=self._device, dtype=self._fdtype)
         return self._t_min + (self._t_max - self._t_min) * t
 
-    def _prepare_t(self, t, n_samples: int) -> torch.Tensor:
+    def _check_t(self, t, n_samples: int) -> torch.Tensor:
         """Validate and normalize user-provided flow times."""
         if t is None:
             return self._t(n_samples)
@@ -238,7 +238,7 @@ class FlowAbstract(Base):
         if isinstance(t, torch.Tensor):
             t = t.to(device=self._device)
             if t.ndim == 0:
-                return self._prepare_t(t.item(), n_samples)
+                return self._check_t(t.item(), n_samples)
             if t.ndim == 1:
                 if t.numel() != n_samples:
                     raise ValueError(f"Tensor 't' must have shape ({n_samples},) or ({n_samples}, 1), got {tuple(t.shape)}.")
@@ -268,7 +268,10 @@ class FlowAbstract(Base):
             raise ValueError(f"Expected x1 shape (N,{self._dim}), got {tuple(x_1.shape)}")
 
         n_samples = x_1.size(0)
-        t = self._prepare_t(t, n_samples)
+        if t is None:  # default to uniform sampling
+            t = self._t(n_samples)
+        else:  # if t is given
+            t = self._check_t(t, n_samples)
 
         x_0 = self._sample_source(n_samples) if x_0 is None else x_0.to(device=self._device,
                                                                         dtype=self._fdtype)

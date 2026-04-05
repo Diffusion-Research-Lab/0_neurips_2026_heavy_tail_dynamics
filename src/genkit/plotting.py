@@ -1,11 +1,13 @@
 """Plotting functions for diffusion model experiments."""
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Tuple, List, Dict, Union
+from typing import Dict, List, Tuple, Union
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 import numpy as np
 import torch
+from matplotlib.colors import LogNorm
 from sklearn.decomposition import PCA
 from .utils import to_numpy
 

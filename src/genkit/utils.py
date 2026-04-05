@@ -1,7 +1,7 @@
 """Utility functions for diffusion model experiments."""
 
-from typing import Any, MutableMapping
 import math
+from typing import Any, MutableMapping
 import torch
 
 _MISSING = object()

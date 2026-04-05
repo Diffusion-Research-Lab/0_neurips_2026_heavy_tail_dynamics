@@ -1,5 +1,7 @@
 "Latex table module."
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 import numpy as np

@@ -3,18 +3,18 @@
 import pytest
 import torch
 
-from genkit.metrics import gen_separability_roc_auc, mmd_rbf, mssle_90, mssle_95, sliced_wasserstein2, wasserstein_distance
+from genkit.metrics import gen_separability_roc_auc, metric_on_quantile, mmd_rbf, mssle, sliced_wasserstein2, wasserstein_distance
 from .utils import _devices
 
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_mssle_tail_variants_zero_for_identical_samples(device, dtype):
+def test_metric_on_quantile_zero_for_identical_samples(device, dtype):
     torch.manual_seed(0)
     x = torch.randn(2048, 2, device=device, dtype=dtype)
 
-    v90 = mssle_90(x, x)
-    v95 = mssle_95(x, x)
+    v90 = metric_on_quantile(mssle, x, x, xi=0.90)
+    v95 = metric_on_quantile(mssle, x, x, xi=0.95)
 
     assert isinstance(v90, float)
     assert isinstance(v95, float)
@@ -25,13 +25,13 @@ def test_mssle_tail_variants_zero_for_identical_samples(device, dtype):
 
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_mssle_tail_detects_tail_rescaling(device, dtype):
+def test_metric_on_quantile_detects_tail_rescaling(device, dtype):
     torch.manual_seed(0)
     x = torch.randn(4096, 2, device=device, dtype=dtype)
     y = 3.0 * x
 
-    v90 = mssle_90(x, y)
-    v95 = mssle_95(x, y)
+    v90 = metric_on_quantile(mssle, x, y, xi=0.90)
+    v95 = metric_on_quantile(mssle, x, y, xi=0.95)
 
     assert torch.isfinite(torch.tensor(v90))
     assert torch.isfinite(torch.tensor(v95))
@@ -109,6 +109,21 @@ def test_mmd_rbf_detects_shifted_samples(device, dtype):
 
     assert isinstance(score, float)
     assert score > 0.0
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_mmd_rbf_supports_biased_and_unbiased_estimators(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(256, 2, device=device, dtype=dtype)
+    y = x + 0.5
+
+    score_biased = mmd_rbf(x, y, estimator="biased")
+    score_unbiased = mmd_rbf(x, y, estimator="unbiased")
+
+    assert isinstance(score_biased, float)
+    assert isinstance(score_unbiased, float)
+    assert score_biased >= 0.0
 
 
 @pytest.mark.parametrize("device", _devices())

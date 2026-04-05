@@ -1,5 +1,7 @@
 """Specific loss definitions."""
 
+from __future__ import annotations
+
 import math
 import torch
 
