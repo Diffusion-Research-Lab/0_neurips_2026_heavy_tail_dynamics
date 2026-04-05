@@ -1,43 +1,8 @@
 """Sampling functions for various distributions."""
 
-import math
+import numpy as np
+import scipy
 import torch
-
-
-def sample_scalar_alpha_stable(
-    n_samples: int,
-    alpha: float,
-    scale: float,
-    device: torch.device = 'cpu',
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """
-    Sample an alpha-stable random scalar:
-        A ~ S_{alpha,1}(0, scale)
-    """
-    alpha = float(alpha)
-    if not (0.0 < alpha < 1.0):
-        raise ValueError(f"`alpha` must be in (0,1), got {alpha}.")
-    if float(scale) <= 0.0:
-        raise ValueError(f"`scale` must be > 0, got {scale}.")
-
-    tiny = torch.finfo(dtype).tiny
-    U = torch.empty((n_samples,), device=device, dtype=dtype).uniform_(tiny, math.pi - tiny)
-    W = torch.empty((n_samples,), device=device, dtype=dtype).exponential_().clamp_min(tiny)
-
-    sinU = torch.sin(U).clamp_min(tiny)
-    SaU = torch.sin(alpha * U).clamp_min(tiny)
-    S1aU = torch.sin((1.0 - alpha) * U).clamp_min(tiny)
-
-    A0 = (SaU / (sinU ** (1.0 / alpha))) * ((S1aU / W) ** ((1.0 - alpha) / alpha))
-
-    cos_fac = math.cos(math.pi * alpha / 2.0)
-    if cos_fac <= 0.0:
-        raise ValueError("cos(pi*alpha/2) must be positive for alpha in (0,1).")
-
-    scale_t = torch.as_tensor(scale, device=device, dtype=dtype)
-    mult = scale_t / (cos_fac ** (1.0 / alpha))
-    return A0 * mult
 
 
 def sample_scaled_scalar_alpha_stable(
@@ -46,22 +11,18 @@ def sample_scaled_scalar_alpha_stable(
     device: torch.device = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    """
-    Sample positive scalar mixing coefficients for isotropic alpha-stable sampling.
-
-    Uses
-        c_A = 2 * cos(pi * alpha / 4)^(2/alpha),
-        A ~ S_{alpha/2,1}(0, c_A),
-    then returns
-        clamp_min(A, eps).unsqueeze(-1),
-    so the output has shape (n_samples, 1).
-    """
+    """Sample positive scalar mixing coefficients for isotropic alpha-stable sampling."""
     alpha = float(alpha)
-    c_A = 2.0 * (math.cos(math.pi * alpha / 4.0) ** (2.0 / alpha))
-    A = sample_scalar_alpha_stable(n_samples=n_samples, alpha=alpha / 2,
-                                   scale=c_A, device=device, dtype=dtype)
 
-    return A.clamp_min(torch.finfo(dtype).eps).unsqueeze(-1)
+    if not (0.0 < alpha <= 2.0):
+        raise ValueError(f"`alpha` must be in (0,2], got {alpha}.")
+    if alpha == 2.0:
+        return (2.0 * torch.ones((n_samples, 1), device=device, dtype=dtype))
+
+    scale = 2.0 * np.cos(np.pi * alpha / 4.0) ** (2.0 / alpha)
+    draws = scipy.stats.levy_stable.rvs(alpha / 2.0, 1.0, loc=0.0, scale=scale, size=n_samples)
+
+    return torch.as_tensor(draws, device=device, dtype=dtype).unsqueeze(-1)
 
 
 def sample_scaled_isotropic_alpha_stable(
@@ -98,7 +59,7 @@ def sample_spiral(
     Sample a 2d spirale cloud points.
     """
     u = torch.rand((n_samples,), device=device, dtype=dtype)
-    theta = (2.0 * math.pi * spiral_turns) * u
+    theta = (2.0 * np.pi * spiral_turns) * u
     r = spiral_radius * u
 
     x = r * torch.cos(theta)

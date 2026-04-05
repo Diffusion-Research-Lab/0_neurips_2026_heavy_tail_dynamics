@@ -19,6 +19,70 @@ def _resolve_fdtype(fdtype: torch.dtype, dtype: Optional[torch.dtype]) -> torch.
     return dtype
 
 
+def _remove_sys_path_entry(path: Path) -> None:
+    """Remove all occurrences of a filesystem path from sys.path."""
+    path_str = str(path)
+    sys.path[:] = [entry for entry in sys.path if entry != path_str]
+
+
+def _resolve_vendor_root(package_root: Optional[str], vendor_name: str) -> Path:
+    """Resolve the filesystem root for a vendored dependency."""
+    if package_root is not None:
+        return Path(package_root).expanduser().resolve()
+    return Path(__file__).resolve().parent / "_vendor" / vendor_name
+
+
+def _import_dlpm_vendor(authors_root: Optional[str]):
+    """Import the vendored DLPM entrypoint."""
+    root = _resolve_vendor_root(authors_root, "DLPM")
+    sys.path.insert(0, str(root))
+    try:
+        from dlpm.methods.GenerativeLevyProcess import GenerativeLevyProcess  # noqa: E402
+    finally:
+        _remove_sys_path_entry(root)
+    return GenerativeLevyProcess
+
+
+def _import_flow_matching_vendor(package_root: Optional[str]):
+    """Import the vendored flow-matching components."""
+    root = _resolve_vendor_root(package_root, "flow_matching")
+    sys.path.insert(0, str(root))
+    try:
+        from flow_matching.path import AffineProbPath  # noqa: E402
+        from flow_matching.path.scheduler import CondOTScheduler  # noqa: E402
+        from flow_matching.solver import ODESolver  # noqa: E402
+        from flow_matching.utils import ModelWrapper  # noqa: E402
+    finally:
+        _remove_sys_path_entry(root)
+    return AffineProbPath, CondOTScheduler, ODESolver, ModelWrapper
+
+
+def _import_score_sde_vendor(package_root: Optional[str]):
+    """Import vendored score-SDE components while avoiding global module collisions."""
+    root = _resolve_vendor_root(package_root, "score_sde_pytorch")
+    generic_vendor_modules = {"sde_lib", "losses", "sampling", "models", "utils"}
+    modules_before = set(sys.modules)
+    sys.path.insert(0, str(root))
+    try:
+        from sde_lib import VESDE  # noqa: E402
+        from losses import get_sde_loss_fn  # noqa: E402
+        from sampling import ReverseDiffusionPredictor, NoneCorrector, get_pc_sampler  # noqa: E402
+        try:
+            from sampling import LangevinCorrector  # noqa: E402
+        except ImportError:
+            LangevinCorrector = None
+    finally:
+        _remove_sys_path_entry(root)
+        loaded_vendor_modules = {
+            name
+            for name in set(sys.modules) - modules_before
+            if name in generic_vendor_modules or any(name.startswith(f"{prefix}.") for prefix in generic_vendor_modules)
+        }
+        for name in loaded_vendor_modules:
+            sys.modules.pop(name, None)
+    return VESDE, get_sde_loss_fn, ReverseDiffusionPredictor, NoneCorrector, get_pc_sampler, LangevinCorrector
+
+
 class _NetAdapter(torch.nn.Module):
     """Wrap a native genkit network behind the vendor calling convention."""
 
@@ -55,13 +119,13 @@ class DLPMEpsOrigin(Base):
         net: torch.nn.Module,
         dim: int,
         n_steps: int = 100,
-        alpha: float = 1.8,
+        alpha: float = 1.9,
         authors_root: Optional[str] = None,
         time_spacing: str = "linear",
         rescale_timesteps: bool = True,
         isotropic: bool = True,
-        loss_monte_carlo: str = "mean",
-        monte_carlo_outer: int = 5,
+        loss_monte_carlo: str = "median",
+        monte_carlo_outer: int = 1,
         monte_carlo_inner: int = 1,
         lploss: float = 2.0,
         clamp_a: Optional[float] = None,
@@ -77,13 +141,10 @@ class DLPMEpsOrigin(Base):
         fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
+        if base_or_sample is not None:
+            warnings.warn("DLPMEpsOrigin ignores base_or_sample during sampling.")
 
-        root = Path(authors_root).expanduser().resolve() if authors_root is not None else (
-            Path(__file__).resolve().parent / "_vendor" / "DLPM"
-        )
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        from dlpm.methods.GenerativeLevyProcess import GenerativeLevyProcess  # noqa: E402
+        GenerativeLevyProcess = _import_dlpm_vendor(authors_root)
 
         self._net_auth = _NetAdapter(self._net)
         self._loss_monte_carlo = loss_monte_carlo
@@ -167,20 +228,14 @@ class FlowMatchingOrigin(Base):
         fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
-        self._t_min = float(t_min)
-        self._t_max = float(t_max)
-        if not (0.0 <= self._t_min < self._t_max <= 1.0):
-            raise ValueError(f"Need 0 <= t_min < t_max <= 1, got {self._t_min}, {self._t_max}")
+        if float(t_min) != 0.0 or float(t_max) != 1.0:
+            warnings.warn(
+                "FlowMatchingOrigin always uses t_min=0 and t_max=1; passed values are ignored."
+            )
+        self._t_min = 0.0
+        self._t_max = 1.0
 
-        root = Path(package_root).expanduser().resolve() if package_root is not None else (
-            Path(__file__).resolve().parent / "_vendor" / "flow_matching"
-        )
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        from flow_matching.path import AffineProbPath  # noqa: E402
-        from flow_matching.path.scheduler import CondOTScheduler  # noqa: E402
-        from flow_matching.solver import ODESolver  # noqa: E402
-        from flow_matching.utils import ModelWrapper  # noqa: E402
+        AffineProbPath, CondOTScheduler, ODESolver, ModelWrapper = _import_flow_matching_vendor(package_root)
 
         class _WrappedModel(ModelWrapper):
             """Adapt a genkit network to the vendored flow-matching solver API."""
@@ -204,6 +259,8 @@ class FlowMatchingOrigin(Base):
         """Compute the vendored flow-matching loss on a sampled probability path."""
         x_1 = x.to(device=self._device, dtype=self._fdtype)
         x_0 = self._sample_source(x_1.size(0)) if z is None else z.to(device=self._device, dtype=self._fdtype)
+        if x_0.shape != x_1.shape:
+            raise ValueError(f"z must have shape {tuple(x_1.shape)}, got {tuple(x_0.shape)}.")
         t = self._t_min + (self._t_max - self._t_min) * torch.rand(
             (x_1.size(0),), device=self._device, dtype=self._fdtype
         )
@@ -246,7 +303,10 @@ class ScoreSDEOrigin(Base):
         n_steps: int = 100,
         sigma_min: Optional[float] = None,
         sigma_max: Optional[float] = None,
-        time_eps: float = 1e-3,
+        loss_eps: float = 1e-5,
+        sampling_eps: float = 1e-5,
+        reduce_mean: bool = False,
+        time_eps: Optional[float] = None,
         use_corrector: Optional[bool] = None,
         snr: Optional[float] = None,
         corrector_steps: int = 1,
@@ -261,22 +321,26 @@ class ScoreSDEOrigin(Base):
         fdtype = _resolve_fdtype(fdtype, dtype)
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
+        if base_or_sample is not None:
+            warnings.warn("ScoreSDEOrigin ignores base_or_sample during sampling.")
 
-        if not (0.0 < float(time_eps) < 1.0):
-            raise ValueError(f"time_eps must be in (0,1), got {time_eps}.")
+        if time_eps is not None:
+            warnings.warn("`time_eps` is deprecated in ScoreSDEOrigin; use `loss_eps` and `sampling_eps` instead.")
+            loss_eps = float(time_eps)
+            sampling_eps = float(time_eps)
+        if not (0.0 < float(loss_eps) < 1.0):
+            raise ValueError(f"loss_eps must be in (0,1), got {loss_eps}.")
+        if not (0.0 < float(sampling_eps) < 1.0):
+            raise ValueError(f"sampling_eps must be in (0,1), got {sampling_eps}.")
 
-        root = Path(package_root).expanduser().resolve() if package_root is not None else (
-            Path(__file__).resolve().parent / "_vendor" / "score_sde_pytorch"
-        )
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        from sde_lib import VESDE  # noqa: E402
-        from losses import get_sde_loss_fn  # noqa: E402
-        from sampling import ReverseDiffusionPredictor, NoneCorrector, get_pc_sampler  # noqa: E402
-        try:
-            from sampling import LangevinCorrector  # noqa: E402
-        except ImportError:
-            LangevinCorrector = None
+        (
+            VESDE,
+            get_sde_loss_fn,
+            ReverseDiffusionPredictor,
+            NoneCorrector,
+            get_pc_sampler,
+            LangevinCorrector,
+        ) = _import_score_sde_vendor(package_root)
 
         low_dim = int(dim) <= 4
         if sigma_min is None:
@@ -286,19 +350,20 @@ class ScoreSDEOrigin(Base):
 
         self._sigma_min = float(sigma_min)
         self._sigma_max = float(sigma_max)
-        self._time_eps = float(time_eps)
+        self._loss_eps = float(loss_eps)
+        self._sampling_eps = float(sampling_eps)
         if use_corrector is None:
-            use_corrector = low_dim and LangevinCorrector is not None
+            use_corrector = LangevinCorrector is not None
         self._snr = 0.16 if snr is None and use_corrector else 0.0 if snr is None else float(snr)
         self._corrector_steps = int(corrector_steps)
         self._sde = VESDE(sigma_min=self._sigma_min, sigma_max=self._sigma_max, N=int(n_steps))
         self._loss_fn = get_sde_loss_fn(
             self._sde,
             train=True,
-            reduce_mean=True,
+            reduce_mean=bool(reduce_mean),
             continuous=True,
             likelihood_weighting=False,
-            eps=self._time_eps,
+            eps=self._loss_eps,
         )
         self._get_pc_sampler = get_pc_sampler
         self._predictor_cls = ReverseDiffusionPredictor
@@ -350,7 +415,7 @@ class ScoreSDEOrigin(Base):
             probability_flow=False,
             continuous=True,
             denoise=True,
-            eps=self._time_eps,
+            eps=self._sampling_eps,
             device=self._device,
         )
         x, _ = sampling_fn(self._score_model)

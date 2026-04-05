@@ -1,10 +1,30 @@
 """Sampling module unittests."""
 
+import sys
+from pathlib import Path
+import numpy as np
 import pytest
 import torch
-from genkit._sampling import (sample_scalar_alpha_stable, sample_scaled_scalar_alpha_stable,
-                              sample_scaled_isotropic_alpha_stable, sample_spiral, sample_student_t,
-                              sample_gaussian, sample_balanced_bimodal_gaussian)
+from genkit._sampling import (
+    sample_balanced_bimodal_gaussian,
+    sample_gaussian,
+    sample_scaled_isotropic_alpha_stable,
+    sample_scaled_scalar_alpha_stable,
+    sample_spiral,
+    sample_student_t,
+)
+
+
+def _import_vendor_dlpm_class():
+    """Import the vendored DLPM class directly for sampler-equivalence tests."""
+    root = Path(__file__).resolve().parents[1] / "src" / "genkit" / "_vendor" / "DLPM"
+    root_str = str(root)
+    sys.path.insert(0, root_str)
+    try:
+        from dlpm.methods.dlpm import DLPM as VendorDLPM  # noqa: E402
+    finally:
+        sys.path[:] = [entry for entry in sys.path if entry != root_str]
+    return VendorDLPM
 
 
 def _assert_allclose_scalar(x: torch.Tensor, y: float, atol: float, rtol: float = 0.0):
@@ -113,28 +133,6 @@ def test_bimodal_balanced_mean_var_and_weight():
     assert abs(frac_neg - 0.5) < 0.02
 
 
-def test_scalar_alpha_stable_positive_and_scaling_property():
-    torch.manual_seed(6)
-    n = 60000
-    alpha = 0.6
-    a1 = sample_scalar_alpha_stable(n, alpha=alpha, scale=1.0, device="cpu", dtype=torch.float64)
-    a3 = sample_scalar_alpha_stable(n, alpha=alpha, scale=3.0, device="cpu", dtype=torch.float64)
-
-    assert a1.shape == (n,)
-    assert a3.shape == (n,)
-    assert (a1 > 0).all()
-    assert (a3 > 0).all()
-    assert torch.isfinite(a1).all() and torch.isfinite(a3).all()
-
-    q = torch.tensor([0.5, 0.9], dtype=torch.float64)
-    q1 = torch.quantile(a1, q)
-    q3 = torch.quantile(a3, q)
-
-    ratio = (q3 / q1).cpu()
-    # scaling should be ~3 (allow slack: heavy tails -> noisy quantile estimates)
-    assert torch.allclose(ratio, torch.full_like(ratio, 3.0), atol=0.0, rtol=0.10)
-
-
 def test_scaled_scalar_alpha_stable_shape_and_positivity():
     torch.manual_seed(7)
     n = 40000
@@ -143,6 +141,29 @@ def test_scaled_scalar_alpha_stable_shape_and_positivity():
     assert a.shape == (n, 1)
     assert torch.isfinite(a).all()
     assert (a > 0).all()
+
+
+def test_scaled_scalar_alpha_stable_matches_vendor_dlpm_draw():
+    n = 256
+    alpha = 1.9
+    VendorDLPM = _import_vendor_dlpm_class()
+    vendor_dlpm = VendorDLPM(
+        alpha=alpha,
+        device="cpu",
+        diffusion_steps=8,
+        time_spacing="linear",
+        isotropic=True,
+        scale="scale_preserving",
+    )
+
+    np.random.seed(0)
+    a_native = sample_scaled_scalar_alpha_stable(n, alpha=alpha, device="cpu", dtype=torch.float32)
+    np.random.seed(0)
+    a_vendor = vendor_dlpm.get_one_rv_faster_sampling((n,))
+
+    assert a_native.shape == (n, 1)
+    assert a_vendor.shape == (n,)
+    assert torch.equal(a_native.reshape(-1), a_vendor)
 
 
 def test_scaled_isotropic_alpha_stable_2d_direction_uniformity_and_symmetry():
@@ -169,9 +190,9 @@ def test_scaled_isotropic_alpha_stable_2d_direction_uniformity_and_symmetry():
 
 def test_input_validation_alpha_stable():
     with pytest.raises(ValueError):
-        _ = sample_scalar_alpha_stable(10, alpha=1.0, scale=1.0, device="cpu")
+        _ = sample_scaled_scalar_alpha_stable(10, alpha=0.0, device="cpu")
     with pytest.raises(ValueError):
-        _ = sample_scalar_alpha_stable(10, alpha=0.5, scale=0.0, device="cpu")
+        _ = sample_scaled_scalar_alpha_stable(10, alpha=2.1, device="cpu")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

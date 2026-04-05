@@ -1,7 +1,6 @@
 """Diffusion module."""
 
 import warnings
-from typing import Tuple
 import torch
 from ._abs import Base, DDPMAbstarct
 from ._sampling import sample_scaled_scalar_alpha_stable
@@ -82,8 +81,6 @@ class DLPMEps(Base):
         n_trial_A: int = 1,
         n_trial_G: int = 1,
         reduce_type: str = "median",
-        clamp_A: Tuple[float, float] = None,
-        clamp_eps: Tuple[float, float] = None,
         base_or_sample: torch.Tensor = None,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
@@ -111,46 +108,31 @@ class DLPMEps(Base):
             raise ValueError(f"'reduce_type' must be in ('mean','median'), got {reduce_type}.")
         self._reduce_type = reduce_type
 
-        self._clamp_A = clamp_A
-        if (self._clamp_A is not None):
-            if not (isinstance(self._clamp_A, (tuple, list)) and len(self._clamp_A) == 2):
-                raise ValueError("clamp_A must be a (min,max) tuple or None.")
-            self._A_min, self._A_max = float(self._clamp_A[0]), float(self._clamp_A[1])
-
-        self._clamp_eps = clamp_eps
-        if (self._clamp_eps is not None):
-            if not (isinstance(self._clamp_eps, (tuple, list)) and len(self._clamp_eps) == 2):
-                raise ValueError("clamp_eps must be a (min,max) tuple/list or None.")
-            self._eps_min, self._eps_max = float(self._clamp_eps[0]), float(self._clamp_eps[1])
-
-    def _safe_A(self, A):
-        """Clamp positive stable mixing coefficients to a safe numeric range."""
-        A = A.clamp_min(self._eps)  # by default
-        return A.clamp(min=self._A_min, max=self._A_max) if self._clamp_A is not None else A
-
-    def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:  # XXX to be check
+    def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
         """Aggregate Monte Carlo DLPM losses across stable and Gaussian draws."""
         loss_values = loss_values.reshape(self._n_trial_A, self._n_trial_G, self._n)
         if self._reduce_type == "median":
-            loss_values = loss_values.mean(dim=1)
-            loss_values, _ = loss_values.median(dim=0)
-        return loss_values.mean()
+            loss_values = loss_values.mean(dim=1)  # mean over G trials
+            loss_values, _ = loss_values.median(dim=0)  # median over A trials
+        return loss_values.mean()  # mean over samples
 
     def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
         """Compute per-sample epsilon reconstruction errors."""
+        # Note it follows the released code, not the paper, since it's the only variant that worked
+        # Indeed, the loss is divided by and extract term
         loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
         return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()
 
     def _Sigma_1_t(self, A: torch.Tensor) -> torch.Tensor:
-        """Build cumulative path variances from a sampled stable path."""
-        S = torch.zeros((self._n_steps + 1, A.shape[1]), device=A.device, dtype=A.dtype)
-        for t in range(1, self._n_steps + 1):
-            S[t] = self._sigma_t[t - 1].square() * A[t - 1]
+        """Build the vendor-aligned sampling-time Sigma path from one stable chain."""
+        S = torch.zeros((self._n_steps, A.shape[1]), device=A.device, dtype=A.dtype)
+        for t in range(1, self._n_steps):
+            S[t] = self._sigma_t[t - 1].square() * A[t]
             S[t] += self._gamma_t[t - 1].square() * S[t - 1]
         return S
 
     def _g_Sigma_hat_Gamma(self, Sigma_1_t: torch.Tensor, t: int):
-        """Compute reverse-step DLPM coefficients at timestep `t`."""
+        """Compute vendor-aligned reverse-step coefficients from the Sigma path."""
         Sigma_ratio = Sigma_1_t[t - 1] / Sigma_1_t[t].clamp_min(self._eps)
         Gamma_t = 1.0 - Sigma_ratio * self._gamma_t[t - 1].square()
         Gamma_t = Gamma_t.clamp(0.0, 1.0)
@@ -163,13 +145,7 @@ class DLPMEps(Base):
 
     def _draw_A(self, n):
         """Sample positive stable mixing coefficients for DLPM noise."""
-        A = sample_scaled_scalar_alpha_stable(n_samples=n, alpha=self._a, device=self._device,
-                                              dtype=self._fdtype)
-        return self._safe_A(A)
-
-    def _draw_G(self, *shape):
-        """Sample Gaussian noise tensors with the model dtype and device."""
-        return torch.randn(*shape, device=self._device, dtype=self._fdtype)
+        return sample_scaled_scalar_alpha_stable(n_samples=n, alpha=self._a, device=self._device, dtype=self._fdtype)
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
         """Evaluate unreduced DLPM epsilon losses with internal Monte Carlo sampling."""
@@ -182,18 +158,21 @@ class DLPMEps(Base):
             warnings.warn("In 'DLPMEps.loss', input 'z' is ignored "
                           "(z = A G are sampled internally).")
 
-        t = self._prepare_t(t, self._n)
-        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                # (_n_trial_A * _n_trial_G * n,)
-        t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)        # (_n_trial_A * _n_trial_G * n, 1)
+        if t is None:  # default to uniform sampling
+            t = torch.randint(1, self._n_steps, (self._n,), device=self._device, dtype=self._idtype)
+        else:  # if t is given
+            t = self._check_t(t, self._n)
+
+        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                                             # (_n_trial_A * _n_trial_G * n,)
+        t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)                                     # (_n_trial_A * _n_trial_G * n, 1)
 
         A = self._draw_A(self._n_trial_A * self._n)
-        A = self._expand(A.view(self._n_trial_A, 1, self._n)).reshape(-1)                    # (_n_trial_A * _n_trial_G * n,)
-        G = self._draw_G(self._n_trial_A, self._n_trial_G, self._n, self._dim)
-        G = G.reshape(-1, self._dim)                                                         # (_n_trial_A * _n_trial_G * n, dim)
-        eps = A.sqrt().unsqueeze(-1) * G                                                     # (_n_trial_A * _n_trial_G * n, dim)
+        A = self._expand(A.view(self._n_trial_A, 1, self._n)).reshape(-1)                                                 # (_n_trial_A * _n_trial_G * n,)
+        G = torch.randn(self._n_trial_A * self._n_trial_G * self._n, self._dim, device=self._device, dtype=self._fdtype)  # (_n_trial_A * _n_trial_G * n, dim)
+        eps = A.sqrt().unsqueeze(-1) * G                                                                                  # (_n_trial_A * _n_trial_G * n, dim)
 
-        gamma_1_t = self._gamma_1_t.index_select(0, t_e).unsqueeze(-1)                       # (_n_trial_A * _n_trial_G * n, 1)
-        sigma_1_t = self._sigma_1_t.index_select(0, t_e).unsqueeze(-1)                       # (_n_trial_A * _n_trial_G * n, 1)
+        gamma_1_t = self._gamma_1_t.index_select(0, t_e).unsqueeze(-1)                                                    # (_n_trial_A * _n_trial_G * n, 1)
+        sigma_1_t = self._sigma_1_t.index_select(0, t_e).unsqueeze(-1)                                                    # (_n_trial_A * _n_trial_G * n, 1)
         x_1_e = x_1.view(1, 1, self._n, self._dim).expand(self._n_trial_A, self._n_trial_G, self._n, self._dim)
         x_1_e = x_1_e.reshape(-1, self._dim)
 
@@ -212,27 +191,26 @@ class DLPMEps(Base):
         self._net.eval()
 
         # Sample latent stable path A_{1:T} used to build Sigma_{1->t}(A_{1:t})
-        A_path = self._draw_A(self._n_steps * n_samples)
-        A_path = self._safe_A(A_path).reshape(self._n_steps, n_samples)
+        A_path = torch.stack([self._draw_A(n_samples).squeeze(-1) for _ in range(self._n_steps)], dim=0)
         Sigma_1_t = self._Sigma_1_t(A_path)
 
-        A0 = self._draw_A(n_samples).squeeze(-1)
-        G0 = self._draw_G(n_samples, self._dim)
-        eps0 = A0.sqrt().unsqueeze(-1) * G0
-        x = self._sigma_1_t[self._n_steps] * eps0
+        AT = self._draw_A(n_samples).squeeze(-1)
+        GT = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+        x = self._sigma_1_t[self._n_steps] * AT.sqrt().unsqueeze(-1) * GT  # t = T
         l_x = [x]
 
         # Reverse recursion (Table 4 DLPM): mean update divided by gamma_t, then add Gaussian innovation
-        for t in range(self._n_steps - 1, 0, -1):  # t \in [0, T - 1]
-            t_norm = torch.full((n_samples, 1), (t + 1) / self._n_steps, device=self._device, dtype=self._fdtype)  # t_norm \in [1/T, 1]
+        for t in range(self._n_steps - 1, 0, -1):  # t from T - 1 to 0
 
+            t_norm = torch.full((n_samples, 1), t / self._n_steps, device=self._device, dtype=self._fdtype)
             Sigma_hat, gamma_t, Gamma_t = self._g_Sigma_hat_Gamma(Sigma_1_t, t)
 
-            x = x / gamma_t - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * self._net(x, t_norm)
+            # Note it follows the released code, not the paper, since it's the only variant that worked
+            # Indeed, normally only x is divided by gamma_t
+            x = (x - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * self._net(x, t_norm)) / gamma_t
 
             if t > 1:
-                G = self._draw_G(n_samples, self._dim)
-                x = x + Sigma_hat.sqrt().unsqueeze(-1) * G
+                x = x + Sigma_hat.sqrt().unsqueeze(-1) * torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
 
             l_x.append(x)
 

@@ -1,5 +1,6 @@
 """Training utilities for diffusion models."""
 
+import inspect
 import logging
 import math
 from pathlib import Path
@@ -7,6 +8,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from .visitor import CoreMetricsVisitor, TrainVisitor
+
+
+def _call_visitor_hook(visitor: TrainVisitor, hook_name: str, **kwargs) -> None:
+    """Call a visitor hook while supporting legacy hook signatures."""
+    hook = getattr(visitor, hook_name)
+    params = inspect.signature(hook).parameters
+    supported_kwargs = {name: value for name, value in kwargs.items() if name in params}
+    hook(**supported_kwargs)
 
 
 def _validate_train_inputs(
@@ -266,14 +275,22 @@ def train(
     )
 
     for v in visitors:
-        v.on_train_start(target=target, source=source, config=train_config)
+        _call_visitor_hook(
+            v,
+            "on_train_start",
+            target=target,
+            source=source,
+            config=train_config,
+            generative_model=generative_model,
+            net=net,
+        )
 
     global_step = 0
     last_epoch_loss = float("nan")
 
     for epoch in range(int(n_epochs)):
         for v in visitors:
-            v.on_epoch_start()
+            _call_visitor_hook(v, "on_epoch_start", generative_model=generative_model, net=net)
         epoch_losses: List[float] = []
         for (x_cpu,) in loader:
             x = x_cpu.to(device=device, dtype=dtype, non_blocking=pin)
@@ -288,10 +305,10 @@ def train(
             if loss.ndim != 0:
                 raise ValueError(f"generative_model.loss must return a scalar, got shape {tuple(loss.shape)}")
             loss.backward()
-            grad_var, grad_norm_val = _compute_grad_stats(net=net)
 
             if grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=float(grad_clip_norm))
+            grad_var, grad_norm_val = _compute_grad_stats(net=net)
             opt.step()
             scheduler.step()
 
@@ -300,11 +317,19 @@ def train(
             global_step += 1
 
             for v in visitors:
-                v.on_batch_end(loss=loss_f, grad_var=grad_var, grad_norm=grad_norm_val)
+                _call_visitor_hook(
+                    v,
+                    "on_batch_end",
+                    loss=loss_f,
+                    grad_var=grad_var,
+                    grad_norm=grad_norm_val,
+                    generative_model=generative_model,
+                    net=net,
+                )
 
         last_epoch_loss = float(sum(epoch_losses) / float(len(epoch_losses))) if epoch_losses else float("nan")
         for v in visitors:
-            v.on_epoch_end()
+            _call_visitor_hook(v, "on_epoch_end", generative_model=generative_model, net=net)
 
         if (epoch + 1) % int(freq_logging) == 0:
             details = " | ".join([s for s in (v.format_epoch_log() for v in visitors) if s])
@@ -340,7 +365,7 @@ def train(
         )
 
     for v in visitors:
-        v.on_train_end()
+        _call_visitor_hook(v, "on_train_end", generative_model=generative_model, net=net)
 
     logger.info("train | done")
     diagnostics = {

@@ -6,39 +6,47 @@ from genkit.diffusion import DLPMEps
 
 
 class _ZeroNet(torch.nn.Module):
+    """Minimal network that always predicts zero noise."""
+
     def forward(self, x, t):
+        """Return a zero tensor with the same shape as the input batch."""
         return torch.zeros_like(x)
 
 
-def test_dlpmeps_loss_samples_full_time_range(monkeypatch):
-    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
-    x = torch.randn(5, 2, dtype=torch.float32)
+def _make_dlpmeps(n_steps: int = 7) -> DLPMEps:
+    """Build one small CPU DLPM model for indexing-focused tests."""
+    return DLPMEps(net=_ZeroNet(), dim=2, n_steps=n_steps, device="cpu", fdtype=torch.float32)
 
-    orig_randint = torch.randint
+
+def test_dlpmeps_loss_samples_vendor_time_range(monkeypatch):
+    model = _make_dlpmeps(n_steps=7)
+    x = torch.randn(5, 2, dtype=torch.float32)
 
     def _patched_randint(low, high, size, device=None, **kwargs):
         assert low == 1
-        assert high == model._n_steps + 1
+        assert high == model._n_steps
         return torch.full(size, high - 1, device=device, dtype=torch.int64)
 
     monkeypatch.setattr(torch, "randint", _patched_randint)
     loss = model.loss(x)
-    monkeypatch.setattr(torch, "randint", orig_randint)
 
     assert loss.ndim == 0
     assert torch.isfinite(loss).item()
 
 
-def test_dlpmeps_sample_uses_terminal_sigma_index():
+def test_dlpmeps_sample_uses_terminal_sigma_index(monkeypatch):
     n_steps = 4
     n_samples = 3
     dim = 2
-    model = DLPMEps(net=_ZeroNet(), dim=dim, n_steps=n_steps, device="cpu", fdtype=torch.float32)
+    model = _make_dlpmeps(n_steps=n_steps)
 
     model._sigma_1_t = torch.tensor([0.0, 0.0, 0.0, 0.0, 7.0], dtype=torch.float32)
-
     model._draw_A = lambda n: torch.ones(n, 1, device=model._device, dtype=model._fdtype)
-    model._draw_G = lambda *d: torch.ones(*d, device=model._device, dtype=model._fdtype)
+
+    def _patched_randn(*size, device=None, dtype=None, **kwargs):
+        return torch.ones(*size, device=device, dtype=dtype)
+
+    monkeypatch.setattr(torch, "randn", _patched_randn)
 
     def _neutral_reverse(Sigma_1_t, t):
         sigma_hat = torch.zeros(n_samples, device=model._device, dtype=model._fdtype)
@@ -54,7 +62,7 @@ def test_dlpmeps_sample_uses_terminal_sigma_index():
 
 
 def test_dlpmeps_loss_accepts_integer_t():
-    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    model = _make_dlpmeps(n_steps=7)
     x = torch.randn(5, 2, dtype=torch.float32)
 
     loss = model.loss(x, t=3)
@@ -64,7 +72,7 @@ def test_dlpmeps_loss_accepts_integer_t():
 
 
 def test_dlpmeps_loss_accepts_normalized_float_t():
-    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    model = _make_dlpmeps(n_steps=7)
     x = torch.randn(5, 2, dtype=torch.float32)
 
     loss = model.loss(x, t=0.5)
@@ -74,7 +82,7 @@ def test_dlpmeps_loss_accepts_normalized_float_t():
 
 
 def test_dlpmeps_loss_rejects_invalid_t():
-    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    model = _make_dlpmeps(n_steps=7)
     x = torch.randn(5, 2, dtype=torch.float32)
 
     with pytest.raises(ValueError):

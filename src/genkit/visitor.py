@@ -43,11 +43,18 @@ class TrainVisitor:
 
     name: str = "base"
 
-    def on_train_start(self, target, source, config: Dict[str, Any]) -> None:
+    def on_train_start(
+        self,
+        target,
+        source,
+        config: Dict[str, Any],
+        generative_model=None,
+        net: Optional[torch.nn.Module] = None,
+    ) -> None:
         """Hook called once before the training loop starts."""
         pass
 
-    def on_epoch_start(self) -> None:
+    def on_epoch_start(self, generative_model=None, net: Optional[torch.nn.Module] = None) -> None:
         """Hook called at the beginning of each epoch."""
         pass
 
@@ -56,15 +63,17 @@ class TrainVisitor:
         loss: float,
         grad_var: Optional[float],
         grad_norm: Optional[float],
+        generative_model=None,
+        net: Optional[torch.nn.Module] = None,
     ) -> None:
         """Hook called after each optimization step."""
         pass
 
-    def on_epoch_end(self) -> None:
+    def on_epoch_end(self, generative_model=None, net: Optional[torch.nn.Module] = None) -> None:
         """Hook called after the last batch of an epoch."""
         pass
 
-    def on_train_end(self) -> None:
+    def on_train_end(self, generative_model=None, net: Optional[torch.nn.Module] = None) -> None:
         """Hook called once after the training loop finishes."""
         pass
 
@@ -95,7 +104,7 @@ class CoreMetricsVisitor(TrainVisitor):
         self._grad_vars: List[float] = []
         self._grad_norms: List[float] = []
 
-    def on_epoch_start(self) -> None:
+    def on_epoch_start(self, generative_model=None, net: Optional[torch.nn.Module] = None) -> None:
         """Reset per-epoch accumulators before processing a new epoch."""
         self._losses = []
         self._grad_vars = []
@@ -106,6 +115,8 @@ class CoreMetricsVisitor(TrainVisitor):
         loss: float,
         grad_var: Optional[float],
         grad_norm: Optional[float],
+        generative_model=None,
+        net: Optional[torch.nn.Module] = None,
     ) -> None:
         """Accumulate batch-level loss and gradient statistics."""
         self._losses.append(float(loss))
@@ -114,7 +125,7 @@ class CoreMetricsVisitor(TrainVisitor):
         if grad_norm is not None:
             self._grad_norms.append(float(grad_norm))
 
-    def on_epoch_end(self) -> None:
+    def on_epoch_end(self, generative_model=None, net: Optional[torch.nn.Module] = None) -> None:
         """Aggregate the current epoch statistics into the public records."""
         loss_stats = _summary_from_values(self._losses)
         self.training_loss.append(loss_stats["mean"])
