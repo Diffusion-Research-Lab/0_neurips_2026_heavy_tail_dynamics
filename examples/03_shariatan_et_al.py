@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
-from genkit import DDPMV, DLPMEpsOrigin
+from genkit import DLPMEpsOrigin
 from genkit.datasets import fetch_synthetic_data
 from genkit.nn import MLPModel
 from genkit.plotting import PRETTY_RCPARAMS
@@ -23,22 +23,20 @@ args = parser.parse_args()
 figures_dir = Path("_figures")
 figures_dir.mkdir(parents=True, exist_ok=True)
 dim = 2
-alpha_data = 1.7
-n_train_samples = 30_000 if args.blank else 100
-n_steps = 150
+alpha_data = 1.6
+n_train_samples = 10_000 if args.blank else 100
+n_steps = 128
 batch_size = 1024
-n_epochs = 100
-lr = 5e-3
+n_epochs = 1024
+lr = 1e-3
 n_trials = 2
 device = "cuda" if torch.cuda.is_available() else "cpu"
 fdtype = torch.float32
 idtype = torch.int32
 
 model_specs = [
-    {"name": "DDPM", "cls": DDPMV, "gen_kwargs": {}},
-    {"name": "DLPM(1.5)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.5, "monte_carlo_outer": 1}},
-    {"name": "DLPM(1.7)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.7, "monte_carlo_outer": 1}},
-    {"name": "DLPM(1.9)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.9, "monte_carlo_outer": 1}},
+    {"name": "DLPM(1.7)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 1.6}},
+    {"name": "DLPM(2.0)", "cls": DLPMEpsOrigin, "gen_kwargs": {"alpha": 2.0}},
 ]
 
 data_kwargs = dict(alpha=alpha_data, n_samples=n_train_samples, dim=dim, device=device, dtype=fdtype)
@@ -46,7 +44,7 @@ x_train, _, _ = fetch_synthetic_data(target_data="alpha_stable", **data_kwargs)
 
 train_kwargs = dict(target_data=x_train, batch_size=batch_size, n_epochs=n_epochs, lr=lr,
                     device=device, visitors=[CoreMetricsVisitor()])
-net_kwargs = dict(width=64, depth=4, time_dim=32, dropout=0.0, use_norm=True)
+net_kwargs = dict(width=32, depth=3, time_dim=16, dropout=0.0, use_norm=True)
 
 results = []
 total_runs = n_trials * len(model_specs)
