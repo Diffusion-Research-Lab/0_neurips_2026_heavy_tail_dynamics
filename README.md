@@ -55,7 +55,7 @@ python -c "import genkit, labkit; print(genkit.__name__, labkit.__name__)"
 Run smoke test:
 
 ```bash
-python benchmarks/_smoke_test.py
+python benchmarks/main.py --config benchmarks/configs/00_blank.yaml
 ```
 
 Run tiny example:
@@ -81,13 +81,13 @@ make test
 Blank/local pipeline:
 
 ```bash
-make bench-blank
+bash benchmarks/03_launcher.sh --blank
 ```
 
 Full local run:
 
 ```bash
-make bench-run
+bash benchmarks/03_launcher.sh --run
 ```
 
 Slurm:
@@ -105,8 +105,8 @@ make install-bench
 make install-vendor
 make test
 make smoke
-make bench-blank
-make bench-run
+make run-local
+make run-server
 make bench-clean
 make lint
 ```

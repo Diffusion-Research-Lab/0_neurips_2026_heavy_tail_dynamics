@@ -10,6 +10,7 @@ MODE=""
 CPUS=""
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_DIR="${SCRIPT_DIR}/configs"
 VENV_DIR=""
 TOTAL_T0=0
 
@@ -30,8 +31,8 @@ while [[ $# -gt 0 ]]; do
 Usage: bash benchmarks/03_launcher.sh [--run|--blank|--clean] [--cpus N] [--venv-dir DIR]
 
 Options:
-  --run       Run benchmark 04 and benchmark 05 with full configs
-  --blank     Run benchmark 04 and benchmark 05 with *_blank.yml configs
+  --run       Run all benchmark configs found in benchmarks/configs in lexical order
+  --blank     Run the smoke config benchmarks/configs/00_blank.yaml only
   --clean     Remove benchmark-generated artifacts and run pyclean
   --cpus N    Thread controls for OMP/MKL/OPENBLAS/NUMEXPR
   --venv-dir  Virtual env to activate before running (default: auto)
@@ -57,10 +58,8 @@ fi
 
 clean_outputs() {
   echo "[clean] Removing benchmark artifacts..."
-  rm -rf "${SCRIPT_DIR}/_results" \
-         "${SCRIPT_DIR}/_figures" \
-         "${SCRIPT_DIR}/_tables" \
-         "${SCRIPT_DIR}/_data/cifar-100-batches-py"
+  rm -rf "${PROJECT_ROOT}/_results"
+  rm -rf "${PROJECT_ROOT}/runs"
 
   rm -f "${SCRIPT_DIR}"/heavyflow_*.out "${SCRIPT_DIR}"/heavyflow_*.err \
         "${SCRIPT_DIR}"/htfm_*.out "${SCRIPT_DIR}"/htfm_*.err
@@ -117,14 +116,9 @@ if [[ -n "${CPUS}" ]]; then
   export NUMEXPR_NUM_THREADS="${CPUS}"
 fi
 
-if [[ "${MODE}" == "blank" ]]; then
-  CFG_04="${SCRIPT_DIR}/04_alpha_values_benchmark_cfg_blank.yml"
-  CFG_05="${SCRIPT_DIR}/05_loss_H_comparison_benchmark_cfg_blank.yml"
-  MODE_TAG="Blank"
-else
-  CFG_04="${SCRIPT_DIR}/04_alpha_values_benchmark_cfg.yml"
-  CFG_05="${SCRIPT_DIR}/05_loss_H_comparison_benchmark_cfg.yml"
-  MODE_TAG="Run"
+if [[ ! -d "${CONFIG_DIR}" ]]; then
+  echo "[launcher] Missing config directory: ${CONFIG_DIR}" >&2
+  exit 1
 fi
 
 START_TIME="$(date)"
@@ -138,6 +132,19 @@ fmt_duration() {
   printf "%02dh:%02dm:%02ds" "${h}" "${m}" "${s}"
 }
 
+if [[ "${MODE}" == "blank" ]]; then
+  CONFIGS=("${CONFIG_DIR}/00_blank.yaml")
+  MODE_TAG="Blank"
+else
+  mapfile -t CONFIGS < <(find "${CONFIG_DIR}" -maxdepth 1 -type f -name '*.yaml' | sort)
+  MODE_TAG="Run"
+fi
+
+if [[ "${#CONFIGS[@]}" -eq 0 ]]; then
+  echo "[launcher] No config files found in ${CONFIG_DIR}" >&2
+  exit 1
+fi
+
 echo "-------------------------------------------------------------------------------"
 echo "Heavy Tail Flow Benchmark Launcher"
 echo "MODE:         ${MODE}"
@@ -148,43 +155,33 @@ echo "Python:       $(python --version 2>&1)"
 echo "CPUs:         ${CPUS:-<default>}"
 echo "SLURM_JOB_ID: ${SLURM_JOB_ID:-<none>}"
 echo "PYTHONPATH:   ${PYTHONPATH}"
+echo "CONFIG_DIR:   ${CONFIG_DIR}"
+printf "CONFIGS:      %s\n" "${CONFIGS[*]}"
 
-if [[ "${MODE}" == "blank" ]]; then
-  echo "-------------------------------------------------------------------------------"
-  echo "[Blank] Import checks"
-  step_t0="$(date +%s)"
-  python - <<'PY'
+echo "-------------------------------------------------------------------------------"
+echo "[${MODE_TAG}] Import checks"
+step_t0="$(date +%s)"
+python - <<'PY'
 import genkit
 from labkit.config import load_config
 print("blank_imports_ok")
 PY
+step_dt=$(( $(date +%s) - step_t0 ))
+echo "[time] ${MODE_TAG} import checks: $(fmt_duration "${step_dt}") (${step_dt}s)"
+
+for cfg in "${CONFIGS[@]}"; do
+  cfg_name="$(basename "${cfg}")"
+  echo "-------------------------------------------------------------------------------"
+  echo "[${MODE_TAG}] ${cfg_name}"
+  step_t0="$(date +%s)"
+  (
+    cd "${PROJECT_ROOT}"
+    python benchmarks/main.py --config "${cfg}"
+  )
+  echo "[✓] ${MODE_TAG} ${cfg_name}"
   step_dt=$(( $(date +%s) - step_t0 ))
-  echo "[time] Blank import checks: $(fmt_duration "${step_dt}") (${step_dt}s)"
-fi
-
-echo "-------------------------------------------------------------------------------"
-echo "[${MODE_TAG}] Benchmark 04"
-step_t0="$(date +%s)"
-(
-  cd "${SCRIPT_DIR}"
-  python 04_alpha_values_benchmark_exp.py --config "${CFG_04}"
-  python 04_alpha_values_benchmark_fig.py
-)
-echo "[✓] ${MODE_TAG} Benchmark 04"
-step_dt=$(( $(date +%s) - step_t0 ))
-echo "[time] ${MODE_TAG} Benchmark 04: $(fmt_duration "${step_dt}") (${step_dt}s)"
-
-echo "-------------------------------------------------------------------------------"
-echo "[${MODE_TAG}] Benchmark 05"
-step_t0="$(date +%s)"
-(
-  cd "${SCRIPT_DIR}"
-  python 05_loss_H_comparison_benchmark_exp.py --config "${CFG_05}"
-  python 05_loss_H_comparison_benchmark_fig.py
-)
-echo "[✓] ${MODE_TAG} Benchmark 05"
-step_dt=$(( $(date +%s) - step_t0 ))
-echo "[time] ${MODE_TAG} Benchmark 05: $(fmt_duration "${step_dt}") (${step_dt}s)"
+  echo "[time] ${MODE_TAG} ${cfg_name}: $(fmt_duration "${step_dt}") (${step_dt}s)"
+done
 
 END_TIME="$(date)"
 TOTAL_DT=$(( $(date +%s) - TOTAL_T0 ))

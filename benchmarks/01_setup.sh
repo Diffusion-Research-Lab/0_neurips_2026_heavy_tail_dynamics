@@ -7,8 +7,8 @@ set -euo pipefail
 #   bash benchmarks/01_setup.sh --venv-dir /path/to/.venv --check
 #   bash benchmarks/01_setup.sh --use-jz-module --check
 #
-# With --check, this script runs tests, an example, and the benchmark blank pipeline
-# for benchmark 04 and benchmark 05.
+# With --check, this script runs the unit tests. The benchmark smoke pipeline is
+# provided separately via benchmarks/03_launcher.sh --blank.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -41,7 +41,7 @@ Options:
   --venv-dir DIR    Virtual environment directory (default: ./.venv)
   --use-jz-module   Load Jean Zay PyTorch module and skip pip torch install
   --jz-module NAME  Module to load with --use-jz-module (default: pytorch-gpu/py3/2.8.0)
-  --check           Run tests + example + benchmark blank launcher after setup
+  --check           Run unit tests after setup
 USAGE
       exit 0 ;;
     *)

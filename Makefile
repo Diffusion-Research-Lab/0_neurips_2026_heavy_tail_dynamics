@@ -25,11 +25,10 @@ run-server:
 check:
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); flake8 --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); pytest -v'
-	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python benchmarks/_smoke_test.py'
+	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python benchmarks/main.py --config benchmarks/configs/00_blank.yaml'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python examples/01_visu_1d_path.py --blank'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python examples/02_visu_2d.py --blank'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python examples/03_shariatan_et_al.py --blank'
-	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); bash benchmarks/03_launcher.sh --blank'
 
 send:
 	$(BASH) scripts/transfer.sh send

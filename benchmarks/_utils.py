@@ -1,170 +1,262 @@
-"""Utilities for benchmark run artifacts and shared benchmark plotting helpers."""
+"""Utilities for benchmark config sweeps, training runs, and reporting."""
 
-from __future__ import annotations
-
-import json
-import math
+import copy
 from datetime import datetime
+import itertools
+import json
+import logging
 from pathlib import Path
-from typing import Any, Dict
+import random
+from typing import Any
 import numpy as np
-import yaml
+import pandas as pd
 import torch
-from genkit import DLPMEpsOrigin as DLPM
-from genkit import FlowMatchingOrigin as LinearFlow
-from genkit.loss import barron_loss
+import yaml
+from genkit.datasets import fetch_real_data, fetch_synthetic_data
+from genkit.diffusion import DDPMV, DDPMX0, DLPMEps
+from genkit.flow import AlphaStableFlowLinear, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+from genkit.nn import MLPModel, UNetModel
+from genkit.thirdparty import DLPMEpsOrigin, FlowMatchingOrigin, ScoreSDEOrigin
+from genkit.training import train
+from genkit.visitor import CoreMetricsVisitor
 
 
-def to_serializable(x: Any) -> Any:
-    """Convert common benchmark objects to JSON/YAML-friendly values."""
-    if isinstance(x, dict):
-        return {str(k): to_serializable(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple)):
-        return [to_serializable(v) for v in x]
-    if isinstance(x, Path):
-        return str(x)
-    if isinstance(x, torch.Tensor):
-        if x.ndim == 0:
-            return float(x.item())
-        return x.detach().cpu().tolist()
-    if isinstance(x, torch.device):
-        return str(x)
-    if isinstance(x, torch.dtype):
-        return str(x)
-    return x
+MODEL_REGISTRY = {
+    "ddpm_v": DDPMV,
+    "ddpm_x0": DDPMX0,
+    "gaussian_flow_linear": GaussianFlowLinear,
+    "gaussian_flow_ot": GaussianFlowOT,
+    "gaussian_flow_ddpm": GaussianFlowDDPM,
+    "alpha_stable_flow_linear": AlphaStableFlowLinear,
+    "dlpm_eps": DLPMEps,
+    "dlpm_eps_origin": DLPMEpsOrigin,
+    "flow_matching_origin": FlowMatchingOrigin,
+    "score_sde_origin": ScoreSDEOrigin,
+}
 
 
-def create_run_dir(out_root: Path, benchmark_name: str) -> Path:
-    """Create a timestamped run directory and update the benchmark LATEST pointer."""
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    run_dir = out_root / benchmark_name / stamp
+def to_serializable(value: Any) -> Any:
+    """Convert common config and tensor values to JSON/YAML-safe objects."""
+    if isinstance(value, dict):
+        return {str(k): to_serializable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_serializable(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.Tensor):
+        if value.ndim == 0:
+            return float(value.item())
+        return value.detach().cpu().tolist()
+    if isinstance(value, torch.device):
+        return str(value)
+    if isinstance(value, torch.dtype):
+        return str(value)
+    return value
+
+
+def setup_logging() -> None:
+    """Configure a simple console logger."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    """Load one YAML config file."""
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Config at {path} must decode to a mapping.")
+    return data
+
+
+def require_section(config: dict[str, Any], name: str) -> dict[str, Any]:
+    """Return one required config section."""
+    value = config.get(name)
+    if not isinstance(value, dict):
+        raise ValueError(f"Config section '{name}' must be a mapping.")
+    return value
+
+
+def set_seed(seed: int) -> None:
+    """Seed Python, NumPy, and PyTorch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def resolve_dtype(dtype_name: str) -> torch.dtype:
+    """Resolve one configured dtype name to a torch dtype."""
+    dtype_map = {"float32": torch.float32, "float64": torch.float64}
+    key = str(dtype_name).lower()
+    if key not in dtype_map:
+        raise ValueError(f"Unsupported run.dtype={dtype_name!r}. Available: {sorted(dtype_map)}.")
+    return dtype_map[key]
+
+
+def _slug(value: Any) -> str:
+    """Convert one config value to a short path-safe slug."""
+    text = str(value).strip().replace("/", "-").replace(" ", "_")
+    return text.replace(".", "p")
+
+
+def _grid_items(prefix: str, value: Any) -> list[tuple[str, Any]]:
+    """Flatten one nested mapping into dotted leaf paths."""
+    if isinstance(value, dict):
+        items: list[tuple[str, Any]] = []
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            items.extend(_grid_items(child_prefix, child))
+        return items
+    return [(prefix, value)]
+
+
+def _assign_path(target: dict[str, Any], dotted_key: str, value: Any) -> None:
+    """Assign one value inside a nested mapping using a dotted path."""
+    parts = dotted_key.split(".")
+    cursor = target
+    for part in parts[:-1]:
+        cursor = cursor.setdefault(part, {})
+    cursor[parts[-1]] = value
+
+
+def _expand_entry_grid(entry_name: str, entry_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand one named preset over all list-valued leaves."""
+    static_cfg: dict[str, Any] = {}
+    varying_items: list[tuple[str, list[Any]]] = []
+
+    for key, value in _grid_items("", copy.deepcopy(entry_cfg)):
+        if isinstance(value, list):
+            if not value:
+                raise ValueError(f"Entry {entry_name!r} has an empty grid at {key!r}.")
+            varying_items.append((key, value))
+        else:
+            _assign_path(static_cfg, key, value)
+
+    if not varying_items:
+        return [{"entry_name": entry_name, "config": static_cfg, "variant_name": entry_name, "variant_params": {}}]
+
+    variants = []
+    keys = [key for key, _ in varying_items]
+    values = [choices for _, choices in varying_items]
+    for combo in itertools.product(*values):
+        variant_cfg = copy.deepcopy(static_cfg)
+        variant_params = dict(zip(keys, combo, strict=True))
+        for key, value in variant_params.items():
+            _assign_path(variant_cfg, key, value)
+        suffix = "__".join(f"{key.split('.')[-1]}-{_slug(value)}" for key, value in variant_params.items())
+        variants.append(
+            {
+                "entry_name": entry_name,
+                "config": variant_cfg,
+                "variant_name": f"{entry_name}__{suffix}",
+                "variant_params": variant_params,
+            }
+        )
+    return variants
+
+
+def select_entries(section_name: str, registry: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
+    """Select and expand the named presets for one registry section."""
+    variants = []
+    for name in names:
+        if name not in registry:
+            raise KeyError(f"Unknown {section_name} entry {name!r}. Available: {sorted(registry)}")
+        entry_cfg = registry[name]
+        if not isinstance(entry_cfg, dict):
+            raise ValueError(f"{section_name}.{name} must be a mapping.")
+        variants.extend(_expand_entry_grid(name, entry_cfg))
+    return variants
+
+
+def make_batch_dir(run_cfg: dict[str, Any], save_cfg: dict[str, Any]) -> Path:
+    """Create the parent output directory for one config sweep."""
+    root = Path(save_cfg.get("root_dir", "runs")).expanduser()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = str(run_cfg.get("name", "run")).strip() or "run"
+    batch_dir = root / f"{timestamp}_{name}"
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    return batch_dir
+
+
+def _make_run_dir(batch_dir: Path, combo_index: int, combo_name: str) -> Path:
+    """Create one run subdirectory inside the batch directory."""
+    run_dir = batch_dir / f"{combo_index:03d}_{combo_name}"
     run_dir.mkdir(parents=True, exist_ok=False)
-    latest = out_root / benchmark_name / "LATEST"
-    latest.write_text(run_dir.name, encoding="utf-8")
     return run_dir
 
 
-def resolve_run_dir(out_root: Path, benchmark_name: str, run_dir: Path | None = None) -> Path:
-    """Resolve an explicit run directory or the benchmark LATEST pointer."""
-    if run_dir is not None:
-        return run_dir
-    latest = out_root / benchmark_name / "LATEST"
-    if not latest.exists():
-        raise FileNotFoundError(f"No LATEST file found for benchmark '{benchmark_name}' in {out_root}")
-    name = latest.read_text(encoding="utf-8").strip()
-    path = out_root / benchmark_name / name
-    if not path.exists():
-        raise FileNotFoundError(f"LATEST points to missing run directory: {path}")
-    return path
+def build_dataset(dataset_cfg: dict[str, Any], dtype: torch.dtype, device: str | torch.device):
+    """Load one dataset split triplet from config."""
+    kind = str(dataset_cfg.get("kind", "synthetic")).lower()
+    name = str(dataset_cfg.get("name", "")).strip()
+    if not name:
+        raise ValueError("dataset.name must be provided.")
+
+    params = copy.deepcopy(dataset_cfg.get("params", {}))
+    split = copy.deepcopy(dataset_cfg.get("split", {}))
+    kwargs = {**params, **split, "dtype": dtype, "device": device}
+    if kind == "synthetic":
+        return fetch_synthetic_data(name, **kwargs)
+    if kind == "real":
+        return fetch_real_data(name, **kwargs)
+    raise ValueError(f"Unknown dataset.kind={kind!r}. Use 'synthetic' or 'real'.")
 
 
-def write_artifacts(run_dir: Path, config: Dict[str, Any], results: Dict[str, Any], run_summary: str) -> None:
-    """Write benchmark config, results, and summary files into a run directory."""
-    (run_dir / "config.yml").write_text(yaml.safe_dump(to_serializable(config), sort_keys=False), encoding="utf-8")
-    (run_dir / "results.json").write_text(json.dumps(to_serializable(results), indent=2), encoding="utf-8")
-    (run_dir / "run.txt").write_text(run_summary, encoding="utf-8")
+def build_network(network_cfg: dict[str, Any], x_train: torch.Tensor) -> tuple[torch.nn.Module, dict[str, Any]]:
+    """Instantiate one network backbone and return its resolved params."""
+    name = str(network_cfg.get("name", "mlp")).lower()
+    params = copy.deepcopy(network_cfg.get("params", {}))
+    x_shape = tuple(x_train.shape)
+
+    if name == "mlp":
+        params.setdefault("dim", int(x_shape[-1]))
+        return MLPModel(**params), params
+    if name == "mlp_plain":
+        params.setdefault("dim", int(x_shape[-1]))
+        params.setdefault("use_norm", False)
+        return MLPModel(**params), params
+    if name == "unet":
+        if x_train.ndim != 4:
+            raise ValueError(f"UNetModel expects 4D image-like data, got training shape {x_shape}.")
+        params.setdefault("in_channels", int(x_shape[1]))
+        params.setdefault("out_channels", int(x_shape[1]))
+        return UNetModel(**params), params
+    raise ValueError(f"Unknown network.name={name!r}. Available: mlp, mlp_plain, unet.")
 
 
-class BarronLossMixin:
-    """Apply the Barron loss to a flow model."""
+def build_model(
+    model_cfg: dict[str, Any],
+    net: torch.nn.Module,
+    x_train: torch.Tensor,
+    dtype: torch.dtype,
+    device: str | torch.device,
+) -> tuple[Any, dict[str, Any]]:
+    """Instantiate one generative model and return its resolved params."""
+    name = str(model_cfg.get("name", "")).lower()
+    if name not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model.name={name!r}. Available: {sorted(MODEL_REGISTRY)}.")
 
-    def __init__(self, *args, alpha: float = 1.0, **kwargs):
-        """Store the Barron alpha parameter."""
-        super().__init__(*args, **kwargs)
-        self._alpha = float(alpha)
-
-    def _loss_fn(self, pred: torch.Tensor, target: torch.Tensor, t: int):
-        """Compute unreduced Barron losses."""
-        return barron_loss(pred, target, alpha=self._alpha, reduction="none")
-
-    def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:
-        """Average a batch of loss values."""
-        return loss_values.mean()
-
-
-class PreprocessedAsinhTargetMixin:
-    """Apply an asinh target transform during training and invert it at sampling time."""
-
-    def __init__(self, *args, scale: float = 1.0, **kwargs):
-        """Store the asinh scale parameter."""
-        super().__init__(*args, **kwargs)
-        self._scale = float(scale)
-        if self._scale <= 0:
-            raise ValueError(f"scale must be > 0, got {self._scale}")
-
-    def _transform(self, x):
-        """Transform targets with an asinh map."""
-        return (x / self._scale).asinh()
-
-    def _inverse_transform(self, y):
-        """Invert the asinh target transform."""
-        return self._scale * y.sinh()
-
-    def _precompute_loss(self, x, z, t=None):
-        """Run loss precomputation on transformed targets."""
-        return super()._precompute_loss(x=self._transform(x), z=z, t=t)
-
-    def sample(self, n_samples: int):
-        """Sample in transformed space and map back to data space."""
-        return self._inverse_transform(super().sample(n_samples))
+    params = copy.deepcopy(model_cfg.get("params", {}))
+    params.setdefault("dim", int(x_train.shape[-1]))
+    params.setdefault("fdtype", dtype)
+    params.setdefault("device", device)
+    return MODEL_REGISTRY[name](net=net, **params), params
 
 
-class PreprocessedGaussianFlowLinear(PreprocessedAsinhTargetMixin, LinearFlow):
-    """Gaussian flow with an asinh-preprocessed target space."""
-
-    pass
-
-
-def _fmt_alabel(value: float) -> str:
-    """Format an alpha value without trailing decimal noise."""
-    value = float(value)
-    return str(int(value)) if value.is_integer() else f"{value:g}"
-
-
-def _alpha_tag(value: float) -> str:
-    """Convert an alpha value into a filename-safe tag."""
-    return _fmt_alabel(value).replace("-", "neg").replace(".", "p")
+def _epoch_frame(core_records: dict[str, Any]) -> pd.DataFrame:
+    """Convert core visitor histories to a per-epoch DataFrame."""
+    keys = ["training_loss", "training_loss_std", "grad_variance_epoch", "grad_norm_epoch"]
+    max_len = max(len(core_records.get(key, [])) for key in keys)
+    rows = []
+    for idx in range(max_len):
+        row = {"epoch": idx + 1}
+        for key in keys:
+            values = core_records.get(key, [])
+            row[key] = values[idx] if idx < len(values) else float("nan")
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
-def _name_tag(name: str) -> str:
-    """Convert a display name into a class-name-safe tag."""
-    return (
-        name.replace("-", "_")
-        .replace("(", "_")
-        .replace(")", "_")
-        .replace("/", "_")
-        .replace(" ", "_")
-        .replace("+", "plus")
-    )
-
-
-def build_model_specs(cfg):
-    """Build benchmark-05 model specifications from a config object."""
-    base_specs = {
-        "Gaussian": (LinearFlow, {}),
-        "Gaussian + asinh(x)": (PreprocessedGaussianFlowLinear, {"scale": float(cfg.asinh_scale)}),
-        "AlphaStable": (DLPM, {"alpha": float(cfg.stable_alpha_model)}),
-    }
-
-    specs = []
-    for base_name, (base_cls, base_kwargs) in base_specs.items():
-        for barron_alpha in cfg.barron_alphas:
-            name = f"{_name_tag(base_name)}BarronAlpha{_alpha_tag(barron_alpha)}"
-            cls = type(name, (BarronLossMixin, base_cls), {})
-            specs.append(
-                {
-                    "name": name,
-                    "cls": cls,
-                    "source_distri": base_name,
-                    "loss": rf"$\alpha = {_fmt_alabel(barron_alpha)}$",
-                    "loss_alpha": float(barron_alpha),
-                    "extra_kwargs": {**base_kwargs, "alpha": float(barron_alpha)},
-                }
-            )
-    return specs
-
-
-def summarize_metric_values(values):
+def summarize_metric_values(values: list[float]) -> dict[str, float | list[float]]:
     """Return mean and population standard deviation for a list of scalars."""
     values = [float(v) for v in values]
     n_values = max(len(values), 1)
@@ -173,52 +265,12 @@ def summarize_metric_values(values):
     return {"values": values, "mean": mean, "std": std}
 
 
-def loss_linestyle(alpha_value: float):
-    """Return the plotting linestyle associated with a Barron alpha value."""
-    predefined = {
-        2.0: "solid",
-        1.0: "dashed",
-        0.0: "dashdot",
-        -500.0: (0, (3, 1, 1, 1, 1, 1)),
-        -10000.0: "dotted",
-    }
-    if alpha_value in predefined:
-        return predefined[alpha_value]
-    fallback = ["solid", "dashed", "dashdot", "dotted"]
-    return fallback[int(abs(hash(alpha_value))) % len(fallback)]
-
-
-def source_color(name: str) -> str:
-    """Return the plotting color associated with a source distribution label."""
-    if name == "Gaussian":
-        return "tab:blue"
-    if name.startswith("Gaussian +"):
-        return "tab:green"
-    if name == "AlphaStable":
-        return "tab:red"
-    return "tab:gray"
-
-
-def average_trial_curve(trials, key: str) -> np.ndarray:
-    """Average a named diagnostic curve over trials after trimming to a common length."""
-    curves = []
-    for trial in trials:
-        values = trial.get("diagnostics", {}).get("visitors", {}).get("core", {}).get(key, [])
-        if values:
-            curves.append(np.asarray(values, dtype=float))
-    if not curves:
-        return np.asarray([], dtype=float)
-    min_len = min(len(curve) for curve in curves)
-    curves = [curve[:min_len] for curve in curves]
-    return np.mean(np.stack(curves, axis=0), axis=0)
-
-
 def to_latex_sci(x: float, digits: int = 2) -> str:
     """Format a scalar in compact LaTeX scientific notation."""
     if x == 0:
         return "0"
-    exponent = math.floor(math.log10(abs(x)))
-    mantissa = x / (10 ** exponent)
+    exponent = int(np.floor(np.log10(abs(x))))
+    mantissa = x / (10**exponent)
     if exponent == 0:
         return f"{x:.{digits}f}"
     return rf"{mantissa:.{digits}f}\,10^{{{exponent}}}"
@@ -235,10 +287,192 @@ def format_mean_std_latex(mean: float, std: float, bold: bool = False) -> str:
     return rf"${mean_str}_{{\pm {std_str}}}$"
 
 
-def save_figure(fig, fig_dir: Path, stem: str):
-    """Save a figure as PDF and PNG and return the output paths."""
-    pdf_path = fig_dir / f"{stem}.pdf"
-    png_path = fig_dir / f"{stem}.png"
-    fig.savefig(pdf_path, bbox_inches="tight")
-    fig.savefig(png_path, bbox_inches="tight", dpi=200)
-    return [pdf_path, png_path]
+def _resolved_config(
+    config_path: Path,
+    dtype: torch.dtype,
+    batch_dir: Path,
+    dataset_cfg: dict[str, Any],
+    network_cfg: dict[str, Any],
+    model_cfg: dict[str, Any],
+    train_cfg: dict[str, Any],
+    save_cfg: dict[str, Any],
+    x_train: torch.Tensor,
+    x_val: torch.Tensor,
+    x_test: torch.Tensor,
+    net: torch.nn.Module,
+) -> dict[str, Any]:
+    """Build the saved resolved config for one run."""
+    resolved = {
+        "run": {
+            "resolved_config_path": str(config_path.resolve()),
+            "resolved_batch_dir": str(batch_dir.resolve()),
+            "resolved_dtype": str(dtype),
+        },
+        "dataset": copy.deepcopy(dataset_cfg),
+        "network": copy.deepcopy(network_cfg),
+        "model": copy.deepcopy(model_cfg),
+        "train": copy.deepcopy(train_cfg),
+        "save": copy.deepcopy(save_cfg),
+    }
+    resolved["dataset"]["resolved_train_shape"] = list(x_train.shape)
+    resolved["dataset"]["resolved_val_shape"] = list(x_val.shape)
+    resolved["dataset"]["resolved_test_shape"] = list(x_test.shape)
+    resolved["network"]["resolved_param_count"] = int(sum(p.numel() for p in net.parameters()))
+    return to_serializable(resolved)
+
+
+def _write_run_summary(
+    run_dir: Path,
+    resolved_config: dict[str, Any],
+    x_train: torch.Tensor,
+    x_val: torch.Tensor,
+    x_test: torch.Tensor,
+    net: torch.nn.Module,
+    diagnostics: dict[str, Any],
+) -> None:
+    """Write one short human-readable run summary."""
+    core = diagnostics.get("visitors", {}).get("core", {})
+    losses = core.get("training_loss", [])
+    grad_norms = core.get("grad_norm_epoch", [])
+    lines = [
+        f"run_dir: {run_dir}",
+        f"dataset: {resolved_config['dataset']['name']}",
+        f"network: {resolved_config['network']['name']}",
+        f"model: {resolved_config['model']['name']}",
+        f"train_preset: {resolved_config['train'].get('preset_name', 'unknown')}",
+        f"train_shape: {tuple(x_train.shape)}",
+        f"val_shape: {tuple(x_val.shape)}",
+        f"test_shape: {tuple(x_test.shape)}",
+        f"n_parameters: {sum(p.numel() for p in net.parameters())}",
+        f"final_loss: {losses[-1] if losses else 'nan'}",
+        f"final_grad_norm: {grad_norms[-1] if grad_norms else 'nan'}",
+    ]
+    (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run_one(
+    config_path: Path,
+    batch_dir: Path,
+    combo_index: int,
+    combo_name: str,
+    run_cfg: dict[str, Any],
+    dataset_variant: dict[str, Any],
+    network_variant: dict[str, Any],
+    model_variant: dict[str, Any],
+    train_variant: dict[str, Any],
+    save_cfg: dict[str, Any],
+    dtype: torch.dtype,
+) -> dict[str, Any]:
+    """Execute one config combination and save its artifacts."""
+    run_dir = _make_run_dir(batch_dir=batch_dir, combo_index=combo_index, combo_name=combo_name)
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset_cfg = copy.deepcopy(dataset_variant["config"])
+    dataset_cfg["preset_name"] = dataset_variant["variant_name"]
+    network_cfg = copy.deepcopy(network_variant["config"])
+    network_cfg["preset_name"] = network_variant["variant_name"]
+    model_cfg = copy.deepcopy(model_variant["config"])
+    model_cfg["preset_name"] = model_variant["variant_name"]
+    train_cfg = copy.deepcopy(train_variant["config"])
+    train_cfg["preset_name"] = train_variant["variant_name"]
+
+    seed = int(run_cfg.get("seed", 0)) + combo_index - 1
+    set_seed(seed)
+
+    device = str(train_cfg.get("device", "cpu"))
+    x_train, x_val, x_test = build_dataset(dataset_cfg=dataset_cfg, dtype=dtype, device=device)
+    net, network_params = build_network(network_cfg=network_cfg, x_train=x_train)
+    net = net.to(device=device, dtype=dtype)
+    generative_model, model_params = build_model(
+        model_cfg=model_cfg,
+        net=net,
+        x_train=x_train,
+        dtype=dtype,
+        device=device,
+    )
+
+    core_visitor = CoreMetricsVisitor()
+    train_kwargs = copy.deepcopy(train_cfg)
+    train_kwargs.pop("preset_name", None)
+    train_kwargs["device"] = device
+    train_kwargs["ckpt_dir"] = str(ckpt_dir)
+
+    logging.info(f"[{combo_index:03d}] run_dir: {run_dir}")
+    logging.info(
+        f"[{combo_index:03d}] dataset={dataset_variant['variant_name']} "
+        f"network={network_variant['variant_name']} "
+        f"model={model_variant['variant_name']} "
+        f"train={train_variant['variant_name']}"
+    )
+
+    _, diagnostics = train(
+        generative_model=generative_model,
+        target_data=x_train,
+        visitors=[core_visitor],
+        **train_kwargs,
+    )
+
+    resolved_config = _resolved_config(
+        config_path=config_path,
+        dtype=dtype,
+        batch_dir=batch_dir,
+        dataset_cfg=dataset_cfg,
+        network_cfg=network_cfg,
+        model_cfg=model_cfg,
+        train_cfg=train_cfg,
+        save_cfg=save_cfg,
+        x_train=x_train,
+        x_val=x_val,
+        x_test=x_test,
+        net=net,
+    )
+    model_init = {
+        "network": {"name": str(network_cfg.get("name")), "params": to_serializable(network_params)},
+        "model": {"name": str(model_cfg.get("name")), "params": to_serializable(model_params)},
+        "dtype": str(dtype),
+        "device": str(device),
+        "train_shape": list(x_train.shape),
+    }
+    checkpoint = {
+        "model_name": str(model_cfg.get("name")),
+        "network_name": str(network_cfg.get("name")),
+        "model_init": model_init,
+        "network_state_dict": net.state_dict(),
+        "diagnostics": diagnostics,
+    }
+
+    with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(resolved_config, handle, sort_keys=False)
+    with (run_dir / "model_init.json").open("w", encoding="utf-8") as handle:
+        json.dump(to_serializable(model_init), handle, indent=2)
+    torch.save(checkpoint, run_dir / "checkpoint.pt")
+
+    core_records = diagnostics.get("visitors", {}).get("core", {})
+    _epoch_frame(core_records).to_csv(run_dir / "train_stats.csv", index=False)
+    with (run_dir / "train_stats.json").open("w", encoding="utf-8") as handle:
+        json.dump(to_serializable(core_records), handle, indent=2)
+
+    _write_run_summary(
+        run_dir=run_dir,
+        resolved_config=resolved_config,
+        x_train=x_train,
+        x_val=x_val,
+        x_test=x_test,
+        net=net,
+        diagnostics=diagnostics,
+    )
+
+    losses = core_records.get("training_loss", [])
+    grad_norms = core_records.get("grad_norm_epoch", [])
+    return {
+        "combo_index": combo_index,
+        "combo_name": combo_name,
+        "run_dir": str(run_dir),
+        "dataset_preset": dataset_variant["variant_name"],
+        "network_preset": network_variant["variant_name"],
+        "model_preset": model_variant["variant_name"],
+        "train_preset": train_variant["variant_name"],
+        "final_loss": losses[-1] if losses else float("nan"),
+        "final_grad_norm": grad_norms[-1] if grad_norms else float("nan"),
+    }

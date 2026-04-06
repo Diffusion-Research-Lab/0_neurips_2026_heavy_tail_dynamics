@@ -1,0 +1,63 @@
+run:
+  name: blank
+  seed: 0
+  dtype: float32
+
+sweep:
+  datasets:
+    - alpha_stable
+  networks:
+    - mlp_tiny
+  models:
+    - gaussian_flow_linear
+  trains:
+    - smoke
+
+datasets:
+  alpha_stable:
+    kind: synthetic
+    name: alpha_stable
+    params:
+      n_samples: 256
+      alpha: [1.7]
+      dim: [2]
+    split:
+      val_size: 0.15
+      test_size: 0.15
+      random_state: 0
+      standardize: false
+
+networks:
+  mlp_tiny:
+    name: mlp
+    params:
+      width: 16
+      depth: 2
+      time_dim: 8
+      dropout: 0.0
+      use_norm: true
+
+models:
+  gaussian_flow_linear:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 16
+
+trains:
+  smoke:
+    device: cpu
+    batch_size: 64
+    n_epochs: 2
+    lr: 0.001
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.0
+    grad_clip_norm: 1.0
+    lr_schedule: cosine
+    warmup_steps: 0
+    freq_logging: 1
+    ckpt_freq_epochs: 1
+    ckpt_keep_last: 2
+
+save:
+  root_dir: _00_results
