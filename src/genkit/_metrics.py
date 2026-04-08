@@ -2,6 +2,7 @@
 
 import math
 import numpy as np
+from scipy import linalg
 import torch
 
 
@@ -264,3 +265,26 @@ def _mmd2_from_gram_matrices(k_xx, k_yy, k_xy, *, estimator):
     if estimator == "unbiased":
         return (k_xx.sum() - np.trace(k_xx)) / (n_ref * (n_ref - 1)) + (k_yy.sum() - np.trace(k_yy)) / (n_gen * (n_gen - 1)) - 2.0 * k_xy.mean()
     raise ValueError("estimator must be one of {'biased', 'unbiased'}.")
+
+
+def _feature_mean_and_covariance(x):
+    """Return the empirical mean vector and covariance matrix of one 2D array."""
+    mean = np.mean(x, axis=0)
+    cov = np.atleast_2d(np.cov(x, rowvar=False))
+    return mean, cov
+
+
+def _frechet_gaussian_distance(mean_ref, cov_ref, mean_gen, cov_gen, eps=1e-6):
+    """Compute the Fréchet distance between two fitted Gaussian laws."""
+    if eps <= 0.0:
+        raise ValueError("eps must be strictly positive.")
+
+    mean_diff = mean_ref - mean_gen
+    cov_prod_sqrt = linalg.sqrtm(cov_ref @ cov_gen)
+    if not np.isfinite(cov_prod_sqrt).all():
+        eye = np.eye(cov_ref.shape[0], dtype=cov_ref.dtype)
+        cov_prod_sqrt = linalg.sqrtm((cov_ref + eps * eye) @ (cov_gen + eps * eye))
+    if np.iscomplexobj(cov_prod_sqrt):
+        cov_prod_sqrt = cov_prod_sqrt.real
+
+    return float(mean_diff @ mean_diff + np.trace(cov_ref + cov_gen - 2.0 * cov_prod_sqrt))

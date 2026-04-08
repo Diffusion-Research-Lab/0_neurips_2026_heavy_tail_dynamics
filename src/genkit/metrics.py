@@ -9,6 +9,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from ._metrics import (
+    _feature_mean_and_covariance,
+    _frechet_gaussian_distance,
     _mmd2_from_gram_matrices,
     _median_heuristic_gamma,
     _rbf_kernel_matrix,
@@ -25,6 +27,7 @@ from ._metrics import (
 )
 
 __all__ = [
+    "fid",
     "gen_separability_roc_auc",
     "metric_on_quantile",
     "mmd_rbf",
@@ -36,6 +39,24 @@ __all__ = [
     "ssle_tail_curve",
     "wasserstein_distance",
 ]
+
+
+def fid(x_ref, x_gen, eps=1e-6):
+    """Compute a Gaussian Fréchet distance between two feature samples.
+
+    This is the standard Fréchet distance between the empirical Gaussian fits
+    of ``x_ref`` and ``x_gen``. For image features, this coincides with the
+    usual FID computation once the features are fixed.
+    """
+    x_ref = _to_numpy_2d(x_ref)
+    x_gen = _to_numpy_2d(x_gen)
+    _validate_same_feature_dim_numpy(x_ref, x_gen)
+    if x_ref.shape[0] < 2 or x_gen.shape[0] < 2:
+        raise ValueError("fid requires at least two samples in each input.")
+
+    mean_ref, cov_ref = _feature_mean_and_covariance(x_ref)
+    mean_gen, cov_gen = _feature_mean_and_covariance(x_gen)
+    return _frechet_gaussian_distance(mean_ref, cov_ref, mean_gen, cov_gen, eps=eps)
 
 
 def mssle_paired(x_ref, x_gen, scale=1.0, reduction="mean"):
