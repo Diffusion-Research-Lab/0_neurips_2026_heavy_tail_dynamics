@@ -7,6 +7,7 @@ __pycache__/
 # Artifacts / outputs
 _figures/
 _tables/
+sandbox/figures/
 benchmarks/_results/
 benchmarks/_figures/
 benchmarks/_tables/
@@ -16,6 +17,13 @@ benchmarks/_tables_bench_1/
 benchmarks/_reports_bench_3/
 benchmarks/heavyflow_*.out
 benchmarks/heavyflow_*.err
+
+# Latex
+*.bib
+*.tex
+*.aux
+*.log
+*.out
 
 # Serialized objects / checkpoints
 *.pkl

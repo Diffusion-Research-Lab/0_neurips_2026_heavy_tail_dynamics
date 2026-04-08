@@ -54,5 +54,4 @@ EOF
 codex exec \
   --cd "$(pwd)" \
   --sandbox workspace-write \
-  --ask-for-approval never \
   "$PROMPT"
