@@ -11,7 +11,7 @@ from genkit.nn import MLPModel
 from genkit.plotting import PRETTY_RCPARAMS
 from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor
-from _utils import plot_generated_samples
+from _utils import plot_generated_samples, print_done, print_model_step, print_start
 
 
 plt.rcParams.update(PRETTY_RCPARAMS)
@@ -42,6 +42,17 @@ model_specs = [
 data_kwargs = dict(alpha=alpha_data, n_samples=n_train_samples, dim=dim, device=device, dtype=fdtype)
 x_train, _, _ = fetch_synthetic_data(target_data="alpha_stable", **data_kwargs)
 
+print_start(
+    "Shariatan et al comparison",
+    device=device,
+    alpha=alpha_data,
+    n_samples=n_train_samples,
+    n_steps=n_steps,
+    batch_size=batch_size,
+    n_epochs=n_epochs,
+    n_trials=n_trials,
+)
+
 train_kwargs = dict(target_data=x_train, batch_size=batch_size, n_epochs=n_epochs, lr=lr,
                     device=device, visitors=[CoreMetricsVisitor()])
 net_kwargs = dict(width=32, depth=3, time_dim=16, dropout=0.0, use_norm=True)
@@ -60,9 +71,16 @@ for spec in model_specs:
         generator = spec["cls"](net=net, dim=dim, n_steps=n_steps, device=device, fdtype=fdtype, idtype=idtype, **spec["gen_kwargs"])
 
         t0 = time.time()
-        print(f"[{run_idx:02d}/{total_runs:02d}] {spec['name']}: training...", end="")
+        print_model_step(
+            "TRAIN",
+            spec["name"],
+            index=f"{run_idx:02d}/{total_runs:02d}",
+            epochs=n_epochs,
+            batch_size=batch_size,
+            lr=f"{lr:.1e}",
+        )
         generator, diagnostic = train(generative_model=generator, **train_kwargs)
-        print(f" done ({time.time() - t0:.1f} s).")
+        print_model_step("EVAL", spec["name"], index=f"{run_idx:02d}/{total_runs:02d}", elapsed=f"{time.time() - t0:.1f}s")
 
         generators.append(generator)
         diagnostics.append(diagnostic)
@@ -71,4 +89,4 @@ for spec in model_specs:
 
 plot_generated_samples(results, model_specs, data_kwargs, n_trials, figures_dir / "shariatan_et_al_samples.pdf")
 
-print(f"[INFO] Saved figures in {figures_dir}")
+print_done(saved=figures_dir)

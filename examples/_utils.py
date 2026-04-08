@@ -12,6 +12,29 @@ from genkit.nn import MLPModel
 from genkit.training import train
 
 
+def _format_fields(**kwargs) -> str:
+    """Format one compact key=value field list for example prints."""
+    return " | ".join(f"{key}={value}" for key, value in kwargs.items())
+
+
+def print_start(name: str, **kwargs) -> None:
+    """Print one standardized example start line."""
+    fields = _format_fields(**kwargs)
+    print(f"[START] {name}" + (f" | {fields}" if fields else ""))
+
+
+def print_model_step(tag: str, model_name: str, **kwargs) -> None:
+    """Print one standardized per-model progress line."""
+    fields = _format_fields(**kwargs)
+    print(f"[{tag}] {model_name}" + (f" | {fields}" if fields else ""))
+
+
+def print_done(**kwargs) -> None:
+    """Print one standardized example completion line."""
+    fields = _format_fields(**kwargs)
+    print(f"[DONE] {fields}" if fields else "[DONE]")
+
+
 def _latex_sci(x: float, digits: int = 1) -> str:
     """Format one scalar in compact LaTeX scientific notation."""
     if x == 0:
@@ -71,7 +94,15 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
     results = {}
     for i, gen_cls in enumerate(models, start=1):
         if verbose:
-            print(f"[INFO] Running experiment on '{target_data_type}' data with '{gen_cls.__name__}' model:")
+            print_model_step(
+                "TRAIN",
+                gen_cls.__name__,
+                dataset=target_data_type,
+                index=f"{i:02d}/{len(models):02d}",
+                epochs=n_epochs,
+                batch_size=batch_size,
+                lr=f"{lr:.1e}",
+            )
 
         t0 = time.perf_counter()
         net = MLPModel(dim=dim, width=width, depth=depth).to(device=device, dtype=fdtype)
@@ -95,9 +126,14 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
 
         if verbose:
             elapsed = time.perf_counter() - t0
-            print(
-                f"[INFO][{i:02d}/{len(models):02d}] Evaluation: {metric_name} = {metric_value:g} "
-                f"(baseline at {baseline_value:.2e}) ({elapsed:.1f} s)"
+            print_model_step(
+                "EVAL",
+                gen_cls.__name__,
+                index=f"{i:02d}/{len(models):02d}",
+                metric=metric_name,
+                value=f"{metric_value:.2e}",
+                baseline=f"{baseline_value:.2e}",
+                elapsed=f"{elapsed:.1f}s",
             )
 
         results[gen_cls.__name__] = (x_test_gen, x_test)
@@ -142,41 +178,3 @@ def plot_generated_samples(results, model_specs, data_kwargs, n_trials: int, out
     fig.tight_layout(rect=(0, 0, 1.0, 0.9))
     fig.savefig(output_path)
     plt.close(fig)
-
-
-def plot_path_panel(generator, fig, subplot_spec, title, n_plot_samples=500, color="tab:blue"):
-    """Plot sampled 1D trajectories with start and end histograms."""
-    _, trajectories = generator._sample(n_plot_samples)
-    x = np.stack([state.detach().cpu().numpy().reshape(-1) for state in trajectories], axis=0).T
-
-    _, n_local_steps = x.shape
-    timesteps = np.arange(1, n_local_steps + 1)
-    ymax = np.max(np.abs(x))
-
-    inner = subplot_spec.subgridspec(1, 3, width_ratios=[1, 2.25, 1], wspace=0.0)
-    ax_left = fig.add_subplot(inner[0, 0])
-    ax_main = fig.add_subplot(inner[0, 1], sharey=ax_left)
-    ax_right = fig.add_subplot(inner[0, 2], sharey=ax_left)
-
-    for path in x:
-        ax_main.plot(timesteps, path, lw=0.5, alpha=0.1, color=color)
-
-    ax_main.set_xlim(1, n_local_steps)
-    ax_main.set_xlabel("T", fontsize=7)
-    ax_main.set_xticks([1, n_local_steps], ["t=1", f"T={n_local_steps - 1}"], fontsize=7)
-    ax_main.set_yticks([])
-    ax_main.set_ylim(-1.25 * ymax, 1.25 * ymax)
-    ax_main.spines["left"].set_visible(False)
-    ax_main.tick_params(axis="y", length=0)
-    ax_main.set_title(title, fontsize=8)
-
-    for values, hist_ax, invert in [(x[:, 0], ax_left, True), (x[:, -1], ax_right, False)]:
-        hist_ax.hist(values, bins=50, orientation="horizontal", color=color, alpha=0.4)
-        if invert:
-            hist_ax.invert_xaxis()
-        hist_ax.set_xticks([])
-        hist_ax.spines["left"].set_visible(False)
-        hist_ax.spines["bottom"].set_visible(False)
-        hist_ax.tick_params(axis="both", left=False, bottom=False, labelleft=False, labelbottom=False)
-
-    return ax_left, ax_main, ax_right

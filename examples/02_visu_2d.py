@@ -8,7 +8,7 @@ from genkit import (DDPMV, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT,
                     ScoreSDEOrigin)
 from genkit import AlphaStableFlowLinear, DLPMEps, DLPMEpsOrigin
 from genkit.plotting import PRETTY_RCPARAMS, plot_scatter
-from _utils import run_example
+from _utils import print_done, print_start, run_example
 
 
 plt.rcParams.update(PRETTY_RCPARAMS)
@@ -57,6 +57,16 @@ exp_kwargs = dict(extra_data_kwargs=dict(),
                   idtype=torch.int32,
                   )
 
+print_start(
+    "2D sample visualization",
+    dataset=args.data,
+    device=exp_kwargs["device"],
+    n_samples=10_000 if args.blank else 100,
+    n_steps=exp_kwargs["n_steps"],
+    batch_size=exp_kwargs["batch_size"],
+    n_epochs=exp_kwargs["n_epochs"],
+)
+
 results = run_example(models,
                       target_data_type=args.data,
                       n_samples=10_000 if args.blank else 100,
@@ -72,3 +82,5 @@ for i, (name, (x_gen, x_ref)) in enumerate(results.items()):
                  fontsize=10,
                  alpha=0.6,
                  )
+
+print_done(saved=figures_dir)
