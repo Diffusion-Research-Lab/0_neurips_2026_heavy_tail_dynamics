@@ -77,10 +77,10 @@ class DLPMEps(Base):
         net: torch.nn.Module,
         dim: int,
         n_steps: int = 100,
-        alpha: float = 1.9,
+        alpha: float = 1.8,
         n_trial_A: int = 1,
         n_trial_G: int = 1,
-        reduce_type: str = "median",
+        reduce_type: str = "mean",
         base_or_sample: torch.Tensor = None,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
@@ -118,13 +118,15 @@ class DLPMEps(Base):
 
     def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
         """Compute per-sample epsilon reconstruction errors."""
-        # Note it follows the released code, not the paper, since it's the only variant that worked
-        # Indeed, the loss is divided by and extract term
+        # NOTE see L666 in src/genkit/_vendor/DLPM/dlpm/methods/GenerativeLevyProcess.py
+        # NOTE see L272 in src/genkit/_vendor/DLPM/dlpm/methods/dlpm.py
+        # NOTE We follow the released code rather than the paper here.
         loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
         return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()
 
     def _Sigma_1_t(self, A: torch.Tensor) -> torch.Tensor:
         """Build the vendor-aligned sampling-time Sigma path from one stable chain."""
+        # NOTE see L307 in src/genkit/_vendor/DLPM/dlpm/methods/GenerativeLevyProcess.py
         S = torch.zeros((self._n_steps, A.shape[1]), device=A.device, dtype=A.dtype)
         for t in range(1, self._n_steps):
             S[t] = self._sigma_t[t - 1].square() * A[t]
@@ -133,6 +135,7 @@ class DLPMEps(Base):
 
     def _g_Sigma_hat_Gamma(self, Sigma_1_t: torch.Tensor, t: int):
         """Compute vendor-aligned reverse-step coefficients from the Sigma path."""
+        # NOTE see L272 in src/genkit/_vendor/DLPM/dlpm/methods/dlpm.py
         Sigma_ratio = Sigma_1_t[t - 1] / Sigma_1_t[t].clamp_min(self._eps)
         Gamma_t = 1.0 - Sigma_ratio * self._gamma_t[t - 1].square()
         Gamma_t = Gamma_t.clamp(0.0, 1.0)
@@ -205,8 +208,8 @@ class DLPMEps(Base):
             t_norm = torch.full((n_samples, 1), t / self._n_steps, device=self._device, dtype=self._fdtype)
             Sigma_hat, gamma_t, Gamma_t = self._g_Sigma_hat_Gamma(Sigma_1_t, t)
 
-            # Note it follows the released code, not the paper, since it's the only variant that worked
-            # Indeed, normally only x is divided by gamma_t
+            # NOTE see L276 in src/genkit/_vendor/DLPM/dlpm/methods/dlpm.py
+            # NOTE We follow the released code rather than the paper here.
             x = (x - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * self._net(x, t_norm)) / gamma_t
 
             if t > 1:

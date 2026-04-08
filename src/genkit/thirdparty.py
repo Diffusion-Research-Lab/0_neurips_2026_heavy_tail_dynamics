@@ -119,12 +119,12 @@ class DLPMEpsOrigin(Base):
         net: torch.nn.Module,
         dim: int,
         n_steps: int = 100,
-        alpha: float = 1.9,
+        alpha: float = 1.8,
         authors_root: Optional[str] = None,
         time_spacing: str = "linear",
         rescale_timesteps: bool = True,
         isotropic: bool = True,
-        loss_monte_carlo: str = "median",
+        loss_monte_carlo: str = "mean",
         monte_carlo_outer: int = 1,
         monte_carlo_inner: int = 1,
         lploss: float = 2.0,
@@ -166,7 +166,7 @@ class DLPMEpsOrigin(Base):
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         """Draw Gaussian base samples for the DLPM adapter."""
-        return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+        raise ValueError("In DLPMEpsOrigin sampling is handled internally by the DLPM sampler.")
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, **kwargs) -> torch.Tensor:
         """Delegate loss computation to the vendored DLPM implementation."""

@@ -28,33 +28,34 @@ class _ConditionedMLPBlock(nn.Module):
     """Residual MLP block conditioned on a time embedding."""
 
     def __init__(self, width: int, time_dim: int, dropout: float, use_norm: bool):
-        """Build the linear, normalization, and time-conditioning layers."""
         super().__init__()
-        self.norm1 = nn.LayerNorm(width) if use_norm else nn.Identity()
-        self.norm2 = nn.LayerNorm(width) if use_norm else nn.Identity()
+        self.norm = nn.LayerNorm(width) if use_norm else nn.Identity()
         self.fc1 = nn.Linear(width, width)
         self.fc2 = nn.Linear(width, width)
         self.tproj = nn.Linear(time_dim, width)
         self.drop = nn.Dropout(dropout)
         self.act = nn.SiLU()
 
+        # might help benchmarks alignment
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
     def forward(self, x: torch.Tensor, temb: torch.Tensor) -> torch.Tensor:
-        """Apply one residual update conditioned on the time embedding."""
-        h = self.fc1(self.drop(x))
-        h = self.act(self.norm1(h))
-        h = h + self.tproj(self.drop(temb))
-        h = self.fc2(self.drop(h))
-        h = self.norm2(h)
-        return self.act(x + h)
+        h = self.fc1(self.norm(x))
+        h = h + self.tproj(temb)
+        h = self.act(h)
+        h = self.drop(h)
+        h = self.fc2(h)
+        return x + h
 
 
 class MLPModel(nn.Module):
-    """Time-conditioned MLP for 1D/2D vector data."""
+    """Time-conditioned MLP for vector data."""
 
     def __init__(
         self,
         dim: int = 2,
-        width: int = 64,
+        width: int = 128,
         depth: int = 4,
         time_dim: int = 32,
         dropout: float = 0.0,
@@ -69,7 +70,6 @@ class MLPModel(nn.Module):
             nn.Linear(time_dim, time_dim),
             nn.SiLU(),
             nn.Linear(time_dim, time_dim),
-            nn.SiLU(),
         )
         self.blocks = nn.ModuleList(
             _ConditionedMLPBlock(width=width, time_dim=time_dim, dropout=dropout, use_norm=use_norm)
@@ -85,9 +85,11 @@ class MLPModel(nn.Module):
         if x_flat.shape[1] != self.dim:
             raise ValueError(f"Expected flattened input dimension {self.dim}, got {x_flat.shape[1]}.")
 
-        if t.ndim > 1:
-            t = t.reshape(t.shape[0], -1)[:, 0]
-        temb = self.time(timestep_embedding(t, self.time_dim).to(dtype=x.dtype))
+        if t.ndim == 2 and t.shape[1] == 1:
+            t = t[:, 0]
+        elif t.ndim != 1:
+            raise ValueError(f"Expected t to have shape [B] or [B, 1], got {t.shape}.")
+        temb = self.time(timestep_embedding(t, self.time_dim).to(dtype=x.dtype, device=x.device))
 
         h = self.act(self.inp(x_flat))
         for block in self.blocks:
