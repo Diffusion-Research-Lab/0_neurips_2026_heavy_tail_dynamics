@@ -25,9 +25,13 @@ dev = [
   "pytest-cov>=5.0",
 ]
 bench = [
+  "Cython",
   "hmmlearn>=0.3.3",
   "imageio>=2.34",
+  "pot",
   "statsmodels>=0.14",
+  "torchdiffeq",
+  "torchquad",
   "torchvision>=0.20",
   "tqdm>=4.66",
 ]

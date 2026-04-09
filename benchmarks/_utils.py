@@ -504,12 +504,11 @@ def run_one(
                     f"network: {network_variant['variant_name']}",
                     f"model: {model_variant['variant_name']}",
                     f"train: {train_variant['variant_name']}",
-                    f"status: failed",
+                    "status: failed",
                     f"error_type: {type(exc).__name__}",
                     f"error_message: {exc}",
                 ]
-            )
-            + "\n",
+            ) + "\n",
             encoding="utf-8",
         )
         logging.exception("[%03d] run failed: %s", combo_index, run_dir)
