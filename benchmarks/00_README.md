@@ -2,58 +2,40 @@
 
 ### 1) Setup
 
-From the repo root:
-
-```bash
-make install-bench
-```
-
-Or, if you want the benchmark environment, asset prefetch, and optional checks handled for you:
+From the repo root, locally:
 
 ```bash
 make setup-local
 ```
 
-From `benchmarks/`, the underlying setup script is:
+Or on Jean Zay:
 
 ```bash
-bash 01_setup.sh
+make setup-server
 ```
-
-On Jean Zay:
-
-```bash
-bash 01_setup.sh --env-name genkit --use-jz-module --check
-```
-
-The `--check` mode runs unit tests only.
 
 ### 2) Run
 
-Locally with bash:
+Local smoke test:
 
 ```bash
-make run-local
+bash benchmarks/03_launcher.sh --blank
 ```
 
-Smoke-only pipeline:
+Local full config sweep:
 
 ```bash
-bash 03_launcher.sh --blank
+bash benchmarks/03_launcher.sh --run
 ```
 
-Or with Slurm:
+Jean Zay single-job run:
 
 ```bash
-sbatch 02_launcher.slurm
+sbatch benchmarks/02_launcher.slurm
 ```
 
-The launcher now runs YAML configs from `benchmarks/configs/`:
-- `--blank` runs `00_blank.yaml`
-- `--run` runs all `*.yaml` files in lexical order (`00_...`, `01_...`, `03_...`, ...)
-
-### 3) Clean artifacts
+Jean Zay recommended run for the big benchmark:
 
 ```bash
-bash 03_launcher.sh --clean
+sbatch --array=0-7 benchmarks/02_launcher.slurm
 ```
