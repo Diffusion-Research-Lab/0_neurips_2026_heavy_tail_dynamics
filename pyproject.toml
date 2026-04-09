@@ -24,14 +24,11 @@ dev = [
   "pytest>=8.2.1",
 ]
 bench = [
-  "ccxt>=4.4",
   "hmmlearn>=0.3.3",
   "imageio>=2.34",
   "statsmodels>=0.14",
   "torchvision>=0.20",
   "tqdm>=4.66",
-  "ucimlrepo>=0.0.7",
-  "yfinance>=0.2.54",
 ]
 
 [tool.setuptools]

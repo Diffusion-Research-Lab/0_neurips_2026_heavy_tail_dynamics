@@ -6,7 +6,10 @@ import itertools
 from pathlib import Path
 import pandas as pd
 from genkit.datasets import list_datasets
-from benchmarks._utils import load_yaml, make_batch_dir, require_section, resolve_dtype, run_one, select_entries, setup_logging
+try:
+    from benchmarks._utils import load_yaml, make_batch_dir, require_section, resolve_dtype, run_one, select_entries, setup_logging
+except ModuleNotFoundError:
+    from _utils import load_yaml, make_batch_dir, require_section, resolve_dtype, run_one, select_entries, setup_logging
 
 
 if __name__ == "__main__":
@@ -15,7 +18,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Minimal configurable benchmark entrypoint.")
     parser.add_argument("--config", type=Path, required=True, help="Path to one YAML config file.")
+    parser.add_argument("--batch-dir", type=Path, default=None, help="Optional existing/shared batch directory.")
+    parser.add_argument("--shard-count", type=int, default=1, help="Split the combination grid into this many shards.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to execute.")
     args = parser.parse_args()
+
+    if args.shard_count < 1:
+        raise ValueError("--shard-count must be >= 1.")
+    if not 0 <= args.shard_index < args.shard_count:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
 
     config = load_yaml(args.config)
     run_cfg = require_section(config, "run")
@@ -35,13 +46,20 @@ if __name__ == "__main__":
     if not dataset_variants or not network_variants or not model_variants or not train_variants:
         raise ValueError("The sweep must select at least one dataset, network, model, and train entry.")
 
-    batch_dir = make_batch_dir(run_cfg=run_cfg, save_cfg=save_cfg)
+    if args.batch_dir is None:
+        batch_dir = make_batch_dir(run_cfg=run_cfg, save_cfg=save_cfg)
+    else:
+        batch_dir = args.batch_dir.expanduser()
+        batch_dir.mkdir(parents=True, exist_ok=True)
     print(f"batch_dir: {batch_dir}")
+    print(f"shard: {args.shard_index + 1}/{args.shard_count}")
     print(f"available datasets: {', '.join(list_datasets())}")
 
     manifest_rows = []
-    combinations = itertools.product(dataset_variants, network_variants, model_variants, train_variants)
+    combinations = list(itertools.product(dataset_variants, network_variants, model_variants, train_variants))
     for combo_index, (dataset_variant, network_variant, model_variant, train_variant) in enumerate(combinations, start=1):
+        if (combo_index - 1) % args.shard_count != args.shard_index:
+            continue
         combo_name = "__".join(
             [
                 dataset_variant["variant_name"],
@@ -66,9 +84,15 @@ if __name__ == "__main__":
             )
         )
 
-    pd.DataFrame(manifest_rows).to_csv(batch_dir / "manifest.csv", index=False)
-    with (batch_dir / "summary.txt").open("w", encoding="utf-8") as handle:
+    manifest_name = "manifest.csv" if args.shard_count == 1 else f"manifest_shard_{args.shard_index:03d}.csv"
+    summary_name = "summary.txt" if args.shard_count == 1 else f"summary_shard_{args.shard_index:03d}.txt"
+    pd.DataFrame(manifest_rows).to_csv(batch_dir / manifest_name, index=False)
+    n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
+    with (batch_dir / summary_name).open("w", encoding="utf-8") as handle:
         handle.write(f"n_runs: {len(manifest_rows)}\n")
+        handle.write(f"n_failed: {n_failed}\n")
         handle.write(f"config: {args.config.resolve()}\n")
         handle.write(f"batch_dir: {batch_dir.resolve()}\n")
+        handle.write(f"shard_index: {args.shard_index}\n")
+        handle.write(f"shard_count: {args.shard_count}\n")
     print("done")

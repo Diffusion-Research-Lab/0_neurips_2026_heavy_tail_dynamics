@@ -7,6 +7,7 @@ import json
 import logging
 from pathlib import Path
 import random
+import traceback
 from typing import Any
 import numpy as np
 import pandas as pd
@@ -377,6 +378,19 @@ def run_one(
     train_cfg = copy.deepcopy(train_variant["config"])
     train_cfg["preset_name"] = train_variant["variant_name"]
 
+    requested_config = to_serializable(
+        {
+            "run": copy.deepcopy(run_cfg),
+            "dataset": dataset_cfg,
+            "network": network_cfg,
+            "model": model_cfg,
+            "train": train_cfg,
+            "save": copy.deepcopy(save_cfg),
+        }
+    )
+    with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(requested_config, handle, sort_keys=False)
+
     seed = int(run_cfg.get("seed", 0)) + combo_index - 1
     set_seed(seed)
 
@@ -405,74 +419,111 @@ def run_one(
         f"model={model_variant['variant_name']} "
         f"train={train_variant['variant_name']}"
     )
+    try:
+        _, diagnostics = train(
+            generative_model=generative_model,
+            target_data=x_train,
+            visitors=[core_visitor],
+            **train_kwargs,
+        )
 
-    _, diagnostics = train(
-        generative_model=generative_model,
-        target_data=x_train,
-        visitors=[core_visitor],
-        **train_kwargs,
-    )
+        resolved_config = _resolved_config(
+            config_path=config_path,
+            dtype=dtype,
+            batch_dir=batch_dir,
+            dataset_cfg=dataset_cfg,
+            network_cfg=network_cfg,
+            model_cfg=model_cfg,
+            train_cfg=train_cfg,
+            save_cfg=save_cfg,
+            x_train=x_train,
+            x_val=x_val,
+            x_test=x_test,
+            net=net,
+        )
+        model_init = {
+            "network": {"name": str(network_cfg.get("name")), "params": to_serializable(network_params)},
+            "model": {"name": str(model_cfg.get("name")), "params": to_serializable(model_params)},
+            "dtype": str(dtype),
+            "device": str(device),
+            "train_shape": list(x_train.shape),
+        }
+        checkpoint = {
+            "model_name": str(model_cfg.get("name")),
+            "network_name": str(network_cfg.get("name")),
+            "model_init": model_init,
+            "network_state_dict": net.state_dict(),
+            "diagnostics": diagnostics,
+        }
 
-    resolved_config = _resolved_config(
-        config_path=config_path,
-        dtype=dtype,
-        batch_dir=batch_dir,
-        dataset_cfg=dataset_cfg,
-        network_cfg=network_cfg,
-        model_cfg=model_cfg,
-        train_cfg=train_cfg,
-        save_cfg=save_cfg,
-        x_train=x_train,
-        x_val=x_val,
-        x_test=x_test,
-        net=net,
-    )
-    model_init = {
-        "network": {"name": str(network_cfg.get("name")), "params": to_serializable(network_params)},
-        "model": {"name": str(model_cfg.get("name")), "params": to_serializable(model_params)},
-        "dtype": str(dtype),
-        "device": str(device),
-        "train_shape": list(x_train.shape),
-    }
-    checkpoint = {
-        "model_name": str(model_cfg.get("name")),
-        "network_name": str(network_cfg.get("name")),
-        "model_init": model_init,
-        "network_state_dict": net.state_dict(),
-        "diagnostics": diagnostics,
-    }
+        with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(resolved_config, handle, sort_keys=False)
+        with (run_dir / "model_init.json").open("w", encoding="utf-8") as handle:
+            json.dump(to_serializable(model_init), handle, indent=2)
+        torch.save(checkpoint, run_dir / "checkpoint.pt")
 
-    with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(resolved_config, handle, sort_keys=False)
-    with (run_dir / "model_init.json").open("w", encoding="utf-8") as handle:
-        json.dump(to_serializable(model_init), handle, indent=2)
-    torch.save(checkpoint, run_dir / "checkpoint.pt")
+        core_records = diagnostics.get("visitors", {}).get("core", {})
+        _epoch_frame(core_records).to_csv(run_dir / "train_stats.csv", index=False)
+        with (run_dir / "train_stats.json").open("w", encoding="utf-8") as handle:
+            json.dump(to_serializable(core_records), handle, indent=2)
 
-    core_records = diagnostics.get("visitors", {}).get("core", {})
-    _epoch_frame(core_records).to_csv(run_dir / "train_stats.csv", index=False)
-    with (run_dir / "train_stats.json").open("w", encoding="utf-8") as handle:
-        json.dump(to_serializable(core_records), handle, indent=2)
+        _write_run_summary(
+            run_dir=run_dir,
+            resolved_config=resolved_config,
+            x_train=x_train,
+            x_val=x_val,
+            x_test=x_test,
+            net=net,
+            diagnostics=diagnostics,
+        )
 
-    _write_run_summary(
-        run_dir=run_dir,
-        resolved_config=resolved_config,
-        x_train=x_train,
-        x_val=x_val,
-        x_test=x_test,
-        net=net,
-        diagnostics=diagnostics,
-    )
-
-    losses = core_records.get("training_loss", [])
-    grad_norms = core_records.get("grad_norm_epoch", [])
-    return {
-        "combo_index": combo_index,
-        "combo_name": combo_name,
-        "run_dir": str(run_dir),
-        "dataset_preset": dataset_variant["variant_name"],
-        "network_preset": network_variant["variant_name"],
-        "model_preset": model_variant["variant_name"],
-        "train_preset": train_variant["variant_name"],
-        "final_loss": losses[-1] if losses else float("nan"),
-        "final_grad_norm": grad_norms[-1] if grad_norms else float("nan"),
-    }
+        losses = core_records.get("training_loss", [])
+        grad_norms = core_records.get("grad_norm_epoch", [])
+        return {
+            "combo_index": combo_index,
+            "combo_name": combo_name,
+            "run_dir": str(run_dir),
+            "dataset_preset": dataset_variant["variant_name"],
+            "network_preset": network_variant["variant_name"],
+            "model_preset": model_variant["variant_name"],
+            "train_preset": train_variant["variant_name"],
+            "status": "ok",
+            "error_type": "",
+            "error_message": "",
+            "final_loss": losses[-1] if losses else float("nan"),
+            "final_grad_norm": grad_norms[-1] if grad_norms else float("nan"),
+        }
+    except Exception as exc:
+        error_text = traceback.format_exc()
+        (run_dir / "error.txt").write_text(error_text, encoding="utf-8")
+        (run_dir / "summary.txt").write_text(
+            "\n".join(
+                [
+                    f"run_dir: {run_dir}",
+                    f"dataset: {dataset_variant['variant_name']}",
+                    f"network: {network_variant['variant_name']}",
+                    f"model: {model_variant['variant_name']}",
+                    f"train: {train_variant['variant_name']}",
+                    f"status: failed",
+                    f"error_type: {type(exc).__name__}",
+                    f"error_message: {exc}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        logging.exception("[%03d] run failed: %s", combo_index, run_dir)
+        return {
+            "combo_index": combo_index,
+            "combo_name": combo_name,
+            "run_dir": str(run_dir),
+            "dataset_preset": dataset_variant["variant_name"],
+            "network_preset": network_variant["variant_name"],
+            "model_preset": model_variant["variant_name"],
+            "train_preset": train_variant["variant_name"],
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "final_loss": float("nan"),
+            "final_grad_norm": float("nan"),
+        }

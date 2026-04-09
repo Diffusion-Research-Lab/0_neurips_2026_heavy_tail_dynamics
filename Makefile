@@ -1,6 +1,8 @@
 PYTHON ?= python
 BASH ?= bash
 VENV_DIR ?= .venv
+JZ_MODULE ?= pytorch-gpu/py3/2.8.0
+VENV_PYTHON = $(CURDIR)/$(VENV_DIR)/bin/python
 PYTHONPATH_EXPORT = export PYTHONPATH="$(CURDIR)/src$${PYTHONPATH:+:$$PYTHONPATH}"
 
 .DEFAULT_GOAL := help
@@ -9,12 +11,12 @@ PYTHONPATH_EXPORT = export PYTHONPATH="$(CURDIR)/src$${PYTHONPATH:+:$$PYTHONPATH
 
 setup-local:
 	$(BASH) benchmarks/01_setup.sh --venv-dir "$(VENV_DIR)"
-	PYTHON="$(CURDIR)/$(VENV_DIR)/bin/python" $(BASH) scripts/fetch_vendor.sh
+	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch_vendor.sh
 
 setup-server:
 	$(BASH) benchmarks/01_setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
-	PYTHON="$(CURDIR)/$(VENV_DIR)/bin/python" $(BASH) scripts/fetch_vendor.sh
-	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); $(PYTHON) -c "from genkit.datasets import list_datasets, fetch_real_data; [fetch_real_data(name, val_size=0.15, test_size=0.15) for name in list_datasets()]"'
+	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch_vendor.sh
+	$(BASH) -lc 'module purge || true; module load "$(JZ_MODULE)"; source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); "$(VENV_PYTHON)" -c "from genkit.datasets import fetch_real_data, get_dataset_metadata, list_datasets; [fetch_real_data(name, val_size=0.15, test_size=0.15) for name in list_datasets() if get_dataset_metadata(name)[\"dataset_type\"] == \"real\"]"'
 
 run-local:
 	$(BASH) benchmarks/03_launcher.sh --run --venv-dir "$(CURDIR)/$(VENV_DIR)"
@@ -25,7 +27,7 @@ run-server:
 check:
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); flake8 --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); pytest -v'
-	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python benchmarks/main.py --config benchmarks/configs/00_blank.yaml'
+	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python -m benchmarks.main --config benchmarks/configs/00_blank.yaml'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python examples/01_visu_1d_path.py --blank'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python examples/02_visu_2d.py --blank'
 	$(BASH) -lc 'source "$(VENV_DIR)/bin/activate"; $(PYTHONPATH_EXPORT); python examples/03_shariatan_et_al.py --blank'

@@ -5,9 +5,9 @@
 #SBATCH --error=htfm_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=20
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --partition=gpu_p13
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --account=jcx@v100
@@ -16,25 +16,29 @@ set -euo pipefail
 
 # Usage:
 #   sbatch benchmarks/02_launcher.slurm
+#   sbatch --array=0-7 benchmarks/02_launcher.slurm
 #
-# This script prepares the Slurm environment and delegates benchmark execution to
-# benchmarks/03_launcher.sh --run, which executes all configs in benchmarks/configs
-# in lexical order.
+# Defaults to benchmarks/configs/01_big.yaml.
+# With a Slurm array, each task runs one shard of the same config.
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
+PYTHON_BIN=""
+
 if [[ -d "${SUBMIT_DIR}/src/genkit" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
   PROJECT_ROOT="${SUBMIT_DIR}"
   SCRIPT_DIR="${SUBMIT_DIR}/benchmarks"
-elif [[ -d "${SUBMIT_DIR}/../src/genkit" && -d "${SUBMIT_DIR}/../src/labkit" ]]; then
+elif [[ -d "${SUBMIT_DIR}/../src/genkit" && -d "${SUBMIT_DIR}/../src/labkit" && -d "${SUBMIT_DIR}/../benchmarks" ]]; then
   PROJECT_ROOT="$(cd -- "${SUBMIT_DIR}/.." && pwd)"
-  SCRIPT_DIR="${SUBMIT_DIR}"
+  SCRIPT_DIR="${PROJECT_ROOT}/benchmarks"
 else
   echo "[slurm] Could not infer project root from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
   echo "[slurm] Submit from repo root or benchmarks directory." >&2
   exit 1
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
+CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/01_big.yaml}"
+BATCH_DIR="${BATCH_DIR:-}"
 
 if [[ ! -d "${PROJECT_ROOT}/src/genkit" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
   echo "[slurm] Expected directories not found:" >&2
@@ -67,14 +71,20 @@ fi
 
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
+PYTHON_BIN="$(command -v python)"
 export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
-if ! command -v python >/dev/null 2>&1; then
+if [[ -z "${PYTHON_BIN}" ]]; then
   echo "[slurm] python command not found after venv activation." >&2
   exit 1
 fi
 
-python - <<'PY'
+if [[ ! -f "${CONFIG_PATH}" ]]; then
+  echo "[slurm] Missing config file: ${CONFIG_PATH}" >&2
+  exit 1
+fi
+
+"${PYTHON_BIN}" - <<'PY'
 import torch
 import genkit
 from labkit.config import load_config
@@ -87,17 +97,51 @@ export MKL_NUM_THREADS="${CPUS}"
 export OPENBLAS_NUM_THREADS="${CPUS}"
 export NUMEXPR_NUM_THREADS="${CPUS}"
 
+SHARD_COUNT="${SHARD_COUNT:-${SLURM_ARRAY_TASK_COUNT:-1}}"
+SHARD_INDEX="${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}"
+
+if [[ -z "${BATCH_DIR}" && "${SHARD_COUNT}" -gt 1 ]]; then
+  SAVE_ROOT="$("${PYTHON_BIN}" - <<PY
+from pathlib import Path
+import yaml
+cfg = yaml.safe_load(Path("${CONFIG_PATH}").read_text())
+print(cfg.get("save", {}).get("root_dir", "runs"))
+PY
+)"
+  JOB_TAG="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}"
+  CONFIG_STEM="$(basename "${CONFIG_PATH}" .yaml)"
+  BATCH_DIR="${PROJECT_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+fi
+
+if [[ -n "${BATCH_DIR}" ]]; then
+  mkdir -p "${BATCH_DIR}"
+fi
+
 echo "=============================================================================="
 echo "Heavy Tail Flow Benchmark Runner (GPU / Slurm)"
 echo "SUBMIT_DIR:    ${SUBMIT_DIR}"
 echo "PROJECT_ROOT:  ${PROJECT_ROOT}"
 echo "VENV_DIR:      ${VENV_DIR}"
 echo "HOST:          $(hostname)"
-echo "Python:        $(python --version 2>&1)"
+echo "Python:        $("${PYTHON_BIN}" --version 2>&1)"
 echo "SLURM_JOB_ID:  ${SLURM_JOB_ID:-<none>}"
+echo "CONFIG_PATH:   ${CONFIG_PATH}"
+echo "SHARD:         $((SHARD_INDEX + 1))/${SHARD_COUNT}"
+echo "BATCH_DIR:     ${BATCH_DIR:-<auto>}"
 echo "CPUs:          ${CPUS}"
 echo "CUDA devices:  ${CUDA_VISIBLE_DEVICES:-<none>}"
 echo "=============================================================================="
 
 srun nvidia-smi || true
-srun bash "${SCRIPT_DIR}/03_launcher.sh" --run --cpus "${CPUS}"
+CMD=(
+  "${PYTHON_BIN}" -m benchmarks.main
+  --config "${CONFIG_PATH}"
+  --shard-count "${SHARD_COUNT}"
+  --shard-index "${SHARD_INDEX}"
+)
+
+if [[ -n "${BATCH_DIR}" ]]; then
+  CMD+=(--batch-dir "${BATCH_DIR}")
+fi
+
+srun "${CMD[@]}"

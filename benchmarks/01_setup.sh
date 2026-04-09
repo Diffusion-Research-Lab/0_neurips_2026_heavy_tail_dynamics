@@ -13,6 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_ROOT}/.venv"
+PYTHONPATH_VALUE="${PROJECT_ROOT}/src"
 DO_CHECK=0
 USE_JZ_MODULE=0
 JZ_MODULE="pytorch-gpu/py3/2.8.0"
@@ -76,40 +77,38 @@ fi
 
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
+PYTHON_BIN="$(command -v python)"
 
-python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import sys
 print(f"[setup] Using Python {sys.version.split()[0]}")
 PY
 
 if [[ "${USE_JZ_MODULE}" == "1" ]]; then
   echo "[setup] Upgrading pip (module mode, pinned to avoid egg incompatibility)"
-  python -m pip install --upgrade "pip<25.1" --no-input
+  "${PYTHON_BIN}" -m pip install --upgrade "pip<25.1" --no-input
 else
   echo "[setup] Upgrading build tooling"
-  python -m pip install --upgrade pip setuptools wheel --no-input
+  "${PYTHON_BIN}" -m pip install --upgrade pip setuptools wheel --no-input
 fi
 
 echo "[setup] Installing project packages with benchmark extras"
-pip install -e "${PROJECT_ROOT}[dev,bench]" --no-input
+"${PYTHON_BIN}" -m pip install -e "${PROJECT_ROOT}[dev,bench]" --no-input
 
-echo "[setup] Verifying imports (core + benchmark dataset deps)"
-PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-python - <<'PY'
-import ccxt
+echo "[setup] Verifying imports (core + benchmark deps)"
+PYTHONPATH="${PYTHONPATH_VALUE}${PYTHONPATH:+:${PYTHONPATH}}" \
+"${PYTHON_BIN}" - <<'PY'
 import genkit
 import pandas
 import torch
-import ucimlrepo
-import yfinance
 from labkit.config import load_config
-print(f"imports_ok torch={torch.__version__} pandas={pandas.__version__} ccxt={ccxt.__version__}")
+print(f"imports_ok torch={torch.__version__} pandas={pandas.__version__}")
 PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then
   echo "[setup] Running unit tests"
-  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-  pytest -q "${PROJECT_ROOT}/tests"
+  PYTHONPATH="${PYTHONPATH_VALUE}${PYTHONPATH:+:${PYTHONPATH}}" \
+  "${PYTHON_BIN}" -m pytest -q "${PROJECT_ROOT}/tests"
 fi
 
 cat <<NEXT
@@ -117,6 +116,6 @@ cat <<NEXT
 [setup] Done.
 To use this environment in your current shell:
   source "${VENV_DIR}/bin/activate"
-  export PYTHONPATH=${PROJECT_ROOT}/src\${PYTHONPATH:+:\$PYTHONPATH}
+  export PYTHONPATH=${PYTHONPATH_VALUE}\${PYTHONPATH:+:\$PYTHONPATH}
 
 NEXT
