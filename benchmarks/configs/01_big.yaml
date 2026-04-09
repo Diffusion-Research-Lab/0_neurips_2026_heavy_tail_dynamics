@@ -1,0 +1,159 @@
+run:
+  name: big
+  seed: 0
+  dtype: float32
+
+sweep:
+  datasets:
+    - alpha_stable_target
+    - gaussian_target
+  networks:
+    - mlp_small
+    - mlp_medium
+  models:
+    - ddpm_v
+    - ddpm_x0
+    - gaussian_flow_linear
+    - gaussian_flow_ot
+    - gaussian_flow_ddpm
+    - alpha_stable_flow_linear
+    - dlpm_eps
+    - dlpm_eps_origin
+    - flow_matching_origin
+    - score_sde_origin
+  trains:
+    - short
+    - long
+
+datasets:
+  alpha_stable_target:
+    kind: synthetic
+    name: alpha_stable
+    params:
+      n_samples: 80000
+      alpha: [1.5, 1.625, 1.75, 1.875, 2.0]
+      dim: [10]
+    split:
+      val_size: 0.15
+      test_size: 0.15
+      random_state: 0
+      standardize: false
+
+  gaussian_target:
+    kind: synthetic
+    name: gaussian
+    params:
+      n_samples: 80000
+      dim: [10]
+    split:
+      val_size: 0.15
+      test_size: 0.15
+      random_state: 0
+      standardize: false
+
+networks:
+  mlp_small:
+    name: mlp
+    params:
+      width: 32
+      depth: 2
+      time_dim: 8
+      dropout: 0.0
+      use_norm: true
+
+  mlp_medium:
+    name: mlp
+    params:
+      width: 128
+      depth: 5
+      time_dim: 64
+      dropout: 0.0
+      use_norm: true
+
+models:
+  ddpm_v:
+    name: ddpm_v
+    params:
+      n_steps: 128
+
+  ddpm_x0:
+    name: ddpm_x0
+    params:
+      n_steps: 128
+
+  gaussian_flow_linear:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 128
+
+  gaussian_flow_ot:
+    name: gaussian_flow_ot
+    params:
+      n_steps: 128
+
+  gaussian_flow_ddpm:
+    name: gaussian_flow_ddpm
+    params:
+      n_steps: 128
+
+  alpha_stable_flow_linear:
+    name: alpha_stable_flow_linear
+    params:
+      n_steps: 128
+      alpha: [1.5, 1.625, 1.75, 1.875, 2.0]
+
+  dlpm_eps:
+    name: dlpm_eps
+    params:
+      n_steps: 128
+      alpha: [1.5, 1.625, 1.75, 1.875, 2.0]
+
+  dlpm_eps_origin:
+    name: dlpm_eps_origin
+    params:
+      n_steps: 128
+      alpha: [1.5, 1.625, 1.75, 1.875, 2.0]
+
+  flow_matching_origin:
+    name: flow_matching_origin
+    params:
+      n_steps: 128
+
+  score_sde_origin:
+    name: score_sde_origin
+    params:
+      n_steps: 128
+
+trains:
+  short:
+    device: cpu
+    batch_size: 1024
+    n_epochs: 128
+    lr: 0.005
+    num_workers: 0
+    use_adamw: false
+    weight_decay: 0.0
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 0
+    freq_logging: 10
+    ckpt_freq_epochs: 16
+    ckpt_keep_last: 2
+
+  long:
+    device: cpu
+    batch_size: 1024
+    n_epochs: 1024
+    lr: 0.005
+    num_workers: 0
+    use_adamw: false
+    weight_decay: 0.0
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 0
+    freq_logging: 10
+    ckpt_freq_epochs: 64
+    ckpt_keep_last: 3
+
+save:
+  root_dir: _01_results
