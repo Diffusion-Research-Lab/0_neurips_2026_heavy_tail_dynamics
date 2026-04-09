@@ -2,10 +2,11 @@
 
 from sklearn.utils import Bunch
 import pandas as pd
+import pytest
 import torch
 
 from genkit._datasets import _load_default_credit
-from genkit.datasets import fetch_real_data, get_dataset_metadata, list_datasets
+from genkit.datasets import fetch_real_data, fetch_synthetic_data, get_dataset_metadata, list_datasets
 
 
 def _mock_default_credit_bunch():
@@ -65,3 +66,25 @@ def test_default_credit_is_registered():
         "split_mode": "random",
         "dataset_type": "real",
     }
+
+
+def test_fetch_synthetic_data_supports_gaussian():
+    x_train, x_val, x_test = fetch_synthetic_data(
+        "gaussian",
+        n_samples=20,
+        dim=3,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        dtype=torch.float32,
+    )
+
+    assert x_train.shape == (12, 3)
+    assert x_val.shape == (4, 3)
+    assert x_test.shape == (4, 3)
+    assert x_train.dtype == torch.float32
+
+
+def test_fetch_synthetic_data_rejects_real_dataset_name():
+    with pytest.raises(ValueError, match="expected 'synthetic'"):
+        fetch_synthetic_data("default_credit", n_samples=8)

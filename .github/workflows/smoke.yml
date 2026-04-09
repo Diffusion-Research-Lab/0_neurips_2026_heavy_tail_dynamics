@@ -23,4 +23,4 @@ jobs:
           pip install -e .[dev,bench]
 
       - name: Run smoke test
-        run: python benchmarks/_smoke_test.py
+        run: python -m benchmarks.main --config benchmarks/configs/00_blank.yaml

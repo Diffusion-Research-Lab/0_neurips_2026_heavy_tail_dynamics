@@ -3,7 +3,6 @@
 from typing import Tuple
 import numpy as np
 import torch
-from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import StandardScaler
 
 
@@ -97,6 +96,11 @@ def model_est_jacobian_spectral_curve(
 
 def fit_hmm_on_weight_stats(weight_stats, n_states=None, random_state=0):
     """Fit an HMM on per-epoch weight statistics to segment training phases."""
+    try:
+        from hmmlearn.hmm import GaussianHMM
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError("fit_hmm_on_weight_stats requires the optional 'hmmlearn' dependency.") from exc
+
     X = np.asarray(weight_stats, dtype=float)
     if X.ndim != 2:
         raise ValueError("weight_stats must be a 2D array-like object of shape (n_epochs, n_stats).")
