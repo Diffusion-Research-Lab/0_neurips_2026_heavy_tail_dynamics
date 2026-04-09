@@ -91,8 +91,8 @@ class DLPMEps(Base):
                          fdtype=fdtype, idtype=idtype, device=device)
 
         self._a = float(alpha)
-        if not (0.0 < self._a < 2.0):
-            raise ValueError(f"'alpha' must be in (0,2), got {self._a}.")
+        if not (0.0 < self._a <= 2.0):
+            raise ValueError(f"'alpha' must be in (0,2], got {self._a}.")
 
         _, _, self._betas, _ = cosine_schedule(n_steps, device=device, fdtype=fdtype, idtype=idtype)
         self._gamma_t = (1.0 - self._betas).clamp_min(self._eps).pow(1.0 / self._a)

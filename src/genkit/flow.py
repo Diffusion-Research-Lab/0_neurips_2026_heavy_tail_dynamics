@@ -196,8 +196,8 @@ class AlphaStableFlowLinear(GaussianFlowLinear):
         self._reduce_type = reduce_type
 
         self._a = float(alpha)
-        if not (0.0 < self._a < 2.0):
-            raise ValueError(f"'alpha' must be in (0,2), got {self._a}.")
+        if not (0.0 < self._a <= 2.0):
+            raise ValueError(f"'alpha' must be in (0,2], got {self._a}.")
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         """Sample alpha-stable source noise via Gaussian scale mixtures."""
