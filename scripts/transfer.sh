@@ -6,8 +6,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-}"
 REMOTE_HOST="jz"
 REMOTE_BASE="/lustre/fswork/projects/rech/jcx/uor49lv/src"
+REMOTE_ROOT="${REMOTE_HOST}:${REMOTE_BASE}"
 REMOTE_PROJECT="${REMOTE_HOST}:${REMOTE_BASE}/flowbench"
-LOCAL_EXPLOIT_DIR="${PROJECT_ROOT}/benchmarks/_exploit"
+LOCAL_EXPLOIT_DIR="${PROJECT_ROOT}/benchmarks/analysis/data"
 WORK_DIR="/tmp/flowbench"
 SUPP_DIR="/tmp/anonymous_code_supp"
 ZIP_NAME="code.zip"
@@ -54,6 +55,7 @@ stage_project() {
       --exclude '_data/' \
       --exclude '_weights/' \
       --exclude 'benchmarks/*_results*/' \
+      --exclude 'benchmarks/analysis/data/' \
       --exclude 'benchmarks/_reports*/' \
       --exclude 'benchmarks/_data/' \
       --exclude 'benchmarks/_weights/' \
@@ -71,10 +73,10 @@ stage_project() {
 send_code() {
     echo "Send to Jean Zay"
     echo "Source: ${PROJECT_ROOT}"
-    echo "Remote: ${REMOTE_BASE}"
+    echo "Remote: ${REMOTE_ROOT}"
 
     stage_project "${WORK_DIR}"
-    rsync -avh --info=stats2,progress2 "${WORK_DIR}" "${REMOTE_BASE}/"
+    rsync -avh --info=stats2,progress2 "${WORK_DIR}" "${REMOTE_ROOT}/"
     rm -rf "${WORK_DIR}"
 }
 
