@@ -1,10 +1,10 @@
 ## FlowBench
 
 [![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![CI](https://github.com/hcherkaoui/neurips_2026_heaytail_flow_matching/actions/workflows/ci.yml/badge.svg)](https://github.com/hcherkaoui/neurips_2026_heaytail_flow_matching/actions/workflows/ci.yml)
-[![flake8](https://github.com/hcherkaoui/neurips_2026_heaytail_flow_matching/actions/workflows/flake8.yml/badge.svg)](https://github.com/hcherkaoui/neurips_2026_heaytail_flow_matching/actions/workflows/flake8.yml)
-[![codecov](https://codecov.io/gh/hcherkaoui/flowbench/graph/badge.svg?token=TUPpZ5mAZ5)](https://codecov.io/gh/hcherkaoui/flowbench)
-[![Smoke](https://github.com/hcherkaoui/neurips_2026_heaytail_flow_matching/actions/workflows/smoke.yml/badge.svg)](https://github.com/hcherkaoui/neurips_2026_heaytail_flow_matching/actions/workflows/smoke.yml)
+[![CI](https://github.com/hcherkaoui/flowbench/actions/workflows/ci.yml/badge.svg)](https://github.com/hcherkaoui/flowbench/actions/workflows/ci.yml)
+[![flake8](https://github.com/hcherkaoui/flowbench/actions/workflows/flake8.yml/badge.svg)](https://github.com/hcherkaoui/flowbench/actions/workflows/flake8.yml)
+[![codecov](https://codecov.io/gh/hcherkaoui/flowbench/graph/badge.svg?branch=master&token=TUPpZ5mAZ5)](https://codecov.io/gh/hcherkaoui/flowbench)
+[![Smoke](https://github.com/hcherkaoui/flowbench/actions/workflows/smoke.yml/badge.svg)](https://github.com/hcherkaoui/flowbench/actions/workflows/smoke.yml)
 ![maintenance-status](https://img.shields.io/badge/maintenance-active-brightgreen.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 

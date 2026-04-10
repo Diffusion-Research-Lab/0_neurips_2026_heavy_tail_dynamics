@@ -33,6 +33,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,10 +49,19 @@ jobs:
           pip install -e .[dev,bench]
 
       - name: Run tests with coverage
-        run: pytest --cov=genkit --cov-report=xml --cov-report=term-missing -q
+        run: |
+          pytest \
+            --cov=genkit \
+            --cov=labkit \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            -q
 
       - name: Upload coverage reports to Codecov
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: hcherkaoui/flowbench
+          files: ./coverage.xml
+          fail_ci_if_error: true
+          verbose: true
