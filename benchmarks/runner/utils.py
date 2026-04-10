@@ -361,6 +361,7 @@ def run_one(
     network_variant: dict[str, Any],
     model_variant: dict[str, Any],
     train_variant: dict[str, Any],
+    trial_idx: int,
     save_cfg: dict[str, Any],
     dtype: torch.dtype,
 ) -> dict[str, Any]:
@@ -380,7 +381,7 @@ def run_one(
 
     requested_config = to_serializable(
         {
-            "run": copy.deepcopy(run_cfg),
+            "run": {**copy.deepcopy(run_cfg), "trial_idx": int(trial_idx)},
             "dataset": dataset_cfg,
             "network": network_cfg,
             "model": model_cfg,
@@ -483,6 +484,7 @@ def run_one(
             "combo_index": combo_index,
             "combo_name": combo_name,
             "run_dir": str(run_dir),
+            "trial_idx": trial_idx,
             "dataset_preset": dataset_variant["variant_name"],
             "network_preset": network_variant["variant_name"],
             "model_preset": model_variant["variant_name"],
@@ -516,6 +518,7 @@ def run_one(
             "combo_index": combo_index,
             "combo_name": combo_name,
             "run_dir": str(run_dir),
+            "trial_idx": trial_idx,
             "dataset_preset": dataset_variant["variant_name"],
             "network_preset": network_variant["variant_name"],
             "model_preset": model_variant["variant_name"],

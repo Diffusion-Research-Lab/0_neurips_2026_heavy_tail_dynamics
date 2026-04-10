@@ -15,10 +15,10 @@
 set -euo pipefail
 
 # Usage:
-#   sbatch benchmarks/02_launcher.slurm
-#   sbatch --array=0-7 benchmarks/02_launcher.slurm
+#   sbatch benchmarks/launchers/slurm.sh
+#   sbatch --array=0-7 benchmarks/launchers/slurm.sh
 #
-# Defaults to benchmarks/configs/01_big.yaml.
+# Defaults to benchmarks/configs/01_benchmark.yaml.
 # With a Slurm array, each task runs one shard of the same config.
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
@@ -27,17 +27,15 @@ PYTHON_BIN=""
 
 if [[ -d "${SUBMIT_DIR}/src/genkit" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
   PROJECT_ROOT="${SUBMIT_DIR}"
-  SCRIPT_DIR="${SUBMIT_DIR}/benchmarks"
 elif [[ -d "${SUBMIT_DIR}/../src/genkit" && -d "${SUBMIT_DIR}/../src/labkit" && -d "${SUBMIT_DIR}/../benchmarks" ]]; then
   PROJECT_ROOT="$(cd -- "${SUBMIT_DIR}/.." && pwd)"
-  SCRIPT_DIR="${PROJECT_ROOT}/benchmarks"
 else
   echo "[slurm] Could not infer project root from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
   echo "[slurm] Submit from repo root or benchmarks directory." >&2
   exit 1
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
-CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/01_big.yaml}"
+CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/01_benchmark.yaml}"
 BATCH_DIR="${BATCH_DIR:-}"
 
 if [[ ! -d "${PROJECT_ROOT}/src/genkit" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
@@ -64,7 +62,7 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     echo "[slurm] Missing virtual environment." >&2
     echo "[slurm] Expected: ${PROJECT_ROOT}/.venv-genkit (or ${PROJECT_ROOT}/.venv)" >&2
     echo "[slurm] Run setup first on login node:" >&2
-    echo "  bash benchmarks/01_setup.sh --env-name genkit --use-jz-module" >&2
+    echo "  bash benchmarks/launchers/setup.sh --env-name genkit --use-jz-module" >&2
     exit 1
   fi
 fi
@@ -134,7 +132,7 @@ echo "==========================================================================
 
 srun nvidia-smi || true
 CMD=(
-  "${PYTHON_BIN}" -m benchmarks.main
+  "${PYTHON_BIN}" -m benchmarks.runner.main
   --config "${CONFIG_PATH}"
   --shard-count "${SHARD_COUNT}"
   --shard-index "${SHARD_INDEX}"
