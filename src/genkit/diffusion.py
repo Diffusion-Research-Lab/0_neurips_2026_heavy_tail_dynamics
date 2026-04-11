@@ -150,6 +150,23 @@ class DLPMEps(Base):
         """Sample positive stable mixing coefficients for DLPM noise."""
         return sample_scaled_scalar_alpha_stable(n_samples=n, alpha=self._a, device=self._device, dtype=self._fdtype)
 
+    def _sample_source_default(self, n_samples: int, *, expand_trials: bool = False) -> torch.Tensor:
+        """Draw alpha-stable source samples, optionally expanded for Monte Carlo loss."""
+        if expand_trials:
+            A = self._draw_A(self._n_trial_A * n_samples)
+            A = self._expand(A.view(self._n_trial_A, 1, n_samples)).reshape(-1)
+            G = torch.randn(
+                self._n_trial_A * self._n_trial_G * n_samples,
+                self._dim,
+                device=self._device,
+                dtype=self._fdtype,
+            )
+            return A.sqrt().unsqueeze(-1) * G
+
+        A = self._draw_A(n_samples).reshape(n_samples)
+        G = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+        return A.sqrt().unsqueeze(-1) * G
+
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
         """Evaluate unreduced DLPM epsilon losses with internal Monte Carlo sampling."""
         x_1 = x.to(device=self._device, dtype=self._fdtype)
@@ -169,10 +186,7 @@ class DLPMEps(Base):
         t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                                             # (_n_trial_A * _n_trial_G * n,)
         t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)                                     # (_n_trial_A * _n_trial_G * n, 1)
 
-        A = self._draw_A(self._n_trial_A * self._n)
-        A = self._expand(A.view(self._n_trial_A, 1, self._n)).reshape(-1)                                                 # (_n_trial_A * _n_trial_G * n,)
-        G = torch.randn(self._n_trial_A * self._n_trial_G * self._n, self._dim, device=self._device, dtype=self._fdtype)  # (_n_trial_A * _n_trial_G * n, dim)
-        eps = A.sqrt().unsqueeze(-1) * G                                                                                  # (_n_trial_A * _n_trial_G * n, dim)
+        eps = self._sample_source_default(self._n, expand_trials=True)                                                    # (_n_trial_A * _n_trial_G * n, dim)
 
         gamma_1_t = self._gamma_1_t.index_select(0, t_e).unsqueeze(-1)                                                    # (_n_trial_A * _n_trial_G * n, 1)
         sigma_1_t = self._sigma_1_t.index_select(0, t_e).unsqueeze(-1)                                                    # (_n_trial_A * _n_trial_G * n, 1)
@@ -197,9 +211,9 @@ class DLPMEps(Base):
         A_path = torch.stack([self._draw_A(n_samples).squeeze(-1) for _ in range(self._n_steps)], dim=0)
         Sigma_1_t = self._Sigma_1_t(A_path)
 
-        AT = self._draw_A(n_samples).squeeze(-1)
-        GT = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
-        x = self._sigma_1_t[self._n_steps] * AT.sqrt().unsqueeze(-1) * GT  # t = T
+        eps = self._sample_source_default(n_samples)
+
+        x = self._sigma_1_t[self._n_steps] * eps  # t = T
         l_x = [x]
 
         # Reverse recursion (Table 4 DLPM): mean update divided by gamma_t, then add Gaussian innovation

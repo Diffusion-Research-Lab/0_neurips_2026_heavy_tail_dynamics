@@ -3,7 +3,6 @@
 import numpy as np
 import torch
 from ._abs import GaussianFlowAbstract
-from ._sampling import sample_scaled_scalar_alpha_stable
 
 
 class GaussianFlowLinear(GaussianFlowAbstract):
@@ -162,57 +161,3 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
         """Compute the reduced VP flow-matching objective."""
         return self._reduce(self._loss(x=x, z=z, t=t))
-
-
-class AlphaStableFlowLinear(GaussianFlowLinear):
-    """Alpha source flow with a linear path (Flow Matching)."""
-    _family = "flow"
-
-    def __init__(
-        self,
-        net: torch.nn.Module,
-        dim: int,
-        n_steps: int = 1000,
-        t_min: float = 0.01,
-        t_max: float = 0.99,
-        alpha: float = 1.5,
-        reduce_type: str = "median",
-        base_or_sample: torch.Tensor = None,
-        fdtype: torch.dtype = torch.float32,
-        idtype: torch.dtype = torch.int32,
-        device: torch.device = "cpu",
-    ):
-        """Initialize the alpha-stable linear flow model and its source distribution."""
-        super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
-                         fdtype=fdtype, idtype=idtype, device=device)
-
-        self._t_min = float(t_min)
-        self._t_max = float(t_max)
-        if not (0.0 <= self._t_min < self._t_max <= 1.0):
-            raise ValueError(f"Need 0 <= t_min < t_max <= 1, got {self._t_min}, {self._t_max}")
-
-        if reduce_type not in ("mean", "median"):
-            raise ValueError(f"'reduce_type' must be in ('mean','median'), got {reduce_type}.")
-        self._reduce_type = reduce_type
-
-        self._a = float(alpha)
-        if not (0.0 < self._a <= 2.0):
-            raise ValueError(f"'alpha' must be in (0,2], got {self._a}.")
-
-    def _sample_source_default(self, n_samples: int) -> torch.Tensor:
-        """Sample alpha-stable source noise via Gaussian scale mixtures."""
-        A = sample_scaled_scalar_alpha_stable(n_samples=n_samples, alpha=self._a,
-                                              device=self._device, dtype=self._fdtype)
-        G = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
-        return A.sqrt() * G
-
-    def _reduce(self, loss_values: torch.Tensor) -> torch.Tensor:  # XXX to be check
-        """Reduce alpha-stable flow losses with the configured aggregation rule."""
-        if self._reduce_type == "mean":
-            return loss_values.mean()
-        return loss_values.median()
-
-    def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: int) -> torch.Tensor:
-        """Compute per-sample epsilon reconstruction errors."""
-        loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
-        return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()
