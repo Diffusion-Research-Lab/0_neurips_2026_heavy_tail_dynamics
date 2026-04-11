@@ -8,9 +8,9 @@ import torch
 from genkit import DLPMEpsOrigin
 from genkit.datasets import fetch_synthetic_data
 from genkit.nn import MLPModel
-from genkit.plotting import PRETTY_RCPARAMS
 from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor
+from labkit.report import PRETTY_RCPARAMS
 from _utils import plot_generated_samples, print_done, print_model_step, print_start
 
 

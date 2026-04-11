@@ -41,7 +41,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return out
 
 
-def _parse_dtype(name: str) -> torch.dtype:
+def parse_dtype(name: str) -> torch.dtype:
     m = {
         "float32": torch.float32,
         "float": torch.float32,
@@ -57,7 +57,7 @@ def _parse_dtype(name: str) -> torch.dtype:
     return m[key]
 
 
-def _parse_idtype(name: str) -> torch.dtype:
+def parse_idtype(name: str) -> torch.dtype:
     m = {
         "int32": torch.int32,
         "int": torch.int32,
@@ -128,9 +128,9 @@ def load_config(path: Union[str, Path], defaults: Dict[str, Any] = DEFAULTS) -> 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     merged = _deep_merge(defaults, raw)
 
-    dtype = _parse_dtype(merged.get("dtype", "float64"))
-    fdtype = _parse_dtype(merged.get("fdtype", merged.get("dtype", "float64")))
-    idtype = _parse_idtype(merged.get("idtype", "int32"))
+    dtype = parse_dtype(merged.get("dtype", "float64"))
+    fdtype = parse_dtype(merged.get("fdtype", merged.get("dtype", "float64")))
+    idtype = parse_idtype(merged.get("idtype", "int32"))
     merged = _materialize_specials(merged, dtype=dtype)
 
     # resolve runtime fields (kept generic; no per-key testing beyond these)

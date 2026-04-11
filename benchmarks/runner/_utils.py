@@ -6,20 +6,20 @@ import itertools
 import json
 import logging
 from pathlib import Path
-import random
 import traceback
 from typing import Any
-import numpy as np
 import pandas as pd
 import torch
 import yaml
 from genkit.datasets import fetch_real_data, fetch_synthetic_data
 from genkit.diffusion import DDPMV, DDPMX0, DLPMEps
-from genkit.flow import AlphaStableFlowLinear, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+from genkit.flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
 from genkit.nn import MLPModel, UNetModel
 from genkit.thirdparty import DLPMEpsOrigin, FlowMatchingOrigin, ScoreSDEOrigin
 from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor
+from labkit.config import parse_dtype
+from labkit.utils import set_seed
 
 
 MODEL_REGISTRY = {
@@ -28,7 +28,6 @@ MODEL_REGISTRY = {
     "gaussian_flow_linear": GaussianFlowLinear,
     "gaussian_flow_ot": GaussianFlowOT,
     "gaussian_flow_ddpm": GaussianFlowDDPM,
-    "alpha_stable_flow_linear": AlphaStableFlowLinear,
     "dlpm_eps": DLPMEps,
     "dlpm_eps_origin": DLPMEpsOrigin,
     "flow_matching_origin": FlowMatchingOrigin,
@@ -77,20 +76,9 @@ def require_section(config: dict[str, Any], name: str) -> dict[str, Any]:
     return value
 
 
-def set_seed(seed: int) -> None:
-    """Seed Python, NumPy, and PyTorch."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-
 def resolve_dtype(dtype_name: str) -> torch.dtype:
     """Resolve one configured dtype name to a torch dtype."""
-    dtype_map = {"float32": torch.float32, "float64": torch.float64}
-    key = str(dtype_name).lower()
-    if key not in dtype_map:
-        raise ValueError(f"Unsupported run.dtype={dtype_name!r}. Available: {sorted(dtype_map)}.")
-    return dtype_map[key]
+    return parse_dtype(dtype_name)
 
 
 def _slug(value: Any) -> str:
@@ -255,37 +243,6 @@ def _epoch_frame(core_records: dict[str, Any]) -> pd.DataFrame:
             row[key] = values[idx] if idx < len(values) else float("nan")
         rows.append(row)
     return pd.DataFrame(rows)
-
-
-def summarize_metric_values(values: list[float]) -> dict[str, float | list[float]]:
-    """Return mean and population standard deviation for a list of scalars."""
-    values = [float(v) for v in values]
-    n_values = max(len(values), 1)
-    mean = float(sum(values) / n_values)
-    std = float((sum((value - mean) ** 2 for value in values) / n_values) ** 0.5)
-    return {"values": values, "mean": mean, "std": std}
-
-
-def to_latex_sci(x: float, digits: int = 2) -> str:
-    """Format a scalar in compact LaTeX scientific notation."""
-    if x == 0:
-        return "0"
-    exponent = int(np.floor(np.log10(abs(x))))
-    mantissa = x / (10**exponent)
-    if exponent == 0:
-        return f"{x:.{digits}f}"
-    return rf"{mantissa:.{digits}f}\,10^{{{exponent}}}"
-
-
-def format_mean_std_latex(mean: float, std: float, bold: bool = False) -> str:
-    """Format a mean-plus-std pair as a LaTeX mathtext string."""
-    mean_str = to_latex_sci(mean, digits=2)
-    if np.isclose(std, 0.0):
-        return rf"$\mathbf{{{mean_str}}}$" if bold else rf"${mean_str}$"
-    std_str = to_latex_sci(std, digits=2)
-    if bold:
-        return rf"$\mathbf{{{mean_str}}}_{{\pm {std_str}}}$"
-    return rf"${mean_str}_{{\pm {std_str}}}$"
 
 
 def _resolved_config(

@@ -3,7 +3,7 @@
 [![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/hcherkaoui/flowbench/actions/workflows/ci.yml/badge.svg)](https://github.com/hcherkaoui/flowbench/actions/workflows/ci.yml)
 [![flake8](https://github.com/hcherkaoui/flowbench/actions/workflows/flake8.yml/badge.svg)](https://github.com/hcherkaoui/flowbench/actions/workflows/flake8.yml)
-[![codecov](https://codecov.io/gh/hcherkaoui/flowbench/graph/badge.svg?branch=master&token=TUPpZ5mAZ5)](https://codecov.io/gh/hcherkaoui/flowbench)
+[![codecov](https://codecov.io/gh/hcherkaoui/flowbench/graph/badge.svg?branch=master&token=YOUR_PRIVATE_CODECOV_BADGE_TOKEN)](https://codecov.io/gh/hcherkaoui/flowbench)
 [![Smoke](https://github.com/hcherkaoui/flowbench/actions/workflows/smoke.yml/badge.svg)](https://github.com/hcherkaoui/flowbench/actions/workflows/smoke.yml)
 ![maintenance-status](https://img.shields.io/badge/maintenance-active-brightgreen.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -22,6 +22,8 @@ FlowBench provides:
 - heavy-tailed samplers and generative baselines for flow-matching and diffusion models,
 - lightweight training, inspection, and evaluation utilities to compare learned generative dynamics,
 - benchmark loaders and sweep tooling for reproducible experiments on synthetic and real datasets.
+
+For a private Codecov badge, replace `YOUR_PRIVATE_CODECOV_BADGE_TOKEN` with the private badge token from the Codecov repo settings.
 
 ### Install
 
@@ -46,7 +48,7 @@ make run-local
 Submit the benchmark on Jean Zay after a setup:
 
 ```bash
-make setup-server && make run-server
+make setup-jz && make run-jz
 ```
 
 ### Minimal Example

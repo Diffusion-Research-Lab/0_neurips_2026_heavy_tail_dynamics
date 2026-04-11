@@ -44,9 +44,9 @@ supp:
 help:
 	@printf "Available targets:\n"
 	@printf "  %-14s %s\n" "setup-local" "Fetch vendors and install the local benchmark environment"
-	@printf "  %-14s %s\n" "setup-server" "Fetch vendors, install the Jean Zay environment, and prefetch real datasets"
+	@printf "  %-14s %s\n" "setup-jz" "Fetch vendors, install the Jean Zay environment, and prefetch real datasets"
 	@printf "  %-14s %s\n" "run-local" "Run benchmarks locally via benchmarks/launchers/local.sh --run"
-	@printf "  %-14s %s\n" "run-server" "Submit the Slurm benchmark job via benchmarks/launchers/slurm.sh"
+	@printf "  %-14s %s\n" "run-jz" "Submit the Slurm benchmark job via benchmarks/launchers/slurm.sh"
 	@printf "  %-14s %s\n" "check" "Run lint, tests, blank examples, smoke, and blank benchmarks"
 	@printf "  %-14s %s\n" "send" "Send the project tree to the remote benchmark host"
 	@printf "  %-14s %s\n" "fetch" "Fetch benchmark result directories into benchmarks/analysis/data"

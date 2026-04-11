@@ -10,6 +10,7 @@ from genkit.datasets import fetch_synthetic_data
 from genkit.metrics import metric_on_quantile, mssle, sliced_wasserstein2
 from genkit.nn import MLPModel
 from genkit.training import train
+from labkit.report import to_latex_sci
 
 
 def _format_fields(**kwargs) -> str:
@@ -35,13 +36,48 @@ def print_done(**kwargs) -> None:
     print(f"[DONE] {fields}" if fields else "[DONE]")
 
 
-def _latex_sci(x: float, digits: int = 1) -> str:
-    """Format one scalar in compact LaTeX scientific notation."""
-    if x == 0:
-        return "0"
-    exponent = int(np.floor(np.log10(abs(x))))
-    mantissa = x / (10**exponent)
-    return rf"{mantissa:.{digits}f}\,10^{{{exponent}}}"
+def _format_tick(v: float, dec: int = 2, tol: float = 1e-6) -> str:
+    """Format tick value compactly for example figures."""
+    if np.isfinite(v) and abs(v - round(v)) < tol:
+        return str(int(round(v)))
+    return f"{v:.{dec}g}"
+
+
+def plot_scatter(
+    x: torch.Tensor,
+    x_ref: torch.Tensor,
+    plot_dir: str | Path,
+    *,
+    perc_to_plot: float = 0.99,
+    pad: float = 1.05,
+    alpha: float = 0.5,
+    figsize: tuple[float, float] = (5, 4),
+    fontsize: int = 18,
+    suffix: str = "experiment",
+) -> str:
+    """Save one 2D reference/generated scatter plot for examples."""
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = plot_dir / f"{suffix}_2d_scatter.pdf"
+
+    x = x.detach().cpu().numpy()
+    x_ref = x_ref.detach().cpu().numpy()
+    center = np.median(np.vstack([x, x_ref]), axis=0)
+    half_xy = np.quantile(np.abs(np.vstack([x, x_ref]) - center), perc_to_plot, axis=0)
+    half = float(np.max(half_xy))
+
+    plt.figure(figsize=figsize)
+    plt.scatter(x_ref[:, 0], x_ref[:, 1], s=6, label="Target", alpha=alpha)
+    plt.scatter(x[:, 0], x[:, 1], s=6, label="Generated", alpha=alpha)
+    plt.xlim(center[0] - pad * half, center[0] + pad * half)
+    plt.ylim(center[1] - pad * half, center[1] + pad * half)
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.legend(fontsize=fontsize)
+    plt.tight_layout(pad=0.8)
+    plt.savefig(pdf_path, dpi=300)
+    plt.close()
+
+    return str(pdf_path)
 
 
 def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, verbose=True):
@@ -169,7 +205,7 @@ def plot_generated_samples(results, model_specs, data_kwargs, n_trials: int, out
         ax.text(0.5, -0.06, f"(trial {trial_to_plot + 1})", ha="center", va="bottom", transform=ax.transAxes, fontsize=8)
 
         title = rf"$\mathbf{{{spec['name']}}}$" + "\n\n"
-        title += rf"$\mathbf{{MSSLE_{{0.95}}}} \;=\; {_latex_sci(mean_mssle_95)} \;\pm\; {_latex_sci(std_mssle_95)}$"
+        title += rf"$\mathbf{{MSSLE_{{0.95}}}} \;=\; {to_latex_sci(mean_mssle_95, digits=1)} \;\pm\; {to_latex_sci(std_mssle_95, digits=1)}$"
         ax.set_title(title, fontsize=7)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)

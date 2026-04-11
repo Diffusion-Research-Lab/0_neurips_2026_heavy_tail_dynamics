@@ -6,10 +6,11 @@ import itertools
 from pathlib import Path
 import pandas as pd
 from genkit.datasets import list_datasets
+from labkit.config import parse_dtype
 try:
-    from benchmarks.runner.utils import load_yaml, make_batch_dir, require_section, resolve_dtype, run_one, select_entries, setup_logging
+    from benchmarks.runner._utils import load_yaml, make_batch_dir, require_section, run_one, select_entries, setup_logging
 except ModuleNotFoundError:
-    from utils import load_yaml, make_batch_dir, require_section, resolve_dtype, run_one, select_entries, setup_logging
+    from _utils import load_yaml, make_batch_dir, require_section, run_one, select_entries, setup_logging
 
 
 if __name__ == "__main__":
@@ -37,7 +38,7 @@ if __name__ == "__main__":
     trains_cfg = require_section(config, "trains")
     save_cfg = require_section(config, "save")
 
-    dtype = resolve_dtype(str(run_cfg.get("dtype", "float32")))
+    dtype = parse_dtype(str(run_cfg.get("dtype", "float32")))
     dataset_variants = select_entries("datasets", datasets_cfg, list(sweep_cfg.get("datasets", [])))
     network_variants = select_entries("networks", networks_cfg, list(sweep_cfg.get("networks", [])))
     model_variants = select_entries("models", models_cfg, list(sweep_cfg.get("models", [])))

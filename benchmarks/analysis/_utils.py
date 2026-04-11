@@ -6,13 +6,12 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-from benchmarks.runner.utils import build_dataset, build_model, build_network
+from benchmarks.runner._utils import build_dataset, build_model, build_network
 from genkit.metrics import metric_on_quantile, mssle, wasserstein_distance
 
 
 MODEL_LABELS = {
     "gaussian_flow_linear": "GF-Linear",
-    "alpha_stable_flow_linear": "ASF-Linear",
     "ddpm_v": "DDPM-V",
     "dlpm_eps_origin": "DLPM-Orig",
     "flow_matching_origin": "FM-Orig",
@@ -23,6 +22,7 @@ NETWORK_TAGS = {"mlp_small": "S.nn", "mlp_medium": "L.nn"}
 METRIC_XIS = {"MSSLE_95": 0.95, "MSSLE_99": 0.99}
 METRIC_ORDER = ["W1", "MSSLE_95", "MSSLE_99"]
 GROUP_COLS = ["dataset_alpha", "model_name", "model_label", "model_alpha", "network_preset", "train_preset"]
+RUN_GROUP_COLS = ["run_dir", "trial_idx", "dataset_alpha", "model_name", "model_label", "model_alpha", "network_preset", "train_preset"]
 
 
 def run_dirs(root: Path) -> list[Path]:
@@ -41,29 +41,6 @@ def setting_code(row: pd.Series) -> str:
     if not pd.isna(row["model_alpha"]):
         pieces.append(f"a{float(row['model_alpha']):.3g}")
     return "(" + "/".join(pieces) + ")"
-
-
-def to_latex_sci(x: float, digits: int = 2) -> str:
-    """Format a scalar in compact LaTeX scientific notation."""
-    if x == 0:
-        return "0"
-    exponent = int(np.floor(np.log10(abs(x))))
-    mantissa = x / (10**exponent)
-    if exponent == 0:
-        return f"{x:.{digits}f}"
-    return rf"{mantissa:.{digits}f}\,10^{{{exponent}}}"
-
-
-def format_mean_std_latex(mean: float, std: float, caption: str = "", bold: bool = False) -> str:
-    """Format a mean-plus-std pair as a LaTeX mathtext string."""
-    mean_str = to_latex_sci(mean, digits=2)
-    core = rf"\mathbf{{{mean_str}}}" if bold else mean_str
-    if not np.isclose(std, 0.0):
-        std_str = to_latex_sci(std, digits=2)
-        core = rf"{core}_{{\pm {std_str}}}"
-    if caption:
-        core = rf"\underset{{\mathrm{{{caption}}}}}{{{core}}}"
-    return rf"${core}$"
 
 
 def _metric_fields(x_ref: torch.Tensor, x_gen: torch.Tensor) -> dict[str, float]:
@@ -101,6 +78,11 @@ def load_generator(run_dir: Path, *, device: str = "cpu") -> tuple[Any, torch.Te
     return generator, x_test, config
 
 
+def load_train_stats(run_dir: Path) -> pd.DataFrame:
+    """Load per-epoch training statistics for one benchmark run."""
+    return pd.read_csv(run_dir / "train_stats.csv")
+
+
 def evaluate_run(run_dir: Path, *, n_samples: int, n_repeats: int, device: str = "cpu") -> list[dict[str, Any]]:
     """Evaluate one saved run several times and return one row per repeat."""
     generator, x_test, config = load_generator(run_dir, device=device)
@@ -135,6 +117,18 @@ def summarize_exact(repeat_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def summarize_runs(repeat_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate repeat-level metrics for each saved benchmark run."""
+    rows = []
+    for keys, group in repeat_df.groupby(RUN_GROUP_COLS, dropna=False):
+        row = dict(zip(RUN_GROUP_COLS, keys, strict=True))
+        for metric in METRIC_ORDER:
+            row[f"{metric}_mean"] = float(group[metric].mean())
+            row[f"{metric}_std"] = float(group[metric].std(ddof=0))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def reduce_best_alpha(summary_exact: pd.DataFrame, metric: str) -> pd.DataFrame:
     """Reduce alpha-parametrized models by best alpha at fixed data/train/network."""
     groups = ["dataset_alpha", "model_label", "network_preset", "train_preset"]
@@ -160,4 +154,14 @@ def aggregated_best_alpha(summary_exact: pd.DataFrame, metric: str) -> pd.DataFr
         row = dict(zip(["model_label", "network_preset", "train_preset"], keys, strict=True))
         row[metric] = float(group[f"{metric}_mean"].mean())
         rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def reduce_best_alpha_runs(run_summary: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """Reduce alpha-parametrized runs by best alpha at fixed data/train/network/trial."""
+    groups = ["dataset_alpha", "model_label", "network_preset", "train_preset", "trial_idx"]
+    rows = []
+    for _, group in run_summary.groupby(groups, dropna=False):
+        best = group.iloc[0] if group["model_alpha"].isna().all() else group.nsmallest(1, f"{metric}_mean").iloc[0]
+        rows.append(best.to_dict())
     return pd.DataFrame(rows)

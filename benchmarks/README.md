@@ -28,7 +28,7 @@ Local full config sweep:
 make run-local
 ```
 
-Jean Zay multi-jobss run:
+Jean Zay full run:
 
 ```bash
 make run-jz

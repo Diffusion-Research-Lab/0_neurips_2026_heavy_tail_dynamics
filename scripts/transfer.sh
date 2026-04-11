@@ -8,7 +8,7 @@ REMOTE_HOST="jz"
 REMOTE_BASE="/lustre/fswork/projects/rech/jcx/uor49lv/src"
 REMOTE_ROOT="${REMOTE_HOST}:${REMOTE_BASE}"
 REMOTE_PROJECT="${REMOTE_HOST}:${REMOTE_BASE}/flowbench"
-LOCAL_EXPLOIT_DIR="${PROJECT_ROOT}/benchmarks/analysis/data"
+LOCAL_ANALYSIS_DIR="${PROJECT_ROOT}/benchmarks/analysis/data"
 WORK_DIR="/tmp/flowbench"
 SUPP_DIR="/tmp/anonymous_code_supp"
 ZIP_NAME="code.zip"
@@ -83,11 +83,10 @@ send_code() {
 fetch_results() {
     echo "Fetch result directories from Jean Zay"
     echo "Remote root: ${REMOTE_PROJECT}"
-    echo "Local target: ${LOCAL_EXPLOIT_DIR}"
+    echo "Local target: ${LOCAL_ANALYSIS_DIR}"
 
-    mkdir -p "${LOCAL_EXPLOIT_DIR}"
-    rsync -var --progress "${REMOTE_PROJECT}/"*_results*/ "${LOCAL_EXPLOIT_DIR}/" || true
-    rsync -var --progress "${REMOTE_PROJECT}/benchmarks/"*_results*/ "${LOCAL_EXPLOIT_DIR}/" || true
+    mkdir -p "${LOCAL_ANALYSIS_DIR}"
+    rsync -var --progress "${REMOTE_PROJECT}/"*_results*/ "${LOCAL_ANALYSIS_DIR}/" || true
 }
 
 build_supp_zip() {
