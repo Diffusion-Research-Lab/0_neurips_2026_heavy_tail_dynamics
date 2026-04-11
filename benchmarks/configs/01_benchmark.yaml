@@ -8,17 +8,15 @@ sweep:
   datasets:
     - alpha_stable_target
   networks:
-    - mlp_small
-    - mlp_medium
+    - mlp
   models:
     - gaussian_flow_linear
-    - alpha_stable_flow_linear
     - ddpm_v
+    - dlpm_eps
     - dlpm_eps_origin
     - flow_matching_origin
   trains:
-    - short
-    - long
+    - standard
 
 datasets:
   alpha_stable_target:
@@ -27,28 +25,18 @@ datasets:
     params:
       n_samples: 100000
       alpha: [1.5, 1.7, 2.0]
-      dim: [30]
+      dim: [20]
     split:
       val_size: 0.15
       test_size: 0.15
       random_state: 0
       standardize: false
 
-networks:
-  mlp_small:
-    name: mlp
-    params:
-      width: 32
-      depth: 2
-      time_dim: 8
-      dropout: 0.0
-      use_norm: true
-
-  mlp_medium:
+  mlp:
     name: mlp
     params:
       width: 128
-      depth: 5
+      depth: 4
       time_dim: 64
       dropout: 0.0
       use_norm: true
@@ -60,16 +48,16 @@ models:
     params:
       n_steps: 128
 
-  alpha_stable_flow_linear:
-    name: alpha_stable_flow_linear
-    params:
-      n_steps: 128
-      alpha: [1.5, 1.7, 2.0]
-
   ddpm_v:
     name: ddpm_v
     params:
       n_steps: 128
+
+  dlpm_eps:
+    name: dlpm_eps
+    params:
+      n_steps: 128
+      alpha: [1.5, 1.7, 2.0]
 
   dlpm_eps_origin:
     name: dlpm_eps_origin
@@ -83,35 +71,20 @@ models:
       n_steps: 128
 
 trains:
-  short:
+  standard:
     device: cuda
     batch_size: 1024
-    n_epochs: 128
-    lr: 0.001
+    n_epochs: 512
+    lr: 0.005
     num_workers: 0
     use_adamw: false
     weight_decay: 0.0
     grad_clip_norm: 10.0
     lr_schedule: cosine
     warmup_steps: 0
-    freq_logging: 10
+    freq_logging: 50
     ckpt_freq_epochs: 16
     ckpt_keep_last: 2
-
-  long:
-    device: cuda
-    batch_size: 1024
-    n_epochs: 1024
-    lr: 0.001
-    num_workers: 0
-    use_adamw: false
-    weight_decay: 0.0
-    grad_clip_norm: 10.0
-    lr_schedule: cosine
-    warmup_steps: 0
-    freq_logging: 10
-    ckpt_freq_epochs: 64
-    ckpt_keep_last: 3
 
 save:
   root_dir: _results

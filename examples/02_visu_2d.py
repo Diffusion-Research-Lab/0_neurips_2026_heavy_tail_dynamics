@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 import torch
 from genkit import (DDPMV, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT, FlowMatchingOrigin,
                     ScoreSDEOrigin)
-from genkit import AlphaStableFlowLinear, DLPMEps, DLPMEpsOrigin
-from genkit.plotting import PRETTY_RCPARAMS, plot_scatter
-from _utils import print_done, print_start, run_example
+from genkit import DLPMEps, DLPMEpsOrigin
+from labkit.report import PRETTY_RCPARAMS
+from _utils import plot_scatter, print_done, print_start, run_example
 
 
 plt.rcParams.update(PRETTY_RCPARAMS)
@@ -39,8 +39,7 @@ light_tailed_models = [DDPMV,
 if args.data in light_tailed_data:
     models = light_tailed_models
 else:
-    models = [AlphaStableFlowLinear,
-              DLPMEps,
+    models = [DLPMEps,
               DLPMEpsOrigin,
               ]
 

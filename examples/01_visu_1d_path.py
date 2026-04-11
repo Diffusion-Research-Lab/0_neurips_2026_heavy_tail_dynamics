@@ -6,13 +6,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from genkit import DDPMV, GaussianFlowLinear, DLPMEps, AlphaStableFlowLinear
+from genkit import DDPMV, GaussianFlowLinear, DLPMEps
 from genkit.datasets import fetch_synthetic_data
 from genkit.metrics import fid, wasserstein_distance
 from genkit.nn import MLPModel
-from genkit.plotting import PRETTY_RCPARAMS
 from genkit.training import train
 from genkit.utils import format_duration
+from labkit.report import PRETTY_RCPARAMS
 from _utils import print_done, print_model_step, print_start
 
 
@@ -64,7 +64,6 @@ net_kwargs = dict(width=width, depth=depth)
 model_specs = [("DDPM", DDPMV, "tab:orange", {}),
                ("GF-Linear", GaussianFlowLinear, "tab:blue", {}),
                ("DLPM", DLPMEps, "tab:blue", {'alpha': alpha, "reduce_type": "median"}),
-               ('ASF-Linear', AlphaStableFlowLinear, "tab:green", {'alpha': alpha})
                ]
 
 trained_generators = {}
