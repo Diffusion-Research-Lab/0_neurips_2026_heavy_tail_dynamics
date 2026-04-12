@@ -42,3 +42,10 @@ packages = ["genkit", "labkit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["genkit", "labkit"]
+omit = ["src/genkit/_vendor/*"]
+
+[tool.coverage.report]
+omit = ["src/genkit/_vendor/*"]
