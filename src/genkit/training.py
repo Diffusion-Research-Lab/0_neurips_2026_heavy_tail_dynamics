@@ -202,7 +202,7 @@ def train(
     n_epochs: int = 250,
     lr: float = 1e-4,
     device: torch.device = "cpu",
-    num_workers: int = 2,
+    num_workers: int = 0,
     use_adamw: bool = True,
     weight_decay: float = 0.0,
     grad_clip_norm: Optional[float] = None,
