@@ -3,7 +3,7 @@
 import math
 import torch
 from ._abs import DDPMAbstarct
-from .diffusion import DLPMEps
+from .diffusion import DLPMEps, DDPMV, DDPMX0
 from .flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
 
 
@@ -145,3 +145,42 @@ def knn_kl(p: torch.Tensor, q: torch.Tensor, k: int = 5) -> float:
     nu = d_pq.kthvalue(k, dim=1).values.clamp_min(eps)
     kl = d * (nu.log() - rho.log()).mean() + math.log(q.shape[0] / (p.shape[0] - 1))
     return float(kl.item())
+
+
+def mse_loss_at_batch(model, x: torch.Tensor, t=None) -> torch.Tensor:
+    """Compute a plain prediction-target MSE for one native training batch."""
+    if isinstance(model, (GaussianFlowLinear, GaussianFlowOT, GaussianFlowDDPM)):
+        pred, target, _ = model._precompute_loss(x=x, z=None, t=t)
+        return torch.nn.functional.mse_loss(pred, target)
+
+    if isinstance(model, DDPMV):
+        x_1, x_t, eps, t_norm, t_idx, a_bar_t = model._latent(x_1=x, eps=None, t=t)
+        target = torch.sqrt(a_bar_t) * eps - torch.sqrt(1.0 - a_bar_t) * x_1
+        pred = model._net(x_t, t_norm)
+        return torch.nn.functional.mse_loss(pred, target)
+
+    if isinstance(model, DDPMX0):
+        x_1, x_t, _, t_norm, _, _ = model._latent(x_1=x, eps=None, t=t)
+        pred = model._net(x_t, t_norm)
+        return torch.nn.functional.mse_loss(pred, x_1)
+
+    if isinstance(model, DLPMEps):
+        x_1 = x.to(device=model._device, dtype=model._fdtype)
+        n = x_1.size(0)
+        n_a = model._n_trial_A
+        n_g = model._n_trial_G
+        t_checked = model._check_t(t, n) if t is not None else torch.randint(
+            1, model._n_steps, (n,), device=model._device, dtype=model._idtype
+        )
+        t_e = t_checked.view(1, 1, n).expand(n_a, n_g, n).reshape(-1)
+        t_norm = (t_checked / model._n_steps).view(1, 1, n).expand(n_a, n_g, n).reshape(-1, 1)
+        eps = model._sample_source_default(n, expand_trials=True)
+        gamma_1_t = model._gamma_1_t.index_select(0, t_e).unsqueeze(-1)
+        sigma_1_t = model._sigma_1_t.index_select(0, t_e).unsqueeze(-1)
+        x_1_e = x_1.view(1, 1, n, model._dim).expand(n_a, n_g, n, model._dim)
+        x_1_e = x_1_e.reshape(-1, model._dim)
+        x_t = gamma_1_t * x_1_e + sigma_1_t * eps
+        pred = model._net(x_t, t_norm)
+        return torch.nn.functional.mse_loss(pred, eps)
+
+    raise ValueError(f"MSE inspection loss is not implemented for {type(model).__name__}.")

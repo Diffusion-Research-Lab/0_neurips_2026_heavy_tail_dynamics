@@ -5,7 +5,13 @@ import numpy as np
 import pytest
 import torch
 
-from genkit.inspect import fit_hmm_on_weight_stats, model_est_err_curve, model_est_jacobian_spectral_curve
+from genkit.inspect import (
+    estimate_training_error,
+    fit_hmm_on_weight_stats,
+    model_est_err_curve,
+    model_est_jacobian_spectral_curve,
+)
+from genkit import DDPMV, DLPMEps, GaussianFlowLinear
 from .utils import _devices
 
 
@@ -34,8 +40,18 @@ class _DummyGenModel:
     def _sample_source(self, n_samples: int) -> torch.Tensor:
         return torch.zeros((n_samples, 1), device=self._device, dtype=self._fdtype)
 
-    def _loss(self, x: torch.Tensor, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return (x.square().mean() + z.square().mean() + 0.0 * t.to(dtype=x.dtype)).to(dtype=x.dtype)
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None) -> torch.Tensor:
+        if z is None:
+            z = self._sample_source(len(x))
+        if t is None:
+            if self._family == "flow":
+                t = torch.zeros((len(x), 1), device=self._device, dtype=self._fdtype)
+            else:
+                t = torch.ones((len(x),), device=self._device, dtype=self._idtype)
+        return (x.square().mean() + z.square().mean() + 0.0 * t.to(dtype=x.dtype).mean()).to(dtype=x.dtype)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None) -> torch.Tensor:
+        return 3.0 * self._loss(x, z, t).mean()
 
 
 @pytest.mark.parametrize("device", _devices())
@@ -109,3 +125,24 @@ def test_fit_hmm_on_weight_stats_requires_hmmlearn():
 
     with pytest.raises(ModuleNotFoundError, match="hmmlearn"):
         fit_hmm_on_weight_stats(np.ones((4, 2)))
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize(
+    ("model_cls", "kwargs"),
+    [
+        (GaussianFlowLinear, {}),
+        (DDPMV, {}),
+        (DLPMEps, {"alpha": 1.6}),
+    ],
+)
+def test_estimate_training_error_supports_native_and_mse_loss(device, model_cls, kwargs):
+    x = torch.randn(8, 1, device=device, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(device=device, dtype=torch.float64)
+    model = model_cls(net=net, dim=1, n_steps=8, fdtype=torch.float64, device=device, **kwargs)
+
+    mse = estimate_training_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
+    native = estimate_training_error(model, x, n_batches=2, batch_size=4, loss_type="native")
+
+    assert native >= 0.0
+    assert mse >= 0.0

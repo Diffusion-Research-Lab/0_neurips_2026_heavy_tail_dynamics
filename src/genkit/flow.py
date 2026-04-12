@@ -8,6 +8,7 @@ from ._abs import GaussianFlowAbstract
 class GaussianFlowLinear(GaussianFlowAbstract):
     """Gaussian source flow with a linear path (Flow Matching)."""
     _family = "flow"
+    _loss_tag = "mse"
 
     def _precompute_loss(self, x, z, t=None):
         """Build linear-path flow targets and corresponding network predictions."""
@@ -40,6 +41,7 @@ class GaussianFlowLinear(GaussianFlowAbstract):
 class GaussianFlowOT(GaussianFlowAbstract):
     """Gaussian source flow with minibatch Sinkhorn OT coupling + linear path."""
     _family = "flow"
+    _loss_tag = "mse"
 
     def __init__(
         self,
@@ -95,6 +97,7 @@ class GaussianFlowOT(GaussianFlowAbstract):
 class GaussianFlowDDPM(GaussianFlowAbstract):
     """Gaussian-source flow on the VP diffusion path (beta schedule)."""
     _family = "flow"
+    _loss_tag = "mse"
 
     def __init__(
         self,

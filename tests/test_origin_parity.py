@@ -236,6 +236,61 @@ def test_dlpmeps_matches_origin_loss_and_gradients():
         _assert_grad_lists_close(native_grads, origin_grads, atol=2e-7, rtol=1e-6)
 
 
+def test_dlpmeps_matches_origin_sample_and_one_step_update():
+    """Native DLPM should match the origin adapter for sampling and one SGD step."""
+    x = torch.randn(6, 2, dtype=torch.float32)
+    native = DLPMEps(
+        net=_AffineTimeNet(),
+        dim=2,
+        n_steps=8,
+        alpha=1.9,
+        n_trial_A=1,
+        n_trial_G=1,
+        reduce_type="median",
+        fdtype=torch.float32,
+        device="cpu",
+    )
+    origin = DLPMEpsOrigin(
+        net=_AffineTimeNet(),
+        dim=2,
+        n_steps=8,
+        alpha=1.9,
+        monte_carlo_outer=1,
+        monte_carlo_inner=1,
+        loss_monte_carlo="median",
+        fdtype=torch.float32,
+        device="cpu",
+    )
+
+    torch.manual_seed(3)
+    np.random.seed(3)
+    native_sample = native.sample(5)
+    torch.manual_seed(3)
+    np.random.seed(3)
+    origin_sample = origin.sample(5)
+    _assert_tensors_close(native_sample, origin_sample, atol=2e-5, rtol=1e-5)
+
+    native_optim = torch.optim.SGD(native._net.parameters(), lr=0.05)
+    origin_optim = torch.optim.SGD(origin._net.parameters(), lr=0.05)
+
+    torch.manual_seed(5)
+    np.random.seed(5)
+    native_loss = native.loss(x)
+    native_optim.zero_grad()
+    native_loss.backward()
+    native_optim.step()
+
+    torch.manual_seed(5)
+    np.random.seed(5)
+    origin_loss = origin.loss(x)
+    origin_optim.zero_grad()
+    origin_loss.backward()
+    origin_optim.step()
+
+    for native_param, origin_param in zip(native._net.parameters(), origin._net.parameters()):
+        _assert_tensors_close(native_param.detach(), origin_param.detach(), atol=2e-7, rtol=1e-6)
+
+
 def test_gaussian_flow_linear_matches_flow_matching_origin(tmp_path, monkeypatch):
     """GaussianFlowLinear should match the origin flow-matching adapter exactly."""
     vendor_root = _make_flow_matching_vendor(tmp_path)
@@ -261,6 +316,37 @@ def test_gaussian_flow_linear_matches_flow_matching_origin(tmp_path, monkeypatch
     native_sample = native.sample(4)
     origin_sample = origin.sample(4)
     _assert_tensors_close(native_sample, origin_sample)
+
+
+def test_gaussian_flow_linear_matches_flow_matching_origin_after_one_step(tmp_path, monkeypatch):
+    """Native flow matching and origin adapter should remain aligned after one optimizer step."""
+    vendor_root = _make_flow_matching_vendor(tmp_path)
+    x = torch.tensor([[1.0, -0.5], [0.25, 2.0], [-1.5, 0.75]], dtype=torch.float32)
+    z = torch.tensor([[0.2, -1.0], [1.5, 0.3], [0.7, -0.4]], dtype=torch.float32)
+    t = torch.tensor([[0.15], [0.5], [0.85]], dtype=torch.float32)
+    base = torch.tensor([0.4, -0.3], dtype=torch.float32)
+
+    native = GaussianFlowLinear(net=_AffineTimeNet(), dim=2, n_steps=6, t_min=0.0, t_max=1.0, base_or_sample=base, fdtype=torch.float32)
+    origin = FlowMatchingOrigin(net=_AffineTimeNet(), dim=2, n_steps=6, package_root=str(vendor_root), base_or_sample=base, fdtype=torch.float32)
+
+    native_optim = torch.optim.SGD(native._net.parameters(), lr=0.1)
+    origin_optim = torch.optim.SGD(origin._net.parameters(), lr=0.1)
+
+    monkeypatch.setattr(torch, "rand", lambda size, device=None, dtype=None: t.squeeze(-1).to(device=device, dtype=dtype))
+    native_loss = native.loss(x, z=z, t=t)
+    origin_loss = origin.loss(x, z=z)
+
+    native_optim.zero_grad()
+    native_loss.backward()
+    native_optim.step()
+
+    origin_optim.zero_grad()
+    origin_loss.backward()
+    origin_optim.step()
+    monkeypatch.undo()
+
+    for native_param, origin_param in zip(native._net.parameters(), origin._net.parameters()):
+        _assert_tensors_close(native_param.detach(), origin_param.detach(), atol=2e-7, rtol=1e-6)
 
 
 @pytest.mark.parametrize(("native_cls", "mode"), [(DDPMV, "v"), (DDPMX0, "x0")])

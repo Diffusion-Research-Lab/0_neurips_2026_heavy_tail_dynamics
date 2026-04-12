@@ -10,6 +10,7 @@ from .utils import cosine_schedule
 class DDPMV(DDPMAbstarct):
     """DDPM with v-prediction parameterization."""
     _family = "diffusion"
+    _loss_tag = "mse"
 
     def _loss_fn(self, v_hat: torch.Tensor, v: torch.Tensor, t: torch.Tensor):
         """Return unreduced v-prediction losses for a DDPM batch."""
@@ -41,6 +42,7 @@ class DDPMV(DDPMAbstarct):
 class DDPMX0(DDPMAbstarct):
     """DDPM with x0-prediction parameterization."""
     _family = "diffusion"
+    _loss_tag = "mse"
 
     def _loss_fn(self, x0_hat: torch.Tensor, x0: torch.Tensor, t: int) -> torch.Tensor:
         """Return weighted x0-prediction losses for a DDPM batch."""
@@ -71,6 +73,7 @@ class DDPMX0(DDPMAbstarct):
 class DLPMEps(Base):
     """DLPM (epsilon/noise prediction) with a fixed beta schedule (variance-preserving)."""
     _family = "diffusion"
+    _loss_tag = "sqrt_mse"
 
     def __init__(
         self,
@@ -154,7 +157,7 @@ class DLPMEps(Base):
         """Draw alpha-stable source samples, optionally expanded for Monte Carlo loss."""
         if expand_trials:
             A = self._draw_A(self._n_trial_A * n_samples)
-            A = self._expand(A.view(self._n_trial_A, 1, n_samples)).reshape(-1)
+            A = A.view(self._n_trial_A, 1, n_samples).expand(self._n_trial_A, self._n_trial_G, n_samples).reshape(-1)
             G = torch.randn(
                 self._n_trial_A * self._n_trial_G * n_samples,
                 self._dim,
@@ -213,7 +216,7 @@ class DLPMEps(Base):
 
         eps = self._sample_source_default(n_samples)
 
-        x = self._sigma_1_t[self._n_steps] * eps  # t = T
+        x = self._sigma_1_t[self._n_steps - 1] * eps  # vendor terminal barsigma
         l_x = [x]
 
         # Reverse recursion (Table 4 DLPM): mean update divided by gamma_t, then add Gaussian innovation

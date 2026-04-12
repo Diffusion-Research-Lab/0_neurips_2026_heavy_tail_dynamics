@@ -113,6 +113,7 @@ class _NetAdapter(torch.nn.Module):
 class DLPMEpsOrigin(Base):
     """Adapter around the vendored authors' GenerativeLevyProcess(DLPM)."""
     _family = "vendor"
+    _loss_tag = "sqrt_mse"
 
     def __init__(
         self,
@@ -209,6 +210,7 @@ class DLPMEpsOrigin(Base):
 class FlowMatchingOrigin(Base):
     """Minimal adapter around Meta's flow_matching 2D example components."""
     _family = "vendor"
+    _loss_tag = "mse"
 
     def __init__(
         self,
@@ -295,6 +297,7 @@ class FlowMatchingOrigin(Base):
 class ScoreSDEOrigin(Base):
     """Adapter around yang-song/score_sde_pytorch using a VE-SDE parameterization."""
     _family = "vendor"
+    _loss_tag = "mse"
 
     def __init__(
         self,

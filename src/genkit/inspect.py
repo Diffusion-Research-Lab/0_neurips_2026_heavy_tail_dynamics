@@ -1,5 +1,6 @@
 """Post-hoc inspection utilities."""
 
+from typing import Literal
 from typing import Tuple
 import numpy as np
 import torch
@@ -9,6 +10,7 @@ from ._inspect import (
     jacobian_spectral_at_time,
     jacobian_step_grid,
     knn_kl,
+    mse_loss_at_batch,
     require_family,
     sample_forward_marginal,
     subsample_rows,
@@ -146,19 +148,22 @@ def estimate_training_error(
     t=None,
     n_batches: int = 32,
     batch_size: int = 256,
+    loss_type: Literal["native", "mse"] = "native",
 ) -> float:
-    """Monte Carlo estimate of the model's native training objective E[ loss(X, t) ].
-    Exactly the loss minimized by genkit.training.train(...), averaged over fresh
-    minibatches and the model's internal randomness.
-    """
+    """Monte Carlo estimate of the native or plain-MSE training loss."""
     require_family(model)
+    if loss_type not in {"native", "mse"}:
+        raise ValueError(f"loss_type must be 'native' or 'mse', got {loss_type!r}.")
     was_training = model._net.training
     model._net.eval()
     try:
         values = []
         for _ in range(int(n_batches)):
             x = subsample_rows(x_data, int(batch_size), device=model._device, dtype=model._fdtype)
-            values.append(model.loss(x, t=t).detach())
+            if loss_type == "native":
+                values.append(model.loss(x, t=t).detach())
+            else:
+                values.append(mse_loss_at_batch(model, x, t=t).detach())
         return float(torch.stack(values).mean().item())
     finally:
         if was_training:

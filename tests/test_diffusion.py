@@ -34,13 +34,13 @@ def test_dlpmeps_loss_samples_vendor_time_range(monkeypatch):
     assert torch.isfinite(loss).item()
 
 
-def test_dlpmeps_sample_uses_terminal_sigma_index(monkeypatch):
+def test_dlpmeps_sample_uses_vendor_terminal_sigma_index(monkeypatch):
     n_steps = 4
     n_samples = 3
     dim = 2
     model = _make_dlpmeps(n_steps=n_steps)
 
-    model._sigma_1_t = torch.tensor([0.0, 0.0, 0.0, 0.0, 7.0], dtype=torch.float32)
+    model._sigma_1_t = torch.tensor([0.0, 0.0, 0.0, 7.0, 99.0], dtype=torch.float32)
     model._draw_A = lambda n: torch.ones(n, 1, device=model._device, dtype=model._fdtype)
 
     def _patched_randn(*size, device=None, dtype=None, **kwargs):
