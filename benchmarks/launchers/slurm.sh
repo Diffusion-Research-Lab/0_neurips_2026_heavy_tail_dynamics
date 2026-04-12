@@ -17,13 +17,43 @@ set -euo pipefail
 # Usage:
 #   sbatch benchmarks/launchers/slurm.sh
 #   sbatch --array=0-7 benchmarks/launchers/slurm.sh
+#   sbatch --array=0-15 benchmarks/launchers/slurm.sh --config benchmarks/configs/02_dimension_effect.yaml
 #
-# Defaults to benchmarks/configs/01_benchmark.yaml.
+# Defaults to benchmarks/configs/01_alphastable_baseline.yaml.
 # With a Slurm array, each task runs one shard of the same config.
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
 PYTHON_BIN=""
+CLI_CONFIG_PATH=""
+CLI_BATCH_DIR=""
+CLI_SHARD_COUNT=""
+CLI_SHARD_INDEX=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      CLI_CONFIG_PATH="$2"
+      shift 2
+      ;;
+    --batch-dir)
+      CLI_BATCH_DIR="$2"
+      shift 2
+      ;;
+    --shard-count)
+      CLI_SHARD_COUNT="$2"
+      shift 2
+      ;;
+    --shard-index)
+      CLI_SHARD_INDEX="$2"
+      shift 2
+      ;;
+    *)
+      echo "[slurm] Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [[ -d "${SUBMIT_DIR}/src/genkit" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
   PROJECT_ROOT="${SUBMIT_DIR}"
@@ -35,8 +65,18 @@ else
   exit 1
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
-CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/01_benchmark.yaml}"
-BATCH_DIR="${BATCH_DIR:-}"
+CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/01_alphastable_baseline.yaml}}"
+BATCH_DIR="${CLI_BATCH_DIR:-${BATCH_DIR:-}}"
+
+case "${CONFIG_PATH}" in
+  /*) ;;
+  *) CONFIG_PATH="${PROJECT_ROOT}/${CONFIG_PATH}" ;;
+esac
+
+case "${BATCH_DIR}" in
+  ""|/*) ;;
+  *) BATCH_DIR="${PROJECT_ROOT}/${BATCH_DIR}" ;;
+esac
 
 if [[ ! -d "${PROJECT_ROOT}/src/genkit" || ! -d "${PROJECT_ROOT}/src/labkit" ]]; then
   echo "[slurm] Expected directories not found:" >&2
@@ -95,8 +135,8 @@ export MKL_NUM_THREADS="${CPUS}"
 export OPENBLAS_NUM_THREADS="${CPUS}"
 export NUMEXPR_NUM_THREADS="${CPUS}"
 
-SHARD_COUNT="${SHARD_COUNT:-${SLURM_ARRAY_TASK_COUNT:-1}}"
-SHARD_INDEX="${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}"
+SHARD_COUNT="${CLI_SHARD_COUNT:-${SHARD_COUNT:-${SLURM_ARRAY_TASK_COUNT:-1}}}"
+SHARD_INDEX="${CLI_SHARD_INDEX:-${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}}"
 
 if [[ -z "${BATCH_DIR}" && "${SHARD_COUNT}" -gt 1 ]]; then
   SAVE_ROOT="$("${PYTHON_BIN}" - <<PY

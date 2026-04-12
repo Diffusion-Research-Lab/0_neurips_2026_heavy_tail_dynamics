@@ -33,3 +33,10 @@ Jean Zay full run:
 ```bash
 make run-jz
 ```
+
+Override config or shard count when needed:
+
+```bash
+make run-jz CONFIG=benchmarks/configs/02_dimension_effect.yaml ARRAY=0-15
+make run-jz CONFIG=benchmarks/configs/03_modecollapsing_effect.yaml ARRAY=0-5
+```
