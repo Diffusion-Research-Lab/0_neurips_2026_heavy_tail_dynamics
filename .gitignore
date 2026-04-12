@@ -7,16 +7,22 @@ __pycache__/
 # Artifacts / outputs
 _figures/
 _tables/
+_results/
+*_results/
 sandbox/figures/
 benchmarks/_results/
 benchmarks/_figures/
 benchmarks/_tables/
 benchmarks/_data/
-benchmarks/_figures_bench_2/
-benchmarks/_tables_bench_1/
-benchmarks/_reports_bench_3/
+benchmarks/analysis/data/
+benchmarks/analysis/_metrics_cache_*.csv
+sandbox/report/
+sandbox/_*.pt
 benchmarks/heavyflow_*.out
 benchmarks/heavyflow_*.err
+htfm_*.out
+htfm_*.err
+slurm-*.out
 
 # Latex
 *.bib
@@ -37,9 +43,11 @@ Thumbs.db
 .pytest_cache/
 .cache/
 .coverage
+coverage.xml
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+.ipynb_checkpoints/
 
 # Build / packaging
 build/
