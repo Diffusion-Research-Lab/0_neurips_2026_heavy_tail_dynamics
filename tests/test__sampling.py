@@ -12,6 +12,7 @@ from genkit._sampling import (
     sample_scaled_scalar_alpha_stable,
     sample_spiral,
     sample_student_t,
+    sample_unbalanced_highdim_gaussian_mixture,
 )
 
 
@@ -131,6 +132,31 @@ def test_bimodal_balanced_mean_var_and_weight():
     # With small s, sign estimates mixture weights well (balanced -> ~0.5 negative)
     frac_neg = (x[:, 0] < 0.0).to(torch.float64).mean().item()
     assert abs(frac_neg - 0.5) < 0.02
+
+
+def test_unbalanced_highdim_gaussian_mixture_exhibits_mode_imbalance():
+    torch.manual_seed(5)
+    n, d = 50_000, 20
+    x = sample_unbalanced_highdim_gaussian_mixture(
+        n,
+        d,
+        n_modes=12,
+        rank=4,
+        imbalance_tau=1.3,
+        mean_scale=6.0,
+        base_std=0.35,
+        anisotropy=0.8,
+        device="cpu",
+        dtype=torch.float64,
+    )
+    assert x.shape == (n, d)
+    assert torch.isfinite(x).all()
+
+    # Use the first embedded coordinate as a coarse mode proxy and verify a heavy head-tail imbalance.
+    bins = torch.histc(x[:, 0].float(), bins=24)
+    positive_bins = bins[bins > 0]
+    assert len(positive_bins) >= 8
+    assert (positive_bins.max() / positive_bins.min()).item() > 8.0
 
 
 def test_scaled_scalar_alpha_stable_shape_and_positivity():

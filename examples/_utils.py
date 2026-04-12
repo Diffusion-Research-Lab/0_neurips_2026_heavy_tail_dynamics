@@ -85,6 +85,7 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
     light_tailed_data = {
         "balanced_bimodal_gaussian",
         "unbalanced_bimodal_gaussian",
+        "unbalanced_highdim_gaussian_mixture",
         "gaussian",
         "checker",
         "spiral",
@@ -100,6 +101,7 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
     lr = exp_kwargs.get("lr", 1e-3)
     width = exp_kwargs.get("width", 32)
     depth = exp_kwargs.get("depth", 2)
+    num_workers = exp_kwargs.get("num_workers", 0)
     device = exp_kwargs.get("device", "cpu")
     fdtype = exp_kwargs.get("fdtype", torch.float32)
     idtype = exp_kwargs.get("idtype", torch.int32)
@@ -118,6 +120,7 @@ def run_example(models, target_data_type, n_samples=10_000, exp_kwargs=None, ver
         "n_epochs": n_epochs,
         "lr": lr,
         "device": device,
+        "num_workers": num_workers,
     }
 
     if target_data_type in light_tailed_data:

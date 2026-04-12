@@ -134,6 +134,112 @@ def sample_gaussian(
     return torch.randn(n_samples, dim, device=device, dtype=dtype)
 
 
+def _structured_mode_codebook(
+    n_modes: int,
+    rank: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    structure_seed: int = 0,
+) -> torch.Tensor:
+    """Build one deterministic low-rank codebook for mixture centers."""
+    if n_modes <= 0:
+        raise ValueError("n_modes must be > 0.")
+    if rank <= 0:
+        raise ValueError("rank must be > 0.")
+
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(structure_seed))
+    codebook = torch.randn(n_modes, rank, generator=generator, dtype=dtype)
+    codebook = torch.nn.functional.normalize(codebook, dim=1)
+    return codebook.to(device=device, dtype=dtype)
+
+
+def _orthonormal_embedding(
+    dim: int,
+    rank: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    structure_seed: int = 0,
+) -> torch.Tensor:
+    """Build one deterministic orthonormal embedding from R^rank to R^dim."""
+    if dim <= 0:
+        raise ValueError("dim must be > 0.")
+    if rank <= 0 or rank > dim:
+        raise ValueError(f"rank must lie in [1, dim], got rank={rank}, dim={dim}.")
+
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(structure_seed) + 1)
+    basis = torch.randn(dim, rank, generator=generator, dtype=dtype)
+    q, _ = torch.linalg.qr(basis, mode="reduced")
+    return q.to(device=device, dtype=dtype)
+
+
+def sample_unbalanced_highdim_gaussian_mixture(
+    n_samples: int,
+    dim: int,
+    n_modes: int = 16,
+    rank: int = 6,
+    imbalance_tau: float = 1.2,
+    mean_scale: float = 7.5,
+    base_std: float = 0.55,
+    anisotropy: float = 1.0,
+    structure_seed: int = 0,
+    device: torch.device = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """
+    Sample a high-dimensional Gaussian mixture with many imbalanced modes.
+
+    The mode centers live in a low-rank latent subspace and are embedded into the
+    ambient space. Mixture weights follow a power-law decay to make rare modes easy
+    to collapse under limited model capacity.
+    """
+    if n_samples <= 0:
+        raise ValueError("n_samples must be > 0.")
+    if dim <= 0:
+        raise ValueError("dim must be > 0.")
+    if n_modes <= 1:
+        raise ValueError("n_modes must be > 1.")
+    if imbalance_tau < 0.0:
+        raise ValueError("imbalance_tau must be >= 0.")
+    if mean_scale <= 0.0:
+        raise ValueError("mean_scale must be > 0.")
+    if base_std <= 0.0:
+        raise ValueError("base_std must be > 0.")
+    if anisotropy < 0.0:
+        raise ValueError("anisotropy must be >= 0.")
+
+    rank = min(int(rank), int(dim))
+    embedding = _orthonormal_embedding(
+        dim,
+        rank,
+        device=device,
+        dtype=dtype,
+        structure_seed=structure_seed,
+    )
+    codebook = _structured_mode_codebook(
+        n_modes,
+        rank,
+        device=device,
+        dtype=dtype,
+        structure_seed=structure_seed,
+    )
+    centers = mean_scale * (codebook @ embedding.T)
+    directions = torch.nn.functional.normalize(centers, dim=1)
+
+    weights = torch.arange(1, n_modes + 1, device=device, dtype=dtype).pow(-imbalance_tau)
+    weights = weights / weights.sum()
+    mode_index = torch.multinomial(weights, n_samples, replacement=True)
+
+    noise_iso = torch.randn(n_samples, dim, device=device, dtype=dtype)
+    noise_axis = torch.randn(n_samples, 1, device=device, dtype=dtype) * directions[mode_index]
+    noise = noise_iso + anisotropy * noise_axis
+
+    return centers[mode_index] + base_std * noise
+
+
 def _sample_bimodal_gaussian(
     n_samples: int,
     dim: int,
@@ -175,7 +281,18 @@ def sample_unbalanced_bimodal_gaussian(
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """
-    Sample an unbalanced bimodal Gaussian distribution.
+    Legacy alias for the stronger unbalanced multimodal benchmark dataset.
     """
-    return _sample_bimodal_gaussian(n_samples=n_samples, dim=dim, mu=mu, s=s,
-                                    p=0.01, device=device, dtype=dtype)
+    del mu, s
+    return sample_unbalanced_highdim_gaussian_mixture(
+        n_samples=n_samples,
+        dim=dim,
+        n_modes=16,
+        rank=min(6, dim),
+        imbalance_tau=1.2,
+        mean_scale=7.5,
+        base_std=0.55,
+        anisotropy=1.0,
+        device=device,
+        dtype=dtype,
+    )

@@ -15,6 +15,7 @@ from ._sampling import (
     sample_scaled_isotropic_alpha_stable,
     sample_spiral,
     sample_student_t,
+    sample_unbalanced_highdim_gaussian_mixture,
     sample_unbalanced_bimodal_gaussian,
 )
 from .utils import getpop
@@ -364,8 +365,23 @@ ALL_DATASETS: dict[str, DatasetEntry] = {
     "unbalanced_bimodal_gaussian": _synthetic_entry(
         "unbalanced_bimodal_gaussian",
         sample_unbalanced_bimodal_gaussian,
-        description="Unbalanced bimodal Gaussian synthetic dataset.",
-        sampler_kwargs_builders={"dim": lambda kwargs: int(getpop(kwargs, "dim", 1))},
+        description="Legacy alias for an imbalanced high-dimensional Gaussian mixture synthetic dataset.",
+        sampler_kwargs_builders={"dim": lambda kwargs: int(getpop(kwargs, "dim", 2))},
+    ),
+    "unbalanced_highdim_gaussian_mixture": _synthetic_entry(
+        "unbalanced_highdim_gaussian_mixture",
+        sample_unbalanced_highdim_gaussian_mixture,
+        description="Imbalanced high-dimensional Gaussian mixture synthetic dataset.",
+        sampler_kwargs_builders={
+            "dim": lambda kwargs: int(getpop(kwargs, "dim", 50)),
+            "n_modes": lambda kwargs: int(getpop(kwargs, "n_modes", 16)),
+            "rank": lambda kwargs: int(getpop(kwargs, "rank", 6)),
+            "imbalance_tau": lambda kwargs: float(getpop(kwargs, "imbalance_tau", 1.2)),
+            "mean_scale": lambda kwargs: float(getpop(kwargs, "mean_scale", 7.5)),
+            "base_std": lambda kwargs: float(getpop(kwargs, "base_std", 0.55)),
+            "anisotropy": lambda kwargs: float(getpop(kwargs, "anisotropy", 1.0)),
+            "structure_seed": lambda kwargs: int(getpop(kwargs, "structure_seed", 0)),
+        },
     ),
     "gaussian": _synthetic_entry(
         "gaussian",

@@ -85,6 +85,35 @@ def test_fetch_synthetic_data_supports_gaussian():
     assert x_train.dtype == torch.float32
 
 
+def test_fetch_synthetic_data_supports_unbalanced_highdim_gaussian_mixture():
+    x_train, x_val, x_test = fetch_synthetic_data(
+        "unbalanced_highdim_gaussian_mixture",
+        n_samples=40,
+        dim=10,
+        n_modes=8,
+        rank=3,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        dtype=torch.float64,
+    )
+
+    assert x_train.shape == (24, 10)
+    assert x_val.shape == (8, 10)
+    assert x_test.shape == (8, 10)
+    assert x_train.dtype == torch.float64
+
+
+def test_unbalanced_bimodal_gaussian_metadata_exposes_legacy_alias():
+    assert get_dataset_metadata("unbalanced_bimodal_gaussian") == {
+        "name": "unbalanced_bimodal_gaussian",
+        "tail_index_alpha": None,
+        "description": "Legacy alias for an imbalanced high-dimensional Gaussian mixture synthetic dataset.",
+        "split_mode": "random",
+        "dataset_type": "synthetic",
+    }
+
+
 def test_fetch_synthetic_data_rejects_real_dataset_name():
     with pytest.raises(ValueError, match="expected 'synthetic'"):
         fetch_synthetic_data("default_credit", n_samples=8)

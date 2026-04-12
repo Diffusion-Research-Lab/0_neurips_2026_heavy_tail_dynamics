@@ -24,6 +24,7 @@ args = parser.parse_args()
 
 light_tailed_data = ["balanced_bimodal_gaussian",
                      "unbalanced_bimodal_gaussian",
+                     "unbalanced_highdim_gaussian_mixture",
                      "gaussian",
                      "checker",
                      "spiral",
