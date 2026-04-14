@@ -141,7 +141,7 @@ def estimate_init_error(
 
 
 @torch.no_grad()
-def estimate_training_error(
+def estimate_training_loss_error(
     model,
     x_data: torch.Tensor,
     *,
@@ -150,7 +150,7 @@ def estimate_training_error(
     batch_size: int = 256,
     loss_type: Literal["native", "mse"] = "native",
 ) -> float:
-    """Monte Carlo estimate of the native or plain-MSE training loss."""
+    """Monte Carlo estimate of the native or plain-MSE training loss on a reference split."""
     require_family(model)
     if loss_type not in {"native", "mse"}:
         raise ValueError(f"loss_type must be 'native' or 'mse', got {loss_type!r}.")
@@ -168,3 +168,8 @@ def estimate_training_error(
     finally:
         if was_training:
             model._net.train()
+
+
+def estimate_training_error(*args, **kwargs) -> float:
+    """Backward-compatible alias for :func:`estimate_training_loss_error`."""
+    return estimate_training_loss_error(*args, **kwargs)

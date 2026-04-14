@@ -187,3 +187,50 @@ def test_train_empty_dataset_raises_clear_error():
             lr_schedule="constant",
             freq_logging=10,
         )
+
+
+def test_train_rejects_weight_decay_without_adamw():
+    gm = _DummyGenerativeModel(dim=2)
+    x = torch.randn(8, 2, dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="weight_decay"):
+        train(
+            gm,
+            target_data=x,
+            batch_size=4,
+            n_epochs=1,
+            lr=1e-3,
+            device="cpu",
+            num_workers=0,
+            use_adamw=False,
+            weight_decay=1e-4,
+        )
+
+
+def test_train_rejects_non_tensor_target_data():
+    gm = _DummyGenerativeModel(dim=2)
+
+    with pytest.raises(TypeError, match="target_data must be a torch.Tensor"):
+        train(
+            gm,
+            target_data=[[1.0, 2.0]],
+            batch_size=1,
+            n_epochs=1,
+            device="cpu",
+        )
+
+
+def test_train_rejects_source_with_wrong_dimension():
+    gm = _DummyGenerativeModel(dim=2)
+    x = torch.randn(8, 2, dtype=torch.float32)
+    z = torch.randn(8, 3, dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="source_data dim"):
+        train(
+            gm,
+            target_data=x,
+            source_data=z,
+            batch_size=4,
+            n_epochs=1,
+            device="cpu",
+        )

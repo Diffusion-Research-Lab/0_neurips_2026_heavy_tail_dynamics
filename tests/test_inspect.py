@@ -6,7 +6,9 @@ import pytest
 import torch
 
 from genkit.inspect import (
+    estimate_init_error,
     estimate_training_error,
+    estimate_training_loss_error,
     fit_hmm_on_weight_stats,
     model_est_err_curve,
     model_est_jacobian_spectral_curve,
@@ -136,13 +138,51 @@ def test_fit_hmm_on_weight_stats_requires_hmmlearn():
         (DLPMEps, {"alpha": 1.6}),
     ],
 )
-def test_estimate_training_error_supports_native_and_mse_loss(device, model_cls, kwargs):
+def test_estimate_training_loss_error_supports_native_and_mse_loss(device, model_cls, kwargs):
     x = torch.randn(8, 1, device=device, dtype=torch.float64)
     net = _LinearTimeNet(scale=1.0).to(device=device, dtype=torch.float64)
     model = model_cls(net=net, dim=1, n_steps=8, fdtype=torch.float64, device=device, **kwargs)
 
-    mse = estimate_training_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
-    native = estimate_training_error(model, x, n_batches=2, batch_size=4, loss_type="native")
+    mse = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
+    native = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="native")
 
     assert native >= 0.0
     assert mse >= 0.0
+
+
+def test_estimate_training_error_alias_matches_new_name():
+    x = torch.randn(8, 1, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
+    model = GaussianFlowLinear(net=net, dim=1, n_steps=8, fdtype=torch.float64, device="cpu")
+    torch.manual_seed(0)
+    old = estimate_training_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
+    torch.manual_seed(0)
+    new = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
+    assert old == pytest.approx(new)
+
+
+def test_estimate_training_loss_error_rejects_unknown_loss_type():
+    x = torch.randn(8, 1, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
+    model = GaussianFlowLinear(net=net, dim=1, n_steps=8, fdtype=torch.float64, device="cpu")
+
+    with pytest.raises(ValueError, match="loss_type"):
+        estimate_training_loss_error(model, x, loss_type="other")
+
+
+def test_estimate_init_error_requires_source_sampler_for_models_without_source_method():
+    class _NoSourceModel:
+        _family = "flow"
+        _device = "cpu"
+        _fdtype = torch.float32
+        _idtype = torch.int64
+        _n_steps = 4
+
+        def __init__(self):
+            self._net = _LinearTimeNet(scale=1.0).to(dtype=torch.float32)
+
+    model = _NoSourceModel()
+    x = torch.randn(16, 1)
+
+    with pytest.raises(ValueError, match="source_sampler"):
+        estimate_init_error(model, x)

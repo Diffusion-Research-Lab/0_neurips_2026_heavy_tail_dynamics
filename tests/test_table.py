@@ -1,7 +1,9 @@
-"""Table module unittests."""
+"""Tests for LaTeX table helpers."""
 
+from pathlib import Path
+import pytest
 import torch
-from genkit.table import dict_to_double_entry_latex_table
+from genkit.table import dict_to_double_entry_latex_table, save_double_entry_table
 
 
 def _toy_results():
@@ -41,3 +43,20 @@ def test_results_input_not_mutated():
 
     assert id(results[("a", "m1")]) == before_id
     assert isinstance(results[("a", "m1")], torch.Tensor)
+
+
+def test_save_double_entry_table_writes_expected_file(tmp_path):
+    path = save_double_entry_table(_toy_results(), plot_dir=str(tmp_path), suffix="toy")
+
+    assert path == str(tmp_path / "toy_results.tex")
+    assert Path(path).read_text(encoding="utf-8").startswith("% Requires")
+
+
+def test_dict_to_double_entry_latex_table_rejects_invalid_metric_direction():
+    with pytest.raises(ValueError, match="metric_direction"):
+        dict_to_double_entry_latex_table(_toy_results(), metric_direction="sideways")
+
+
+def test_dict_to_double_entry_latex_table_rejects_empty_results():
+    with pytest.raises(ValueError, match="No columns"):
+        dict_to_double_entry_latex_table({})

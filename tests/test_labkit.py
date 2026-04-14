@@ -65,6 +65,46 @@ def test_load_config_materializes_special_fields_and_runtime_types(tmp_path):
     assert cfg.authors_root_env_var == "FLOWBENCH_AUTHORS_ROOT"
 
 
+def test_load_config_set_up_applies_runtime_side_effects(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            seed: 11
+            device: cpu
+            dtype: float32
+            authors_root:
+              mode: explicit
+              path: {authors_root}
+              env_var: FLOWBENCH_AUTHORS_ROOT
+            """.format(authors_root=tmp_path.resolve())
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path).set_up()
+
+    assert cfg.device == torch.device("cpu")
+    assert torch.get_default_dtype() is torch.float32
+    assert Path(cfg.AUTHORS_ROOT) == tmp_path.resolve()
+
+
+def test_load_config_rejects_unknown_authors_root_mode(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            authors_root:
+              mode: unknown
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="authors_root mode"):
+        load_config(config_path)
+
+
 def test_report_helpers_format_compact_scientific_strings():
     stats = summarize_metric_values([1.0, 2.0, 3.0])
     assert stats["mean"] == pytest.approx(2.0)
