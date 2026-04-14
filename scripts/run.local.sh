@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Usage:
-#   Local quick pipeline check: bash benchmarks/launchers/local.sh --blank
-#   Local full benchmark:       bash benchmarks/launchers/local.sh --run
+#   Local quick pipeline check: bash scripts/run.local.sh --blank
+#   Local full benchmark:       bash scripts/run.local.sh --run
 
 MODE=""
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-BENCHMARK_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-PROJECT_ROOT="$(cd -- "${BENCHMARK_ROOT}/.." && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+BENCHMARK_ROOT="${PROJECT_ROOT}/benchmarks"
 CONFIG_DIR="${BENCHMARK_ROOT}/configs"
 VENV_DIR=""
 PYTHON_BIN=""
@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
       VENV_DIR="$2"; shift 2 ;;
     -h|--help)
       cat <<USAGE
-Usage: bash benchmarks/launchers/local.sh [--run|--blank] [--venv-dir DIR]
+Usage: bash scripts/run.local.sh [--run|--blank] [--venv-dir DIR]
 
 Options:
   --run       Run all benchmark configs found in benchmarks/configs in lexical order
@@ -139,7 +139,7 @@ for cfg in "${CONFIGS[@]}"; do
   step_t0="$(date +%s)"
   (
     cd "${PROJECT_ROOT}"
-    "${PYTHON_BIN}" -m benchmarks.runner.main --config "${cfg}"
+    "${PYTHON_BIN}" -m benchmarks.main --config "${cfg}"
   )
   echo "[✓] ${MODE_TAG} ${cfg_name}"
   step_dt=$(( $(date +%s) - step_t0 ))

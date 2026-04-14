@@ -1,5 +1,7 @@
-"""Utilities for benchmark config sweeps, training runs, and reporting."""
+#!/usr/bin/env python
+"""Run benchmark sweeps from one YAML config."""
 
+import argparse
 import copy
 from datetime import datetime
 import itertools
@@ -8,10 +10,12 @@ import logging
 from pathlib import Path
 import traceback
 from typing import Any
+
 import pandas as pd
 import torch
 import yaml
-from genkit.datasets import fetch_real_data, fetch_synthetic_data
+
+from genkit.datasets import fetch_real_data, fetch_synthetic_data, list_datasets
 from genkit.diffusion import DDPMV, DDPMX0, DLPMEps
 from genkit.flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
 from genkit.nn import MLPModel, UNetModel
@@ -33,25 +37,6 @@ MODEL_REGISTRY = {
     "flow_matching_origin": FlowMatchingOrigin,
     "score_sde_origin": ScoreSDEOrigin,
 }
-
-
-def to_serializable(value: Any) -> Any:
-    """Convert common config and tensor values to JSON/YAML-safe objects."""
-    if isinstance(value, dict):
-        return {str(k): to_serializable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [to_serializable(v) for v in value]
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, torch.Tensor):
-        if value.ndim == 0:
-            return float(value.item())
-        return value.detach().cpu().tolist()
-    if isinstance(value, torch.device):
-        return str(value)
-    if isinstance(value, torch.dtype):
-        return str(value)
-    return value
 
 
 def setup_logging() -> None:
@@ -76,26 +61,34 @@ def require_section(config: dict[str, Any], name: str) -> dict[str, Any]:
     return value
 
 
-def resolve_dtype(dtype_name: str) -> torch.dtype:
-    """Resolve one configured dtype name to a torch dtype."""
-    return parse_dtype(dtype_name)
+def to_serializable(value: Any) -> Any:
+    """Convert config values to JSON/YAML-safe objects."""
+    if isinstance(value, dict):
+        return {str(key): to_serializable(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_serializable(val) for val in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.Tensor):
+        return float(value.item()) if value.ndim == 0 else value.detach().cpu().tolist()
+    if isinstance(value, (torch.device, torch.dtype)):
+        return str(value)
+    return value
 
 
 def _slug(value: Any) -> str:
     """Convert one config value to a short path-safe slug."""
-    text = str(value).strip().replace("/", "-").replace(" ", "_")
-    return text.replace(".", "p")
+    return str(value).strip().replace("/", "-").replace(" ", "_").replace(".", "p")
 
 
 def _grid_items(prefix: str, value: Any) -> list[tuple[str, Any]]:
     """Flatten one nested mapping into dotted leaf paths."""
-    if isinstance(value, dict):
-        items: list[tuple[str, Any]] = []
-        for key, child in value.items():
-            child_prefix = f"{prefix}.{key}" if prefix else str(key)
-            items.extend(_grid_items(child_prefix, child))
-        return items
-    return [(prefix, value)]
+    if not isinstance(value, dict):
+        return [(prefix, value)]
+    items: list[tuple[str, Any]] = []
+    for key, child in value.items():
+        items.extend(_grid_items(f"{prefix}.{key}" if prefix else str(key), child))
+    return items
 
 
 def _assign_path(target: dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -111,7 +104,6 @@ def _expand_entry_grid(entry_name: str, entry_cfg: dict[str, Any]) -> list[dict[
     """Expand one named preset over all list-valued leaves."""
     static_cfg: dict[str, Any] = {}
     varying_items: list[tuple[str, list[Any]]] = []
-
     for key, value in _grid_items("", copy.deepcopy(entry_cfg)):
         if isinstance(value, list):
             if not value:
@@ -125,8 +117,7 @@ def _expand_entry_grid(entry_name: str, entry_cfg: dict[str, Any]) -> list[dict[
 
     variants = []
     keys = [key for key, _ in varying_items]
-    values = [choices for _, choices in varying_items]
-    for combo in itertools.product(*values):
+    for combo in itertools.product(*(choices for _, choices in varying_items)):
         variant_cfg = copy.deepcopy(static_cfg)
         variant_params = dict(zip(keys, combo, strict=True))
         for key, value in variant_params.items():
@@ -144,7 +135,7 @@ def _expand_entry_grid(entry_name: str, entry_cfg: dict[str, Any]) -> list[dict[
 
 
 def select_entries(section_name: str, registry: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
-    """Select and expand the named presets for one registry section."""
+    """Select and expand named presets for one registry section."""
     variants = []
     for name in names:
         if name not in registry:
@@ -159,9 +150,8 @@ def select_entries(section_name: str, registry: dict[str, Any], names: list[str]
 def make_batch_dir(run_cfg: dict[str, Any], save_cfg: dict[str, Any]) -> Path:
     """Create the parent output directory for one config sweep."""
     root = Path(save_cfg.get("root_dir", "runs")).expanduser()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = str(run_cfg.get("name", "run")).strip() or "run"
-    batch_dir = root / f"{timestamp}_{name}"
+    batch_dir = root / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}"
     batch_dir.mkdir(parents=True, exist_ok=False)
     return batch_dir
 
@@ -179,10 +169,7 @@ def build_dataset(dataset_cfg: dict[str, Any], dtype: torch.dtype, device: str |
     name = str(dataset_cfg.get("name", "")).strip()
     if not name:
         raise ValueError("dataset.name must be provided.")
-
-    params = copy.deepcopy(dataset_cfg.get("params", {}))
-    split = copy.deepcopy(dataset_cfg.get("split", {}))
-    kwargs = {**params, **split, "dtype": dtype, "device": device}
+    kwargs = {**copy.deepcopy(dataset_cfg.get("params", {})), **copy.deepcopy(dataset_cfg.get("split", {})), "dtype": dtype, "device": device}
     if kind == "synthetic":
         return fetch_synthetic_data(name, **kwargs)
     if kind == "real":
@@ -194,20 +181,16 @@ def build_network(network_cfg: dict[str, Any], x_train: torch.Tensor) -> tuple[t
     """Instantiate one network backbone and return its resolved params."""
     name = str(network_cfg.get("name", "mlp")).lower()
     params = copy.deepcopy(network_cfg.get("params", {}))
-    x_shape = tuple(x_train.shape)
-
-    if name == "mlp":
-        params.setdefault("dim", int(x_shape[-1]))
-        return MLPModel(**params), params
-    if name == "mlp_plain":
-        params.setdefault("dim", int(x_shape[-1]))
-        params.setdefault("use_norm", False)
+    if name in {"mlp", "mlp_plain"}:
+        params.setdefault("dim", int(x_train.shape[-1]))
+        if name == "mlp_plain":
+            params.setdefault("use_norm", False)
         return MLPModel(**params), params
     if name == "unet":
         if x_train.ndim != 4:
-            raise ValueError(f"UNetModel expects 4D image-like data, got training shape {x_shape}.")
-        params.setdefault("in_channels", int(x_shape[1]))
-        params.setdefault("out_channels", int(x_shape[1]))
+            raise ValueError(f"UNetModel expects 4D image-like data, got training shape {tuple(x_train.shape)}.")
+        params.setdefault("in_channels", int(x_train.shape[1]))
+        params.setdefault("out_channels", int(x_train.shape[1]))
         return UNetModel(**params), params
     raise ValueError(f"Unknown network.name={name!r}. Available: mlp, mlp_plain, unet.")
 
@@ -223,7 +206,6 @@ def build_model(
     name = str(model_cfg.get("name", "")).lower()
     if name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model.name={name!r}. Available: {sorted(MODEL_REGISTRY)}.")
-
     params = copy.deepcopy(model_cfg.get("params", {}))
     params.setdefault("dim", int(x_train.shape[-1]))
     params.setdefault("fdtype", dtype)
@@ -235,14 +217,15 @@ def _epoch_frame(core_records: dict[str, Any]) -> pd.DataFrame:
     """Convert core visitor histories to a per-epoch DataFrame."""
     keys = ["training_loss", "training_loss_std", "grad_variance_epoch", "grad_norm_epoch"]
     max_len = max(len(core_records.get(key, [])) for key in keys)
-    rows = []
-    for idx in range(max_len):
-        row = {"epoch": idx + 1}
-        for key in keys:
-            values = core_records.get(key, [])
-            row[key] = values[idx] if idx < len(values) else float("nan")
-        rows.append(row)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        [
+            {
+                "epoch": idx + 1,
+                **{key: core_records.get(key, [])[idx] if idx < len(core_records.get(key, [])) else float("nan") for key in keys},
+            }
+            for idx in range(max_len)
+        ]
+    )
 
 
 def _resolved_config(
@@ -275,7 +258,7 @@ def _resolved_config(
     resolved["dataset"]["resolved_train_shape"] = list(x_train.shape)
     resolved["dataset"]["resolved_val_shape"] = list(x_val.shape)
     resolved["dataset"]["resolved_test_shape"] = list(x_test.shape)
-    resolved["network"]["resolved_param_count"] = int(sum(p.numel() for p in net.parameters()))
+    resolved["network"]["resolved_param_count"] = int(sum(param.numel() for param in net.parameters()))
     return to_serializable(resolved)
 
 
@@ -301,7 +284,7 @@ def _write_run_summary(
         f"train_shape: {tuple(x_train.shape)}",
         f"val_shape: {tuple(x_val.shape)}",
         f"test_shape: {tuple(x_test.shape)}",
-        f"n_parameters: {sum(p.numel() for p in net.parameters())}",
+        f"n_parameters: {sum(param.numel() for param in net.parameters())}",
         f"final_loss: {losses[-1] if losses else 'nan'}",
         f"final_grad_norm: {grad_norms[-1] if grad_norms else 'nan'}",
     ]
@@ -323,18 +306,14 @@ def run_one(
     dtype: torch.dtype,
 ) -> dict[str, Any]:
     """Execute one config combination and save its artifacts."""
-    run_dir = _make_run_dir(batch_dir=batch_dir, combo_index=combo_index, combo_name=combo_name)
+    run_dir = _make_run_dir(batch_dir, combo_index, combo_name)
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_cfg = copy.deepcopy(dataset_variant["config"])
-    dataset_cfg["preset_name"] = dataset_variant["variant_name"]
-    network_cfg = copy.deepcopy(network_variant["config"])
-    network_cfg["preset_name"] = network_variant["variant_name"]
-    model_cfg = copy.deepcopy(model_variant["config"])
-    model_cfg["preset_name"] = model_variant["variant_name"]
-    train_cfg = copy.deepcopy(train_variant["config"])
-    train_cfg["preset_name"] = train_variant["variant_name"]
+    dataset_cfg = {**copy.deepcopy(dataset_variant["config"]), "preset_name": dataset_variant["variant_name"]}
+    network_cfg = {**copy.deepcopy(network_variant["config"]), "preset_name": network_variant["variant_name"]}
+    model_cfg = {**copy.deepcopy(model_variant["config"]), "preset_name": model_variant["variant_name"]}
+    train_cfg = {**copy.deepcopy(train_variant["config"]), "preset_name": train_variant["variant_name"]}
 
     requested_config = to_serializable(
         {
@@ -349,22 +328,13 @@ def run_one(
     with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
         yaml.safe_dump(requested_config, handle, sort_keys=False)
 
-    seed = int(run_cfg.get("seed", 0)) + combo_index - 1
-    set_seed(seed)
-
+    set_seed(int(run_cfg.get("seed", 0)) + combo_index - 1)
     device = str(train_cfg.get("device", "cpu"))
-    x_train, x_val, x_test = build_dataset(dataset_cfg=dataset_cfg, dtype=dtype, device=device)
-    net, network_params = build_network(network_cfg=network_cfg, x_train=x_train)
+    x_train, x_val, x_test = build_dataset(dataset_cfg, dtype=dtype, device=device)
+    net, network_params = build_network(network_cfg, x_train)
     net = net.to(device=device, dtype=dtype)
-    generative_model, model_params = build_model(
-        model_cfg=model_cfg,
-        net=net,
-        x_train=x_train,
-        dtype=dtype,
-        device=device,
-    )
+    generative_model, model_params = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
 
-    core_visitor = CoreMetricsVisitor()
     train_kwargs = copy.deepcopy(train_cfg)
     train_kwargs.pop("preset_name", None)
     train_kwargs["device"] = device
@@ -377,33 +347,28 @@ def run_one(
         f"model={model_variant['variant_name']} "
         f"train={train_variant['variant_name']}"
     )
-    try:
-        _, diagnostics = train(
-            generative_model=generative_model,
-            target_data=x_train,
-            visitors=[core_visitor],
-            **train_kwargs,
-        )
 
+    try:
+        _, diagnostics = train(generative_model=generative_model, target_data=x_train, visitors=[CoreMetricsVisitor()], **train_kwargs)
         resolved_config = _resolved_config(
-            config_path=config_path,
-            dtype=dtype,
-            batch_dir=batch_dir,
-            dataset_cfg=dataset_cfg,
-            network_cfg=network_cfg,
-            model_cfg=model_cfg,
-            train_cfg=train_cfg,
-            save_cfg=save_cfg,
-            x_train=x_train,
-            x_val=x_val,
-            x_test=x_test,
-            net=net,
+            config_path,
+            dtype,
+            batch_dir,
+            dataset_cfg,
+            network_cfg,
+            model_cfg,
+            train_cfg,
+            save_cfg,
+            x_train,
+            x_val,
+            x_test,
+            net,
         )
         model_init = {
             "network": {"name": str(network_cfg.get("name")), "params": to_serializable(network_params)},
             "model": {"name": str(model_cfg.get("name")), "params": to_serializable(model_params)},
             "dtype": str(dtype),
-            "device": str(device),
+            "device": device,
             "train_shape": list(x_train.shape),
         }
         checkpoint = {
@@ -413,27 +378,15 @@ def run_one(
             "network_state_dict": net.state_dict(),
             "diagnostics": diagnostics,
         }
-
         with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
             yaml.safe_dump(resolved_config, handle, sort_keys=False)
-        with (run_dir / "model_init.json").open("w", encoding="utf-8") as handle:
-            json.dump(to_serializable(model_init), handle, indent=2)
+        (run_dir / "model_init.json").write_text(json.dumps(to_serializable(model_init), indent=2), encoding="utf-8")
         torch.save(checkpoint, run_dir / "checkpoint.pt")
 
         core_records = diagnostics.get("visitors", {}).get("core", {})
         _epoch_frame(core_records).to_csv(run_dir / "train_stats.csv", index=False)
-        with (run_dir / "train_stats.json").open("w", encoding="utf-8") as handle:
-            json.dump(to_serializable(core_records), handle, indent=2)
-
-        _write_run_summary(
-            run_dir=run_dir,
-            resolved_config=resolved_config,
-            x_train=x_train,
-            x_val=x_val,
-            x_test=x_test,
-            net=net,
-            diagnostics=diagnostics,
-        )
+        (run_dir / "train_stats.json").write_text(json.dumps(to_serializable(core_records), indent=2), encoding="utf-8")
+        _write_run_summary(run_dir, resolved_config, x_train, x_val, x_test, net, diagnostics)
 
         losses = core_records.get("training_loss", [])
         grad_norms = core_records.get("grad_norm_epoch", [])
@@ -486,3 +439,95 @@ def run_one(
             "final_loss": float("nan"),
             "final_grad_norm": float("nan"),
         }
+
+
+def main() -> None:
+    """Run the configured benchmark sweep."""
+    setup_logging()
+
+    parser = argparse.ArgumentParser(description="Run benchmark sweeps from one YAML config.")
+    parser.add_argument("--config", type=Path, required=True, help="Path to one YAML config file.")
+    parser.add_argument("--batch-dir", type=Path, default=None, help="Optional existing/shared batch directory.")
+    parser.add_argument("--shard-count", type=int, default=1, help="Split the combination grid into this many shards.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to execute.")
+    args = parser.parse_args()
+
+    if args.shard_count < 1:
+        raise ValueError("--shard-count must be >= 1.")
+    if not 0 <= args.shard_index < args.shard_count:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
+
+    config = load_yaml(args.config)
+    run_cfg = require_section(config, "run")
+    sweep_cfg = require_section(config, "sweep")
+    datasets_cfg = require_section(config, "datasets")
+    networks_cfg = require_section(config, "networks")
+    models_cfg = require_section(config, "models")
+    trains_cfg = require_section(config, "trains")
+    save_cfg = require_section(config, "save")
+
+    dtype = parse_dtype(str(run_cfg.get("dtype", "float32")))
+    dataset_variants = select_entries("datasets", datasets_cfg, list(sweep_cfg.get("datasets", [])))
+    network_variants = select_entries("networks", networks_cfg, list(sweep_cfg.get("networks", [])))
+    model_variants = select_entries("models", models_cfg, list(sweep_cfg.get("models", [])))
+    train_variants = select_entries("trains", trains_cfg, list(sweep_cfg.get("trains", [])))
+    n_trial = int(run_cfg.get("n_trial", 1))
+
+    if not all([dataset_variants, network_variants, model_variants, train_variants]):
+        raise ValueError("The sweep must select at least one dataset, network, model, and train entry.")
+    if n_trial < 1:
+        raise ValueError("run.n_trial must be >= 1.")
+
+    batch_dir = make_batch_dir(run_cfg, save_cfg) if args.batch_dir is None else args.batch_dir.expanduser()
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    print(f"batch_dir: {batch_dir}")
+    print(f"shard: {args.shard_index + 1}/{args.shard_count}")
+    print(f"available datasets: {', '.join(list_datasets())}")
+
+    manifest_rows = []
+    combinations = itertools.product(dataset_variants, network_variants, model_variants, train_variants, range(n_trial))
+    for combo_index, (dataset_variant, network_variant, model_variant, train_variant, trial_idx) in enumerate(combinations, start=1):
+        if (combo_index - 1) % args.shard_count != args.shard_index:
+            continue
+        combo_name = "__".join(
+            [
+                dataset_variant["variant_name"],
+                network_variant["variant_name"],
+                model_variant["variant_name"],
+                train_variant["variant_name"],
+                f"trial-{trial_idx + 1:02d}",
+            ]
+        )
+        manifest_rows.append(
+            run_one(
+                config_path=args.config,
+                batch_dir=batch_dir,
+                combo_index=combo_index,
+                combo_name=combo_name,
+                run_cfg=run_cfg,
+                dataset_variant=dataset_variant,
+                network_variant=network_variant,
+                model_variant=model_variant,
+                train_variant=train_variant,
+                trial_idx=trial_idx,
+                save_cfg=save_cfg,
+                dtype=dtype,
+            )
+        )
+
+    manifest_name = "manifest.csv" if args.shard_count == 1 else f"manifest_shard_{args.shard_index:03d}.csv"
+    summary_name = "summary.txt" if args.shard_count == 1 else f"summary_shard_{args.shard_index:03d}.txt"
+    pd.DataFrame(manifest_rows).to_csv(batch_dir / manifest_name, index=False)
+    n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
+    with (batch_dir / summary_name).open("w", encoding="utf-8") as handle:
+        handle.write(f"n_runs: {len(manifest_rows)}\n")
+        handle.write(f"n_failed: {n_failed}\n")
+        handle.write(f"config: {args.config.resolve()}\n")
+        handle.write(f"batch_dir: {batch_dir.resolve()}\n")
+        handle.write(f"shard_index: {args.shard_index}\n")
+        handle.write(f"shard_count: {args.shard_count}\n")
+    print("done")
+
+
+if __name__ == "__main__":
+    main()

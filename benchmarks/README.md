@@ -19,7 +19,7 @@ make setup-jz
 Local smoke test:
 
 ```bash
-bash benchmarks/launchers/local.sh --blank
+bash scripts/run.local.sh --blank
 ```
 
 Local full config sweep:
@@ -34,9 +34,17 @@ Jean Zay full run:
 make run-jz
 ```
 
-Override config or shard count when needed:
+Inspect one submitted array job:
 
 ```bash
-make run-jz CONFIG=benchmarks/configs/02_dimension_effect.yaml ARRAY=0-15
-make run-jz CONFIG=benchmarks/configs/03_modecollapsing_effect.yaml ARRAY=0-5
+make inspect-jz JOBID=1985827
+make log-jz JOBID=1985827
+make log-jz JOBID=1985827 TASK=3
+```
+
+Launch sharded evaluation for one fetched or remote batch:
+
+```bash
+make evaluate-jz
+make log-jz LOG_PREFIX=htfm_eval JOBID=1986001 TASK=3
 ```

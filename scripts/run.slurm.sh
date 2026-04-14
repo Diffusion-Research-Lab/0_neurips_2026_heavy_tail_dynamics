@@ -15,9 +15,9 @@
 set -euo pipefail
 
 # Usage:
-#   sbatch benchmarks/launchers/slurm.sh
-#   sbatch --array=0-7 benchmarks/launchers/slurm.sh
-#   sbatch --array=0-15 benchmarks/launchers/slurm.sh --config benchmarks/configs/02_dimension_effect.yaml
+#   sbatch scripts/run.slurm.sh
+#   sbatch --array=0-7 scripts/run.slurm.sh
+#   sbatch --array=0-15 scripts/run.slurm.sh --config benchmarks/configs/02_dimension_effect.yaml
 #
 # Defaults to benchmarks/configs/01_alphastable_baseline.yaml.
 # With a Slurm array, each task runs one shard of the same config.
@@ -102,7 +102,7 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     echo "[slurm] Missing virtual environment." >&2
     echo "[slurm] Expected: ${PROJECT_ROOT}/.venv-genkit (or ${PROJECT_ROOT}/.venv)" >&2
     echo "[slurm] Run setup first on login node:" >&2
-    echo "  bash benchmarks/launchers/setup.sh --env-name genkit --use-jz-module" >&2
+    echo "  bash scripts/setup.sh --env-name genkit --use-jz-module" >&2
     exit 1
   fi
 fi
@@ -172,7 +172,7 @@ echo "==========================================================================
 
 srun nvidia-smi || true
 CMD=(
-  "${PYTHON_BIN}" -m benchmarks.runner.main
+  "${PYTHON_BIN}" -m benchmarks.main
   --config "${CONFIG_PATH}"
   --shard-count "${SHARD_COUNT}"
   --shard-index "${SHARD_INDEX}"

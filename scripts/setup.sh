@@ -2,16 +2,16 @@
 set -euo pipefail
 
 # Usage:
-#   bash benchmarks/launchers/setup.sh
-#   bash benchmarks/launchers/setup.sh --env-name genkit --check
-#   bash benchmarks/launchers/setup.sh --venv-dir /path/to/.venv --check
-#   bash benchmarks/launchers/setup.sh --use-jz-module --check
+#   bash scripts/setup.sh
+#   bash scripts/setup.sh --env-name genkit --check
+#   bash scripts/setup.sh --venv-dir /path/to/.venv --check
+#   bash scripts/setup.sh --use-jz-module --check
 #
 # With --check, this script runs the unit tests. The benchmark smoke pipeline is
-# provided separately via benchmarks/launchers/local.sh --blank.
+# provided separately via scripts/run.local.sh --blank.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 PYTHONPATH_VALUE="${PROJECT_ROOT}/src"
 DO_CHECK=0
@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
       DO_CHECK=1; shift ;;
     -h|--help)
       cat <<USAGE
-Usage: bash benchmarks/launchers/setup.sh [--env-name NAME] [--venv-dir DIR] [--use-jz-module] [--jz-module NAME] [--check]
+Usage: bash scripts/setup.sh [--env-name NAME] [--venv-dir DIR] [--use-jz-module] [--jz-module NAME] [--check]
 
 Options:
   --env-name NAME   Convenience alias for --venv-dir "./.venv-NAME"
