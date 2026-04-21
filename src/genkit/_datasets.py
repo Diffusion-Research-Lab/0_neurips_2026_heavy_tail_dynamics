@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 from sklearn.datasets import fetch_kddcup99, fetch_openml
 from sklearn.model_selection import train_test_split
+from .utils import getpop
 from ._sampling import (
     sample_balanced_bimodal_gaussian,
     sample_checker,
@@ -18,7 +19,6 @@ from ._sampling import (
     sample_unbalanced_highdim_gaussian_mixture,
     sample_unbalanced_bimodal_gaussian,
 )
-from .utils import getpop
 
 
 DatasetLoader = Callable[..., pd.DataFrame]
