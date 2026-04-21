@@ -27,7 +27,27 @@ cd "$REPO_DIR"
 command -v codex >/dev/null 2>&1 || die "'codex' command not found."
 
 readonly NOTEBOOK_REF="$NOTEBOOK_INPUT"
-readonly NOTEBOOK_BASENAME="$(basename "$NOTEBOOK_INPUT")"
+readonly SOURCE_CODEX_DIR="${HOME}/.codex"
+CODEX_HOME_TMP="$(mktemp -d "${TMPDIR:-/tmp}/codex-report-home.XXXXXX")"
+mkdir -p "${CODEX_HOME_TMP}/.codex"
+
+for name in auth.json config.toml version.json installation_id; do
+  [[ -f "${SOURCE_CODEX_DIR}/${name}" ]] || continue
+  cp "${SOURCE_CODEX_DIR}/${name}" "${CODEX_HOME_TMP}/.codex/${name}"
+done
+
+for name in rules skills; do
+  [[ -e "${SOURCE_CODEX_DIR}/${name}" ]] || continue
+  cp -a "${SOURCE_CODEX_DIR}/${name}" "${CODEX_HOME_TMP}/.codex/${name}"
+done
+
+cleanup() {
+  [[ -n "${CODEX_HOME_TMP:-}" && -d "${CODEX_HOME_TMP}" ]] || return
+  rm -rf "${CODEX_HOME_TMP}"
+}
+
+trap cleanup EXIT
+
 readonly STYLE_CONTENT=$(cat <<'EOF_STYLE'
 % partial rewrite of the LaTeX2e package for submissions to the
 % Conference on Neural Information Processing Systems (NeurIPS):
@@ -470,54 +490,39 @@ EOF_STYLE
 )
 
 readonly PROMPT_TEMPLATE=$(cat <<'EOF'
-Read `__NOTEBOOK_BASENAME__` and the associated source/package files, then generate exactly one output directory and nothing else:
+Read `__NOTEBOOK_REF__` and inspect only the source/package files needed to verify the experiment. Stop as soon as the setup, metrics, and results are verified.
 
-`report/`, containing exactly:
-- `main.tex`: a complete, standalone, compilable LaTeX report;
-- `bibliography.bib`: a BibTeX file containing only the references cited in the document;
-- `neurips_2026.sty`: a copy of the style file, copied from the source directory;
-- `figures/`: a directory containing only the figure files used in the report.
+Create exactly one directory, `report/`, containing only:
+- `main.tex` -- standalone compilable LaTeX report
+- `bibliography.bib` -- only cited references
+- `neurips_2026.sty` -- exact style file provided below
+- `figures/` -- only files referenced by `main.tex`
 
-Global objective
-Produce a short, readable experimental note in NeurIPS style. The goal is good formatting and easy reading, not imitation of a polished conference submission. The document should summarize the main empirical content in a compact but readable way, with strong use of informative figures and tables, plus a compact appendix with formal definitions needed to make the document self-contained.
+Write a short NeurIPS-style experimental note. Prioritize clarity, compactness, and visual readability. Use concise third-person scientific prose. Do not write like a polished conference submission. Do not add hype, broad motivation, textbook background, filler, or long explanations.
 
-Scope and execution note
-- The source material may be long. That is acceptable.
-- Read the full relevant material before writing.
-- Do not rush to produce outputs after partial inspection.
-- It is better to spend time extracting the correct experimental content than to produce an incomplete or shallow summary.
+Use only verified information. Do not invent missing details. If a detail cannot be verified, omit it or state that it could not be verified. Do not mention “this notebook”, “the code”, “the repository”, or similar. Avoid repetition and verbatim reuse.
 
-Style and template requirements
-- Use `neurips_2026.sty`, and place a copy of it inside `report/`.
-- Format the document as a NeurIPS paper purely for readability.
-- Use a generic, descriptive title.
-- Include a short abstract.
-- Write in concise third-person scientific style.
-- Do not try to mimic the tone or rhetorical structure of a polished conference submission.
-- Do not add paper-like filler, hype, novelty framing, or broad motivational prose.
+Token discipline:
+- Read minimally and extract only facts needed for the report.
+- Do not produce intermediate summaries or file-by-file descriptions.
+- Do not quote source text unless strictly necessary.
+- Do not regenerate figures or create new plots, screenshots, or derived visuals.
+- Use only figures already present in the notebook outputs or source files.
 
-Hard constraints
-- Maximum length of the main body: 10 pages total, including title, abstract, all main sections, figures, and tables.
-- The references do not count toward the 10-page limit.
-- The appendix does not count toward the 10-page limit.
-- References must start on a new page immediately after the `Analysis` section.
-- The appendix must start on a new page immediately after the references.
-- Deliver only `report/` with the exact contents listed above.
-- Do not create any other files.
-- Do not invent, guess, or fill in missing information.
-- If a detail cannot be verified from the available material, state explicitly that it could not be verified, or omit it if it is not necessary.
-- Do not mention “this notebook”, “the code”, “the repository”, or similar.
-- Avoid useless prose, repetition, and verbatim restatement of source text.
+Formatting constraints:
+- Use `neurips_2026.sty` from `report/`.
+- Main body must be at most 10 pages total, including title, abstract, figures, and tables.
+- References must start on a new page immediately after `Results`.
+- Appendix must start on a new page immediately after the references.
+- Deliver only `report/` with the exact contents above.
 
-Writing requirements
-- Be concise, but not artificially terse.
-- Write enough to make the report pleasant to read and easy to follow.
-- Prefer structure, whitespace, short paragraphs, and figures/tables over long prose.
-- Keep the main body visually light: short sentences, compact paragraphs, sparse commentary.
-- Do not include generic background, textbook explanations, or long implementation descriptions unless they are experimentally necessary and verifiable.
-- Keep the appendix compact, formal, and strictly supportive of the main body.
+Create `report/neurips_2026.sty` with exactly this content:
 
-Required structure
+```tex
+__STYLE_CONTENT__
+```
+
+Required structure in `main.tex`:
 
 Main body:
 - title
@@ -525,150 +530,49 @@ Main body:
 - `\section{Introduction}`
 - `\section{Setting}`
 - `\section{Results}`
-- `\section{Analysis}`
 
-References:
-- bibliography on a new page after `Analysis`
-
-Appendix:
+Then:
+- references on a new page
 - `\appendix`
 - `\section{Notation}`
 - `\section{Metrics}`
 - `\section{Algorithm}`
 
-Content requirements
+Content requirements:
+- Abstract: 3-6 sentences stating the setting, what is compared, and the main outcome.
+- Introduction: brief context; state the object of study, comparison, and scope of evidence.
+- Setting: only verified details that are available, such as dataset/simulation, methods/baselines, architecture, training, evaluation, and metrics.
+- Results: main section. Lead with the strongest evidence. Use existing figures/tables only. Include main comparisons, ablations, quantitative summaries, representative qualitative outputs, and compact tables when available. Every figure/table must have a short caption and label. Keep commentary brief.
+- Notation: compact table of symbols actually used.
+- Metrics: concise mathematical definitions of all reported metrics actually used; if an exact definition cannot be verified, say so.
+- Algorithm: compact formal definition of the evaluated model/process, only as needed for the experiments. Prefer equations over prose. For diffusion or flow-based models, include the forward formula(s) actually used; if multiple forward parameterizations are compared, define each briefly. No derivations, pseudocode, or unnecessary background. If the exact formulation cannot be verified, say so.
 
-`Abstract`
-- 3 to 6 sentences.
-- State only the experimental setting, what is compared, and the main observed outcome.
-- No hype, no novelty claims, no broad framing.
+Figure/table policy:
+- `report/figures/` must contain only assets referenced by `main.tex`.
+- Use compact layouts when helpful and keep everything within the 10-page limit.
+- Avoid oversized figures; use full width only when clearly justified.
+- Do not use raw screenshots unless they are the only faithful record of a result.
 
-`Introduction`
-- Short but readable.
-- Provide enough context to understand the experiment and why the comparison matters.
-- State the object of study, the comparison being made, and the scope of the reported evidence.
-- Do not add literature review beyond a few strictly necessary citations.
+Bibliography:
+- Cite `bibliography.bib` from `main.tex`.
+- Include only references actually cited, including appendix citations.
+- Add citations only when needed for essential context, metrics, or model definitions.
+- Do not fabricate metadata.
 
-`Setting`
-Report only the verified experimental setup, as concretely as possible. Include, when available:
-- target distribution, dataset, or simulation setup;
-- compared methods or baselines;
-- architecture / backbone;
-- training hyperparameters and optimization details;
-- evaluation protocol;
-- reported metrics.
-
-Keep this section short and factual. Prefer dense reporting over explanation, but allow enough wording for clarity.
-
-`Results`
-This section should carry most of the document.
-- Take advantage of as much of the useful figure material as possible within the 10-page main-body limit.
-- Reuse available outputs whenever possible.
-- If needed, recreate figures/tables faithfully from the available material.
-- If important results are present but not already visualized well, produce new figures or compact tables to display them clearly.
-- Prefer informative figures and compact tables over text, as long as the 10-page main-body limit is respected.
-- Use the strongest evidence first: final comparison plots, ablations, quantitative summaries, representative qualitative outputs, and compact tables.
-- Exclude only figures that are redundant, low-information, purely diagnostic, or not needed to support the main findings.
-- Include one compact “result overview” table near the beginning of the section whenever the available material supports it. This table should summarize the main quantitative comparison and serve as the anchor for the rest of the section.
-- Every figure/table must have a short caption and a label.
-- Each figure caption should end with one short factual takeaway sentence directly supported by the displayed evidence.
-- Arrange content so the results are easy to scan visually.
-- Add brief, useful commentary where needed to connect the figures and tables. The text should help interpretation, not duplicate the captions.
-
-`Analysis`
-- Keep this section short.
-- Provide only pertinent remarks, compact interpretation, and useful intuition directly supported by the results.
-- Do not paraphrase captions or restate the displayed evidence mechanically.
-- Do not add generic claims, shallow commentary, or unsupported interpretation.
-- Focus on what matters: strongest comparison, main trade-off, main failure mode, main ablation lesson, or other experimentally grounded insight.
-
-`Notation`
-- Provide a compact notation table covering only symbols actually used in the document.
-- Prefer a two-column table: symbol and meaning.
-- Do not include unused or generic notation.
-- If notation cannot be verified, omit it rather than guessing.
-
-`Metrics`
-- Give formal mathematical definitions of every reported evaluation metric, but only for metrics actually used in the document.
-- Keep definitions concise.
-- Include variable meanings only when needed for clarity.
-- If a metric is reported but its exact definition cannot be verified from the available material, state that the precise definition could not be verified.
-
-`Algorithm`
-- Give a compact formal definition of the model or process evaluated, limited to what is necessary for the reported experiments.
-- For diffusion or flow-based models, include the forward formula(s) used in the reported setup, in mathematical form.
-- If multiple forward parameterizations are compared, define each one briefly.
-- Prefer equations over prose.
-- Do not include derivations, training pseudocode, or background exposition unless experimentally necessary and verifiable.
-- If the exact forward formulation cannot be verified, state that explicitly instead of reconstructing it from prior knowledge.
-
-Figure and table policy
-- `report/figures/` must contain only assets actually referenced in `report/main.tex`.
-- Use as many non-redundant, informative figures as can fit cleanly within the 10-page main-body limit.
-- Prefer multi-panel figures or compact layouts when this helps include more useful results without clutter.
-- When existing figures are weak, incomplete, badly scaled, or poorly suited to the paper format, produce improved figures from the available data instead of forcing the original ones.
-- Do not keep duplicate or near-duplicate visuals.
-- Do not include raw screenshots unless they are the only faithful way to preserve a result.
-- All figures must be properly scaled to fit the NeurIPS layout.
-- No figure may overflow the text width, page height, or margins.
-- Do not use oversized figures by default.
-- Prefer single-column figures unless a two-column figure is clearly necessary.
-- Prefer `[h]` placement for figures and tables whenever they fit cleanly at the current location.
-- Use as many `[h]` placements as possible without breaking layout, creating large whitespace, or causing float problems.
-- Fall back to `[t]`, `[tbp]`, or other standard float placements only when necessary for clean compilation and readable layout.
-- Adjust widths, heights, aspect ratios, and subplot layouts so each figure is readable but compact.
-- Prefer `width=\linewidth` or narrower for single-column content.
-- Use full-width figures only when clearly justified by readability.
-- If a figure becomes unreadable at the chosen scale, simplify it, crop unused whitespace aggressively, split it, or replace it with a more compact representation rather than letting it dominate the page.
-- Tables must also be sized to fit cleanly within the page layout.
-
-Bibliography policy
-- Produce `report/bibliography.bib` and cite it from `report/main.tex`.
-- Include only references actually cited in the document.
-- The bibliography must integrate all references cited anywhere in the document, including the appendix.
-- Keep the bibliography small.
-- Add references only when they serve a clear purpose: essential context in the introduction, metric definitions, or algorithm/model definitions.
-- Do not fabricate bibliographic metadata.
-- If a citation is needed but full bibliographic details cannot be verified, either omit the citation or use a clearly minimal verified entry.
-- Do not add a long related-work section.
-- Place the bibliography on a new page after the `Analysis` section.
-
-Style policy
-- Concise but readable.
-- No decorative phrasing.
-- No long verbatim extraction from source text.
-- No narrative filler.
-- No unsupported interpretation.
-- Let the figures and tables do most of the work, but allow enough prose to guide the reader through them.
-- In the appendix, favor equations and compact tables over prose.
-
-Final quality pass
-Before finishing:
-- Make one final pass over the document layout and reduce unnecessary whitespace.
-- Remove any unused figure files.
-- Ensure captions are short and informative.
-- Ensure the main body stays within 4 pages.
-- Ensure the references start on a new page after `Analysis`.
-- Ensure the appendix starts on a new page after the references.
-- Ensure all cited references are present in `bibliography.bib`.
-- Ensure `main.tex` compiles cleanly with the copied `neurips_2026.sty`.
-
-Final output contract
-Return exactly one directory:
-- `report/`
-
-Ensure that:
-- `report/main.tex` compiles with the copied `report/neurips_2026.sty`;
-- `report/main.tex` references only files present in `report/figures/` and `report/bibliography.bib`;
-- the references start on a new page after `Analysis`;
-- the appendix starts on a new page after the references.
+Final checks:
+- remove unused figure files
+- keep captions short
+- reduce unnecessary whitespace
+- ensure references and appendix start on new pages
+- ensure every citation is in `bibliography.bib`
+- ensure `main.tex` compiles cleanly with the copied `neurips_2026.sty`
 EOF
 )
 
-PROMPT="${PROMPT_TEMPLATE//__NOTEBOOK_BASENAME__/$NOTEBOOK_REF}"
+PROMPT="${PROMPT_TEMPLATE//__NOTEBOOK_REF__/$NOTEBOOK_REF}"
 PROMPT="${PROMPT//__STYLE_CONTENT__/$STYLE_CONTENT}"
 
-codex exec \
-  --cd "$(pwd)" \
-  --sandbox workspace-write \
-  "$PROMPT"
+(
+  export HOME="${CODEX_HOME_TMP}"
+  printf '%s\n' "$PROMPT" | codex exec --cd "$(pwd)" --sandbox workspace-write -
+)
