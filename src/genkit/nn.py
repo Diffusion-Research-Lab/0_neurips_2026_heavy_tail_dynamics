@@ -54,7 +54,9 @@ class MLPModel(nn.Module):
 
     def __init__(
         self,
-        dim: int = 2,
+        input_dim: int | None = None,
+        output_dim: int | None = None,
+        dim: int | None = None,
         width: int = 128,
         depth: int = 4,
         time_dim: int = 32,
@@ -63,9 +65,14 @@ class MLPModel(nn.Module):
     ):
         """Build a standalone time-conditioned MLP for vector-valued data."""
         super().__init__()
-        self.dim = int(dim)
+        if input_dim is None:
+            input_dim = 2 if dim is None else int(dim)
+        elif dim is not None and int(dim) != int(input_dim):
+            raise ValueError(f"Conflicting input_dim={input_dim} and legacy dim={dim}.")
+        self.input_dim = int(input_dim)
+        self.output_dim = self.input_dim if output_dim is None else int(output_dim)
         self.time_dim = int(time_dim)
-        self.inp = nn.Linear(self.dim, width)
+        self.inp = nn.Linear(self.input_dim, width)
         self.time = nn.Sequential(
             nn.Linear(time_dim, time_dim),
             nn.SiLU(),
@@ -75,15 +82,14 @@ class MLPModel(nn.Module):
             _ConditionedMLPBlock(width=width, time_dim=time_dim, dropout=dropout, use_norm=use_norm)
             for _ in range(depth)
         )
-        self.out = nn.Linear(width, self.dim)
+        self.out = nn.Linear(width, self.output_dim)
         self.act = nn.SiLU()
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict outputs for flattened vector inputs conditioned on time."""
-        x_shape = x.shape
         x_flat = x.reshape(x.shape[0], -1)
-        if x_flat.shape[1] != self.dim:
-            raise ValueError(f"Expected flattened input dimension {self.dim}, got {x_flat.shape[1]}.")
+        if x_flat.shape[1] != self.input_dim:
+            raise ValueError(f"Expected flattened input dimension {self.input_dim}, got {x_flat.shape[1]}.")
 
         if t.ndim == 2 and t.shape[1] == 1:
             t = t[:, 0]
@@ -95,7 +101,7 @@ class MLPModel(nn.Module):
         for block in self.blocks:
             h = block(h, temb)
         out = self.out(h)
-        return out.reshape(x_shape)
+        return out.reshape(x.shape[0], self.output_dim)
 
 
 def _conv_nd(dims: int, *args, **kwargs):

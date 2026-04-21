@@ -2,7 +2,8 @@
 
 import pytest
 import torch
-from genkit.diffusion import DLPMEps
+from genkit.diffusion import DLPMEps, DLPMEpsC
+from genkit.nn import MLPModel
 
 
 class _ZeroNet(torch.nn.Module):
@@ -87,3 +88,20 @@ def test_dlpmeps_loss_rejects_invalid_t():
 
     with pytest.raises(ValueError):
         model.loss(x, t=0)
+
+
+def test_dlpmepsc_loss_accepts_conditioned_mlp_model():
+    net = MLPModel(input_dim=3, output_dim=2, width=8, depth=1, time_dim=8)
+    model = DLPMEpsC(net=net, dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
+    x = torch.randn(5, 2, dtype=torch.float32)
+
+    loss = model.loss(x)
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss).item()
+
+
+def test_dlpmepsc_rejects_misconfigured_mlp_model():
+    net = MLPModel(input_dim=2, width=8, depth=1, time_dim=8)
+    with pytest.raises(ValueError, match="net.input_dim=3"):
+        DLPMEpsC(net=net, dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
