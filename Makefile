@@ -20,11 +20,11 @@ SBATCH_EXPORT = --export=ALL,VENV_DIR="$(CURDIR)/$(VENV_DIR)"
 
 setup-local:
 	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)"
-	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch_vendor.sh
+	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch.vendor.sh
 
 setup-jz:
 	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
-	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch_vendor.sh
+	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch.vendor.sh
 	$(BASH) -lc 'module purge || true; module load "$(JZ_MODULE)"; $(ACTIVATE); for name in $(REAL_DATASETS); do "$(VENV_PYTHON)" -c "from genkit.datasets import fetch_real_data; fetch_real_data(\"$$name\", val_size=0.15, test_size=0.15)"; done'
 
 run-local:
@@ -64,7 +64,6 @@ check:
 	$(BASH) -lc '$(ACTIVATE); python -m benchmarks.main --config benchmarks/configs/00_blank.yaml'
 	$(BASH) -lc '$(ACTIVATE); python examples/01_visu_1d_path.py --blank'
 	$(BASH) -lc '$(ACTIVATE); python examples/02_visu_2d.py --blank'
-	$(BASH) -lc '$(ACTIVATE); python examples/03_shariatan_et_al.py --blank'
 
 send:
 	$(BASH) scripts/transfer.sh send

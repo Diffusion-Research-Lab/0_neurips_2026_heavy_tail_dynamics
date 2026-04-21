@@ -2,11 +2,20 @@
 
 import sys
 import warnings
+from functools import partial
 from pathlib import Path
 from typing import Optional
 import torch
+import torch.nn.functional as F
 from ._abs import Base
 from ._sampling import sample_gaussian
+
+__all__ = [
+    "ScoreSDEOrigin",
+    "FlowMatchingOrigin",
+    "DLPMEpsOrigin",
+    "TEDMOrigin",
+]
 
 
 def _resolve_fdtype(fdtype: torch.dtype, dtype: Optional[torch.dtype]) -> torch.dtype:
@@ -83,6 +92,27 @@ def _import_score_sde_vendor(package_root: Optional[str]):
     return VESDE, get_sde_loss_fn, ReverseDiffusionPredictor, NoneCorrector, get_pc_sampler, LangevinCorrector
 
 
+def _import_tedm_vendor(package_root: Optional[str]):
+    """Import vendored PhysicsNeMo TEDM components while avoiding global module collisions."""
+    root = _resolve_vendor_root(package_root, "physicsnemo")
+    modules_before = set(sys.modules)
+    sys.path.insert(0, str(root))
+    try:
+        from physicsnemo.diffusion.noise_schedulers import StudentTEDMNoiseScheduler  # noqa: E402
+        from physicsnemo.diffusion.preconditioners import EDMPreconditioner  # noqa: E402
+        from physicsnemo.diffusion.samplers import sample as pn_sample  # noqa: E402
+    finally:
+        _remove_sys_path_entry(root)
+        loaded_vendor_modules = {
+            name
+            for name in set(sys.modules) - modules_before
+            if name == "physicsnemo" or name.startswith("physicsnemo.")
+        }
+        for name in loaded_vendor_modules:
+            sys.modules.pop(name, None)
+    return StudentTEDMNoiseScheduler, EDMPreconditioner, pn_sample
+
+
 class _NetAdapter(torch.nn.Module):
     """Wrap a native genkit network behind the vendor calling convention."""
 
@@ -93,6 +123,11 @@ class _NetAdapter(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, **kwargs) -> torch.Tensor:
         """Move inputs to the wrapped net device/dtype and delegate the forward pass."""
+        # Vendor passes x with shape (B, C, D); squeeze channel for our MLP  # XXX
+        has_channel = x.ndim == 3 and x.shape[1] == 1  # XXX
+        if has_channel:  # XXX
+            x = x.squeeze(1)  # XXX
+
         if t.ndim == 1:
             t = t.unsqueeze(-1)
 
@@ -107,7 +142,13 @@ class _NetAdapter(torch.nn.Module):
             if t.dtype != p.dtype:
                 t = t.to(p.dtype)
 
-        return self.net(x, t)
+        out = self.net(x, t)
+
+        # Restore channel dimension for vendor (B, D) -> (B, C, D)  # XXX
+        if has_channel:  # XXX
+            out = out.unsqueeze(1)  # XXX
+
+        return out
 
 
 class DLPMEpsOrigin(Base):
@@ -175,6 +216,7 @@ class DLPMEpsOrigin(Base):
             warnings.warn("In 'DLPMEpsOrigin.loss', input 'z' is ignored (z = A G are sampled internally).")
 
         x = x.to(device=self._device, dtype=self._fdtype)
+        x = x.unsqueeze(1)  # (N, dim) -> (N, 1, dim) for vendor channel convention  # XXX
         out = self._glp.training_losses(
             models={"default": self._net_auth},
             x_start=x,
@@ -201,10 +243,10 @@ class DLPMEpsOrigin(Base):
 
         x = self._glp.p_sample_loop(
             model=self._net_auth,
-            shape=(int(n_samples), int(self._dim)),
+            shape=(int(n_samples), 1, int(self._dim)),  # Add channel dimension  # XXX
             progress=bool(kwargs.get("progress", False)),
         )
-        return x.to(device=self._device, dtype=self._fdtype)
+        return x.squeeze(1).to(device=self._device, dtype=self._fdtype)  # Remove channel dim  # XXX
 
 
 class FlowMatchingOrigin(Base):
@@ -423,3 +465,153 @@ class ScoreSDEOrigin(Base):
         )
         x, _ = sampling_fn(self._score_model)
         return x.view(int(n_samples), int(self._dim)).to(device=self._device, dtype=self._fdtype)
+
+
+class TEDMOrigin(Base):
+    """Minimal adapter around vendored PhysicsNeMo Student-t EDM components."""
+    _family = "vendor"
+    _loss_tag = "mse"
+
+    def __init__(
+        self,
+        net: torch.nn.Module,
+        dim: int,
+        n_steps: int = 18,
+        nu: int = 10,
+        sigma_min: float = 0.002,
+        sigma_max: float = 80.0,
+        rho: float = 7.0,
+        sigma_data: float = 0.5,
+        p_mean: float = -1.2,
+        p_std: float = 1.2,
+        solver: str = "edm_stochastic_heun",
+        package_root: Optional[str] = None,
+        base_or_sample: Optional[torch.Tensor] = None,
+        fdtype: torch.dtype = torch.float32,
+        idtype: torch.dtype = torch.int32,
+        dtype: Optional[torch.dtype] = None,
+        device: torch.device = torch.device("cpu"),
+    ):
+        """Configure the TEDM adapter around the vendored PhysicsNeMo diffusion stack."""
+        fdtype = _resolve_fdtype(fdtype, dtype)
+        super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
+                         fdtype=fdtype, idtype=idtype, device=device)
+
+        if int(n_steps) < 1:
+            raise ValueError(f"n_steps must be at least 1, got {n_steps}.")
+        if float(sigma_min) <= 0.0:
+            raise ValueError(f"sigma_min must be positive, got {sigma_min}.")
+        if float(sigma_max) <= float(sigma_min):
+            raise ValueError(f"sigma_max must be greater than sigma_min, got {sigma_max} <= {sigma_min}.")
+        if float(rho) <= 0.0:
+            raise ValueError(f"rho must be positive, got {rho}.")
+        if float(sigma_data) <= 0.0:
+            raise ValueError(f"sigma_data must be positive, got {sigma_data}.")
+        if float(p_std) <= 0.0:
+            raise ValueError(f"p_std must be positive, got {p_std}.")
+
+        self._nu = int(nu)
+        self._sigma_min = float(sigma_min)
+        self._sigma_max = float(sigma_max)
+        self._rho = float(rho)
+        self._sigma_data = float(sigma_data)
+        self._p_mean = float(p_mean)
+        self._p_std = float(p_std)
+        self._solver = str(solver)
+
+        StudentTEDMNoiseScheduler, EDMPreconditioner, pn_sample = _import_tedm_vendor(package_root)
+        self._pn_sample = pn_sample
+        self._scheduler = StudentTEDMNoiseScheduler(
+            sigma_min=self._sigma_min,
+            sigma_max=self._sigma_max,
+            rho=self._rho,
+            nu=self._nu,
+            sigma_data=self._sigma_data,
+            P_mean=self._p_mean,
+            P_std=self._p_std,
+        )
+
+        class _WrappedModel(torch.nn.Module):
+            """Adapt a genkit network to the vendored TEDM preconditioner API."""
+
+            def __init__(adapter_self, model: torch.nn.Module):
+                """Store the wrapped genkit network."""
+                super().__init__()
+                adapter_self.model = model
+
+            def forward(adapter_self, x: torch.Tensor, t: torch.Tensor, condition: torch.Tensor = None, **kwargs) -> torch.Tensor:
+                """Forward preconditioned states through the wrapped genkit network."""
+                if t.ndim == 0:
+                    t = t.expand(x.size(0))
+                if t.ndim == 1:
+                    t = t.unsqueeze(-1)
+                return adapter_self.model(x, t)
+
+        self._model = EDMPreconditioner(_WrappedModel(self._net), sigma_data=self._sigma_data).to(device=self._device, dtype=self._fdtype)
+
+    def _sample_source_default(self, n_samples: int) -> torch.Tensor:
+        """Draw Student-t source samples for the TEDM adapter."""
+        df = torch.tensor(float(self._scheduler.nu), device=self._device, dtype=self._fdtype)
+        dist = torch.distributions.StudentT(df=df)
+        return dist.rsample((n_samples, self._dim)).to(device=self._device, dtype=self._fdtype)
+
+    def _resolve_time(self, t, n_samples: int) -> torch.Tensor:
+        """Normalize optional TEDM times to a batch vector on the model device."""
+        if t is None:
+            return self._scheduler.sample_time(n_samples, device=self._device, dtype=self._fdtype)
+        if isinstance(t, bool):
+            raise TypeError("'t' must be a scalar or tensor, not bool.")
+        if isinstance(t, (int, float)):
+            return torch.full((n_samples,), float(t), device=self._device, dtype=self._fdtype)
+        if not isinstance(t, torch.Tensor):
+            raise TypeError(f"Unsupported type for 't': {type(t).__name__}.")
+        t = t.to(device=self._device, dtype=self._fdtype)
+        if t.ndim == 0:
+            return self._resolve_time(t.item(), n_samples)
+        if t.ndim == 2 and t.shape[1] == 1:
+            t = t[:, 0]
+        if t.ndim != 1 or t.numel() != n_samples:
+            raise ValueError(f"t must have shape ({n_samples},) or ({n_samples}, 1), got {tuple(t.shape)}.")
+        return t
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None, **kwargs) -> torch.Tensor:
+        """Compute the vendored TEDM denoising loss on one noisy batch."""
+        x = x.to(device=self._device, dtype=self._fdtype)
+
+        if x.ndim != 2 or x.size(1) != self._dim:
+            raise ValueError(f"x must have shape (B, {self._dim}), got {tuple(x.shape)}.")
+
+        t = self._resolve_time(t, x.size(0))
+
+        if z is None:
+            x_t = self._scheduler.add_noise(x, t)
+        else:
+            z = z.to(device=self._device, dtype=self._fdtype)
+            if z.shape != x.shape:
+                raise ValueError(f"z must have shape {tuple(x.shape)}, got {tuple(z.shape)}.")
+            x_t = x + self._scheduler.sigma(t).unsqueeze(-1) * z
+
+        x_hat = self._model(x_t, t)
+        if x_hat.shape != x.shape:
+            raise ValueError(f"Shape mismatch: x_hat={tuple(x_hat.shape)} vs x={tuple(x.shape)}")
+
+        w = self._scheduler.loss_weight(t).unsqueeze(-1)
+        return (w * F.mse_loss(x_hat, x, reduction="none")).mean()
+
+    @torch.no_grad()
+    def sample(self, n_samples: int, **kwargs) -> torch.Tensor:
+        """Generate samples with the vendored TEDM sampler."""
+        self._net.eval()
+
+        t_steps = self._scheduler.timesteps(self._n_steps, device=self._device, dtype=self._fdtype)
+        tN = t_steps[0].expand(n_samples)
+
+        if self._base_or_sample is None:
+            x_init = self._scheduler.init_latents((self._dim,), tN, device=self._device, dtype=self._fdtype)
+        else:
+            z = self._sample_source(n_samples)
+            x_init = self._scheduler.sigma(tN).unsqueeze(-1) * z
+
+        denoiser = self._scheduler.get_denoiser(x0_predictor=partial(self._model))
+        x = self._pn_sample(denoiser, x_init, self._scheduler, num_steps=self._n_steps, solver=self._solver)
+        return x.to(device=self._device, dtype=self._fdtype)

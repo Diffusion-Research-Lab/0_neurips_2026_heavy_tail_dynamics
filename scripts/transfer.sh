@@ -67,12 +67,15 @@ stage_project() {
       --exclude 'venv/' \
       --exclude 'build/' \
       --exclude 'dist/' \
+      --exclude '*.codex' \
       --exclude '*.egg-info/' \
       --exclude '__pycache__/' \
       --exclude '*.py[cod]' \
       --exclude '*~' \
       --exclude 'code.zip' \
-      --exclude 'sandbox/' \
+      --exclude 'sandbox/*.ipynb' \
+      --exclude 'sandbox/*.sh' \
+      --exclude 'sandbox/report/' \
       --exclude '*_results*/' \
       --exclude '_reports*/' \
       --exclude '_data/' \
@@ -167,7 +170,7 @@ build_supp_zip() {
     stage_project "${SUPP_DIR}"
     (
         cd "${SUPP_DIR}"
-        rm -f scripts/transfer.sh scripts/fetch_vendor.sh
+        rm -f scripts/transfer.sh scripts/fetch.vendor.sh
         if [[ -f pyproject.toml ]]; then
             sed -i 's/^name = "flowbench"/name = "anonymous-code-supplement"/' pyproject.toml
         fi

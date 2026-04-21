@@ -47,7 +47,10 @@ clone_or_update() {
 
 clone_or_update "DLPM" "https://github.com/hcherkaoui/DLPM"
 clone_or_update "flow_matching" "https://github.com/facebookresearch/flow_matching"
+clone_or_update "physicsnemo" "https://github.com/NVIDIA/physicsnemo"
 clone_or_update "score_sde_pytorch" "https://github.com/yang-song/score_sde_pytorch"
+
+"${PYTHON_BIN}" "${REPO_ROOT}/scripts/patch.vendor.py" --vendor-root "${VENDOR_DIR}"
 
 "${PYTHON_BIN}" -m pip install -e "${REPO_ROOT}"
 "${PYTHON_BIN}" -m pip install torchdiffeq pot torchquad Cython
