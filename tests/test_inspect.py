@@ -4,16 +4,14 @@ import importlib.util
 import numpy as np
 import pytest
 import torch
-
+from genkit import DDPMV, DLPMEps, DLPMEpsC, GaussianFlowLinear
 from genkit.inspect import (
     estimate_init_error,
-    estimate_training_error,
     estimate_training_loss_error,
     fit_hmm_on_weight_stats,
     model_est_err_curve,
     model_est_jacobian_spectral_curve,
 )
-from genkit import DDPMV, DLPMEps, GaussianFlowLinear
 from .utils import _devices
 
 
@@ -26,6 +24,21 @@ class _LinearTimeNet(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return self.scale * x + 0.0 * t
+
+
+class _ConditionedLinearTimeNet(torch.nn.Module):
+    """Linear vector field that validates the extra DLPMEpsC conditioning channel."""
+
+    def __init__(self, scale: float, dim: int) -> None:
+        super().__init__()
+        self.scale = float(scale)
+        self.input_dim = int(dim) + 1
+        self.output_dim = int(dim)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if x.shape[1] != self.input_dim:
+            raise ValueError(f"expected input dim {self.input_dim}, got {x.shape[1]}")
+        return self.scale * x[:, :self.output_dim] + 0.0 * t
 
 
 class _DummyGenModel:
@@ -56,6 +69,13 @@ class _DummyGenModel:
         return 3.0 * self._loss(x, z, t).mean()
 
 
+class _PointwiseLossGenModel(_DummyGenModel):
+    """Inspectable generator stub whose native loss is pointwise."""
+
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None) -> torch.Tensor:
+        return x.square()
+
+
 @pytest.mark.parametrize("device", _devices())
 @pytest.mark.parametrize(
     ("family", "expected_t"),
@@ -68,12 +88,10 @@ def test_model_est_jacobian_spectral_curve_matches_linear_constant(device, famil
     x = torch.tensor([[1.0], [-2.0], [0.5]], device=device, dtype=torch.float64)
     model = _DummyGenModel(family=family, n_steps=5, device=device, dtype=torch.float64, scale=2.5)
 
-    curve, t_grid = model_est_jacobian_spectral_curve(model, x, n_power_iter=4)
+    curve = model_est_jacobian_spectral_curve(model, x, n_power_iter=4)
 
     assert curve.shape == (5,)
-    assert t_grid.shape == (5,)
     assert np.allclose(curve, 2.5)
-    assert np.allclose(t_grid, expected_t)
 
 
 @pytest.mark.parametrize("device", _devices())
@@ -82,12 +100,10 @@ def test_model_est_jacobian_spectral_curve_caps_time_grid_by_default(device, fam
     x = torch.tensor([[1.0], [-2.0], [0.5]], device=device, dtype=torch.float64)
     model = _DummyGenModel(family=family, n_steps=32, device=device, dtype=torch.float64, scale=2.5)
 
-    curve, t_grid = model_est_jacobian_spectral_curve(model, x, n_power_iter=2)
+    curve = model_est_jacobian_spectral_curve(model, x, n_power_iter=2)
 
     assert curve.shape == (10,)
-    assert t_grid.shape == (10,)
     assert np.allclose(curve, 2.5)
-    assert t_grid[0] == pytest.approx(0.0 if family == "flow" else 1.0)
 
 
 @pytest.mark.parametrize("device", _devices())
@@ -102,23 +118,59 @@ def test_model_est_jacobian_spectral_curve_validates_arguments(device):
 
 
 @pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize(
-    ("family", "expected_t"),
-    [
-        ("flow", np.linspace(0.0, 1.0, 4)),
-        ("diffusion", np.arange(1, 5)),
-    ],
-)
-def test_model_est_err_curve_returns_native_grid(device, family, expected_t):
+@pytest.mark.parametrize(("family",), [("flow",), ("diffusion",)])
+def test_model_est_err_curve_returns_native_grid(device, family):
     x = torch.tensor([[1.0], [-2.0], [0.5]], device=device, dtype=torch.float64)
     model = _DummyGenModel(family=family, n_steps=4, device=device, dtype=torch.float64, scale=1.0)
 
-    curve, t_grid = model_est_err_curve(model, x)
+    curve = model_est_err_curve(model, x)
 
     assert curve.shape == (4,)
-    assert t_grid.shape == (4,)
     assert np.all(curve >= 0.0)
-    assert np.allclose(t_grid, expected_t)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("family", ["flow", "diffusion"])
+def test_model_est_err_curve_reduces_pointwise_loss(device, family):
+    x = torch.tensor([[1.0, -2.0], [0.5, 1.5]], device=device, dtype=torch.float64)
+    model = _PointwiseLossGenModel(family=family, n_steps=12, device=device, dtype=torch.float64, scale=1.0)
+
+    curve = model_est_err_curve(model, x)
+
+    assert curve.shape == (10,)
+    assert np.allclose(curve, float(model.loss(x).item()))
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize(
+    ("model_cls", "kwargs"),
+    [
+        (GaussianFlowLinear, {}),
+        (DDPMV, {}),
+        (DLPMEps, {"alpha": 1.6}),
+    ],
+)
+def test_model_est_err_curve_supports_native_and_mse_loss(device, model_cls, kwargs):
+    x = torch.randn(8, 1, device=device, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(device=device, dtype=torch.float64)
+    model = model_cls(net=net, dim=1, n_steps=8, fdtype=torch.float64, device=device, **kwargs)
+
+    native_curve = model_est_err_curve(model, x, max_n_steps=5, loss_type="native")
+    mse_curve = model_est_err_curve(model, x, max_n_steps=5, loss_type="mse")
+
+    assert native_curve.shape == (5,)
+    assert mse_curve.shape == (5,)
+    assert np.all(native_curve >= 0.0)
+    assert np.all(mse_curve >= 0.0)
+
+
+def test_model_est_err_curve_rejects_unknown_loss_type():
+    x = torch.randn(8, 1, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
+    model = GaussianFlowLinear(net=net, dim=1, n_steps=8, fdtype=torch.float64, device="cpu")
+
+    with pytest.raises(ValueError, match="loss_type"):
+        model_est_err_curve(model, x, loss_type="other")
 
 
 def test_fit_hmm_on_weight_stats_requires_hmmlearn():
@@ -150,17 +202,6 @@ def test_estimate_training_loss_error_supports_native_and_mse_loss(device, model
     assert mse >= 0.0
 
 
-def test_estimate_training_error_alias_matches_new_name():
-    x = torch.randn(8, 1, dtype=torch.float64)
-    net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
-    model = GaussianFlowLinear(net=net, dim=1, n_steps=8, fdtype=torch.float64, device="cpu")
-    torch.manual_seed(0)
-    old = estimate_training_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
-    torch.manual_seed(0)
-    new = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
-    assert old == pytest.approx(new)
-
-
 def test_estimate_training_loss_error_rejects_unknown_loss_type():
     x = torch.randn(8, 1, dtype=torch.float64)
     net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
@@ -168,6 +209,23 @@ def test_estimate_training_loss_error_rejects_unknown_loss_type():
 
     with pytest.raises(ValueError, match="loss_type"):
         estimate_training_loss_error(model, x, loss_type="other")
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_inspect_utilities_support_dlpmepsc(device):
+    x = torch.randn(8, 1, device=device, dtype=torch.float64)
+    net = _ConditionedLinearTimeNet(scale=2.5, dim=1).to(device=device, dtype=torch.float64)
+    model = DLPMEpsC(net=net, dim=1, n_steps=8, fdtype=torch.float64, device=device, alpha=1.6)
+
+    mse = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
+    curve = model_est_err_curve(model, x, max_n_steps=5, loss_type="mse")
+    jac = model_est_jacobian_spectral_curve(model, x, max_n_steps=5, n_power_iter=2)
+
+    assert mse >= 0.0
+    assert curve.shape == (5,)
+    assert np.all(curve >= 0.0)
+    assert jac.shape == (5,)
+    assert np.allclose(jac, 2.5)
 
 
 def test_estimate_init_error_requires_source_sampler_for_models_without_source_method():
