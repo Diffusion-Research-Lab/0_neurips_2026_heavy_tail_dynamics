@@ -8,7 +8,6 @@ import numpy as np
 import torch
 from genkit import DDPMV, GaussianFlowLinear, DLPMEps
 from genkit.datasets import fetch_synthetic_data
-from genkit.metrics import fid, wasserstein_distance
 from genkit.nn import MLPModel
 from genkit.training import train
 from genkit.utils import format_duration
@@ -47,9 +46,6 @@ if __name__ == "__main__":
         device=device,
         dtype=fdtype,
     )
-    oracle_w1 = wasserstein_distance(x_test, x_val, p=1)
-    oracle_fid = fid(x_test, x_val)
-
     print(
         "1D path visualization"
         f" | device={device}"
@@ -57,8 +53,6 @@ if __name__ == "__main__":
         f" | n_steps={n_steps}"
         f" | batch_size={batch_size}"
         f" | n_epochs={n_epochs}"
-        f" | oracle_W1={oracle_w1:.2e}"
-        f" | oracle_FID={oracle_fid:.2e}"
     )
 
     train_kwargs = dict(target_data=x_train, batch_size=batch_size, n_epochs=n_epochs,
@@ -72,7 +66,7 @@ if __name__ == "__main__":
     trained_generators = {}
     for title, model_cls, color, extra_kwargs in model_specs:
         print(f"[TRAIN] {title} | epochs={n_epochs} | batch_size={batch_size} | lr={lr:.1e}")
-        net = MLPModel(dim=dim, **net_kwargs).to(device=device, dtype=fdtype)
+        net = MLPModel(input_dim=dim, **net_kwargs).to(device=device, dtype=fdtype)
         generator = model_cls(
             net=net,
             dim=dim,
@@ -96,15 +90,6 @@ if __name__ == "__main__":
         generator = model_plot["generator"]
         color = model_plot["color"]
         x_gen = generator.sample(n_samples=x_test.size(0))
-        w1_value = wasserstein_distance(x_test, x_gen, p=1)
-        fid_value = fid(x_test, x_gen)
-        print(
-            f"[EVAL] {title}"
-            f" | W1={w1_value:.2e}"
-            f" | FID={fid_value:.2e}"
-            f" | oracle_W1={oracle_w1:.2e}"
-            f" | oracle_FID={oracle_fid:.2e}"
-        )
 
         _, trajectories = generator._sample(1000)
         x = np.stack([state.detach().cpu().numpy().reshape(-1) for state in trajectories], axis=0).T
@@ -127,10 +112,7 @@ if __name__ == "__main__":
         ax_main.set_ylim(-7.0, 17.0)
         ax_main.spines["left"].set_visible(False)
         ax_main.tick_params(axis="y", length=0)
-        ax_main.set_title(
-            f"{title} | W1={w1_value:.2e} ({oracle_w1:.2e}) | FID={fid_value:.2e} ({oracle_fid:.2e})",
-            fontsize=8,
-        )
+        ax_main.set_title(f"{title}", fontsize=8)
 
         for values, hist_ax, invert in [(x[:, 0], ax_left, True), (x[:, -1], ax_right, False)]:
             hist_ax.hist(values, bins=50, orientation="horizontal", color=color, alpha=0.4)

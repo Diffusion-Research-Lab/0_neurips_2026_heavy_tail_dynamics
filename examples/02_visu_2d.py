@@ -5,11 +5,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from genkit import (DDPMV, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT, FlowMatchingOrigin,
-                    ScoreSDEOrigin)
+from genkit import DDPMV, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT, FlowMatchingOrigin, ScoreSDEOrigin
 from genkit import DLPMEps, DLPMEpsOrigin
 from genkit.datasets import fetch_synthetic_data
-from genkit.metrics import metric_on_quantile, mssle, sliced_wasserstein2
+from genkit.metrics import sliced_wasserstein
 from genkit.nn import MLPModel
 from genkit.training import train
 from labkit.report import PRETTY_RCPARAMS
@@ -50,14 +49,6 @@ def save_scatter_plot(
 
 def run_models(models, target_data_type, *, n_samples: int, exp_kwargs: dict) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """Train models on one synthetic dataset and return generated/reference samples."""
-    light_tailed_data = {
-        "balanced_bimodal_gaussian",
-        "unbalanced_bimodal_gaussian",
-        "unbalanced_highdim_gaussian_mixture",
-        "gaussian",
-        "checker",
-        "spiral",
-    }
     dim = exp_kwargs.get("dim", 2)
     extra_data_kwargs = exp_kwargs.get("extra_data_kwargs", {})
     extra_gen_kwargs = exp_kwargs.get("extra_gen_kwargs", {})
@@ -88,46 +79,24 @@ def run_models(models, target_data_type, *, n_samples: int, exp_kwargs: dict) ->
         "device": device,
         "num_workers": num_workers,
     }
-    if target_data_type in light_tailed_data:
-        baseline_value = sliced_wasserstein2(x_test, x_train)
-        metric_name = "Wasserstein-dist"
-    else:
-        baseline_value = metric_on_quantile(mssle, x_test, x_train, xi=0.95)
-        metric_name = "MSSLE(95)"
 
     results = {}
     for i, gen_cls in enumerate(models, start=1):
-        print(
-            f"[TRAIN] {gen_cls.__name__}"
-            f" | dataset={target_data_type}"
-            f" | index={i:02d}/{len(models):02d}"
-            f" | epochs={n_epochs}"
-            f" | batch_size={batch_size}"
-            f" | lr={lr:.1e}"
-        )
-        net = MLPModel(dim=dim, width=width, depth=depth).to(device=device, dtype=fdtype)
-        generator = gen_cls(
-            net=net,
-            dim=dim,
-            fdtype=fdtype,
-            idtype=idtype,
-            device=device,
-            n_steps=n_steps,
-            **extra_gen_kwargs,
-        )
+        print(f"[TRAIN] {gen_cls.__name__}"
+              f" | dataset={target_data_type}"
+              f" | index={i:02d}/{len(models):02d}"
+              f" | epochs={n_epochs}"
+              f" | batch_size={batch_size}"
+              f" | lr={lr:.1e}"
+              )
+        net = MLPModel(input_dim=dim, width=width, depth=depth).to(device=device, dtype=fdtype)
+        generator = gen_cls(net=net, dim=dim, fdtype=fdtype, idtype=idtype, device=device, n_steps=n_steps, **extra_gen_kwargs)
         train(generative_model=generator, **train_kwargs)
         x_test_gen = generator.sample(n_samples=n_samples)
-        if target_data_type in light_tailed_data:
-            metric_value = sliced_wasserstein2(x_test, x_test_gen)
-        else:
-            metric_value = metric_on_quantile(mssle, x_test, x_test_gen, xi=0.95)
-        print(
-            f"[EVAL] {gen_cls.__name__}"
-            f" | index={i:02d}/{len(models):02d}"
-            f" | metric={metric_name}"
-            f" | value={metric_value:.2e}"
-            f" | baseline={baseline_value:.2e}"
-        )
+        print(f"[EVAL] {gen_cls.__name__}"
+              f" | index={i:02d}/{len(models):02d}"
+              f" | Wasserstein-dist={sliced_wasserstein(x_test, x_test_gen):.2e}"
+              )
         results[gen_cls.__name__] = (x_test_gen, x_test)
     return results
 
@@ -178,30 +147,18 @@ if __name__ == "__main__":
                       idtype=torch.int32,
                       )
 
-    print(
-        "2D sample visualization"
-        f" | dataset={args.data}"
-        f" | device={exp_kwargs['device']}"
-        f" | n_samples={10_000 if args.blank else 100}"
-        f" | n_steps={exp_kwargs['n_steps']}"
-        f" | batch_size={exp_kwargs['batch_size']}"
-        f" | n_epochs={exp_kwargs['n_epochs']}"
-    )
+    print("2D sample visualization"
+          f" | dataset={args.data}"
+          f" | device={exp_kwargs['device']}"
+          f" | n_samples={10_000 if args.blank else 100}"
+          f" | n_steps={exp_kwargs['n_steps']}"
+          f" | batch_size={exp_kwargs['batch_size']}"
+          f" | n_epochs={exp_kwargs['n_epochs']}"
+          )
 
-    results = run_models(
-        models,
-        target_data_type=args.data,
-        n_samples=10_000 if args.blank else 100,
-        exp_kwargs=exp_kwargs,
-    )
+    results = run_models(models, target_data_type=args.data, n_samples=10_000 if args.blank else 100, exp_kwargs=exp_kwargs)
 
     for i, (name, (x_gen, x_ref)) in enumerate(results.items()):
-        save_scatter_plot(
-            x=x_gen,
-            x_ref=x_ref,
-            output_path=figures_dir / f"{args.data}_{name}_2d_scatter.pdf",
-            fontsize=10,
-            alpha=0.6,
-        )
+        save_scatter_plot(x=x_gen, x_ref=x_ref, output_path=figures_dir / f"{args.data}_{name}_2d_scatter.pdf", fontsize=10, alpha=0.6)
 
     print(f"saved={figures_dir}")
