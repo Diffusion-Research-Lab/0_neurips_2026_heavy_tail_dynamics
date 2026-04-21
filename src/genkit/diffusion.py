@@ -235,7 +235,8 @@ class DLPMEps(Base):
 
             # NOTE see L276 in src/genkit/_vendor/DLPM/dlpm/methods/dlpm.py
             # NOTE We follow the released code rather than the paper here.
-            x = (x - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * self._net(x, t_norm)) / gamma_t
+            eps_hat = self._net(x, t_norm)
+            x = (x - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * eps_hat) / gamma_t
 
             if t > 1:
                 x = x + Sigma_hat.sqrt().unsqueeze(-1) * torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
@@ -290,9 +291,9 @@ class DLPMEpsC(DLPMEps):
         x_1_e = x_1.view(1, 1, self._n, self._dim).expand(self._n_trial_A, self._n_trial_G, self._n, self._dim).reshape(-1, self._dim)
 
         x_t = gamma_1_t * x_1_e + sigma_1_t * eps
-        logA = A.clamp_min(self._eps).log().unsqueeze(-1)
+        c_t = sigma_1_t.clamp_min(self._eps).log() + 0.5 * A.clamp_min(self._eps).log().unsqueeze(-1)
 
-        eps_hat = self._net(torch.cat([x_t, logA], dim=-1), t_norm)
+        eps_hat = self._net(torch.cat([x_t, c_t], dim=-1), t_norm)
 
         return self._loss_fn(eps_hat, eps, t)
 
@@ -316,8 +317,8 @@ class DLPMEpsC(DLPMEps):
             t_norm = torch.full((n_samples, 1), t / self._n_steps, device=self._device, dtype=self._fdtype)
             Sigma_hat, gamma_t, Gamma_t = self._g_Sigma_hat_Gamma(Sigma_1_t, t)
 
-            logA = A_path[t].clamp_min(self._eps).log().unsqueeze(-1)
-            eps_hat = self._net(torch.cat([x, logA], dim=-1), t_norm)
+            c_t = self._sigma_1_t[t].clamp_min(self._eps).log() + 0.5 * A_path[t].clamp_min(self._eps).log().unsqueeze(-1)
+            eps_hat = self._net(torch.cat([x, c_t], dim=-1), t_norm)
             x = (x - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * eps_hat) / gamma_t
 
             if t > 1:
