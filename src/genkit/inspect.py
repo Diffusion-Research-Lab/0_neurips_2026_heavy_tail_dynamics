@@ -10,9 +10,8 @@ import torch
 from sklearn.preprocessing import StandardScaler
 from hmmlearn.hmm import GaussianHMM
 from ._abs import DDPMAbstarct
-from .diffusion import DLPMEps, DLPMEpsC, DDPMV, DDPMX0
+from .diffusion import DLPMEps, DDPMV, DDPMX0
 from .flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
-
 __all__ = [
     "model_est_err_curve",
     "model_est_jacobian_spectral_curve",
@@ -62,10 +61,6 @@ def _jacobian_spectral_at_time(
     def model_at_time(z: torch.Tensor) -> torch.Tensor:
         x = z.unsqueeze(0)
         t = t_batch.to(device=z.device, dtype=z.dtype)
-        if isinstance(gen_model, DLPMEpsC):
-            # Fix the auxiliary conditioning to log(A)=0, i.e. A=1, so the map is deterministic in x.
-            logA = torch.zeros((1, 1), device=z.device, dtype=z.dtype)
-            x = torch.cat([x, logA], dim=-1)
         return gen_model._net(x, t).squeeze(0)
 
     sample_values = []
@@ -169,25 +164,6 @@ def _mse_loss_at_batch(model, x: torch.Tensor, t=None) -> torch.Tensor:
         x_1, x_t, _, t_norm, _, _ = model._latent(x_1=x, eps=None, t=t)
         pred = model._net(x_t, t_norm)
         return torch.nn.functional.mse_loss(pred, x_1)
-
-    if isinstance(model, DLPMEpsC):
-        x_1 = x.to(device=model._device, dtype=model._fdtype)
-        n = x_1.size(0)
-        n_a = model._n_trial_A
-        n_g = model._n_trial_G
-        t_checked = model._check_t(t, n) if t is not None else torch.randint(
-            1, model._n_steps, (n,), device=model._device, dtype=model._idtype
-        )
-        t_e = t_checked.view(1, 1, n).expand(n_a, n_g, n).reshape(-1)
-        t_norm = (t_checked / model._n_steps).view(1, 1, n).expand(n_a, n_g, n).reshape(-1, 1)
-        eps, A = model._sample_source_default(n, expand_trials=True, return_A=True)
-        gamma_1_t = model._gamma_1_t.index_select(0, t_e).unsqueeze(-1)
-        sigma_1_t = model._sigma_1_t.index_select(0, t_e).unsqueeze(-1)
-        x_1_e = x_1.view(1, 1, n, model._dim).expand(n_a, n_g, n, model._dim).reshape(-1, model._dim)
-        x_t = gamma_1_t * x_1_e + sigma_1_t * eps
-        logA = A.clamp_min(model._eps).log().unsqueeze(-1)
-        pred = model._net(torch.cat([x_t, logA], dim=-1), t_norm)
-        return torch.nn.functional.mse_loss(pred, eps)
 
     if isinstance(model, DLPMEps):
         x_1 = x.to(device=model._device, dtype=model._fdtype)

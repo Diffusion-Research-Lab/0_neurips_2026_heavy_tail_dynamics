@@ -1,11 +1,10 @@
 """Tests for labkit config and reporting helpers."""
 
 from pathlib import Path
-import textwrap
 import random
+import textwrap
 import pytest
 import torch
-
 from labkit.config import load_config, parse_dtype, parse_idtype
 from labkit.report import format_mean_std_latex, summarize_metric_values, to_latex_sci
 from labkit.utils import get_device, set_seed

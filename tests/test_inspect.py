@@ -4,7 +4,7 @@ import importlib.util
 import numpy as np
 import pytest
 import torch
-from genkit import DDPMV, DLPMEps, DLPMEpsC, GaussianFlowLinear
+from genkit import DDPMV, DLPMEps, GaussianFlowLinear
 from genkit.inspect import (
     estimate_init_error,
     estimate_training_loss_error,
@@ -24,21 +24,6 @@ class _LinearTimeNet(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return self.scale * x + 0.0 * t
-
-
-class _ConditionedLinearTimeNet(torch.nn.Module):
-    """Linear vector field that validates the extra DLPMEpsC conditioning channel."""
-
-    def __init__(self, scale: float, dim: int) -> None:
-        super().__init__()
-        self.scale = float(scale)
-        self.input_dim = int(dim) + 1
-        self.output_dim = int(dim)
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        if x.shape[1] != self.input_dim:
-            raise ValueError(f"expected input dim {self.input_dim}, got {x.shape[1]}")
-        return self.scale * x[:, :self.output_dim] + 0.0 * t
 
 
 class _DummyGenModel:
@@ -209,23 +194,6 @@ def test_estimate_training_loss_error_rejects_unknown_loss_type():
 
     with pytest.raises(ValueError, match="loss_type"):
         estimate_training_loss_error(model, x, loss_type="other")
-
-
-@pytest.mark.parametrize("device", _devices())
-def test_inspect_utilities_support_dlpmepsc(device):
-    x = torch.randn(8, 1, device=device, dtype=torch.float64)
-    net = _ConditionedLinearTimeNet(scale=2.5, dim=1).to(device=device, dtype=torch.float64)
-    model = DLPMEpsC(net=net, dim=1, n_steps=8, fdtype=torch.float64, device=device, alpha=1.6)
-
-    mse = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
-    curve = model_est_err_curve(model, x, max_n_steps=5, loss_type="mse")
-    jac = model_est_jacobian_spectral_curve(model, x, max_n_steps=5, n_power_iter=2)
-
-    assert mse >= 0.0
-    assert curve.shape == (5,)
-    assert np.all(curve >= 0.0)
-    assert jac.shape == (5,)
-    assert np.allclose(jac, 2.5)
 
 
 def test_estimate_init_error_requires_source_sampler_for_models_without_source_method():

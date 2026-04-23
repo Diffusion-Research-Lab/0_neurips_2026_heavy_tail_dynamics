@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein
+from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein, tail_coverage_error
 from .utils import _devices
 
 
@@ -127,3 +127,56 @@ def test_mmd_rbf_supports_biased_and_unbiased_estimators(device, dtype):
     assert isinstance(score_biased, float)
     assert isinstance(score_unbiased, float)
     assert score_biased >= 0.0
+    assert torch.isfinite(torch.tensor(score_unbiased)).item()
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_tce_near_zero_for_identical_distributions(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(2048, 3, device=device, dtype=dtype)
+
+    score = tail_coverage_error(x, x)
+
+    assert isinstance(score, float)
+    assert score == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_tce_detects_heavier_tailed_generated(device, dtype):
+    torch.manual_seed(0)
+    x_ref = torch.randn(2048, 2, device=device, dtype=dtype)
+    x_gen = 3.0 * torch.randn(2048, 2, device=device, dtype=dtype)
+
+    score = tail_coverage_error(x_ref, x_gen, tail="upper")
+
+    assert isinstance(score, float)
+    assert score > 0.0
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_tce_reduction_none_returns_tensor_per_prob(device, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(1024, 2, device=device, dtype=dtype)
+    probs = [0.9, 0.95, 0.99]
+
+    result = tail_coverage_error(x, x, probs=probs, reduction="none")
+
+    assert isinstance(result, torch.Tensor)
+    assert result.shape[0] == len(probs)
+    assert torch.isfinite(result).all()
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_tce_lower_tail_detects_lighter_left_tail(device, dtype):
+    torch.manual_seed(0)
+    x_ref = torch.randn(2048, 2, device=device, dtype=dtype)
+    x_gen = x_ref + 5.0
+
+    score = tail_coverage_error(x_ref, x_gen, tail="lower")
+
+    assert isinstance(score, float)
+    assert score > 0.0

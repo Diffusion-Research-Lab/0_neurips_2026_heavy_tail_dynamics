@@ -2,7 +2,6 @@
 
 import random
 import torch
-
 try:
     import numpy as np
 except ImportError:  # Optional dependency for seeding NumPy RNG when present.

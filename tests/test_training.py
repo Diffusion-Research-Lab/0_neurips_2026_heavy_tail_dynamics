@@ -1,7 +1,7 @@
 """Training module unittests."""
 
-import torch
 import pytest
+import torch
 from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor, TrainVisitor
 
@@ -19,58 +19,52 @@ class _DummyGenerativeModel:
         return ((y - x) ** 2).mean()
 
 
+def _run_train(x, *, visitors=None, **kwargs):
+    defaults = {
+        "batch_size": 24,
+        "n_epochs": 2,
+        "lr": 1e-3,
+        "device": "cpu",
+        "num_workers": 0,
+        "lr_schedule": "constant",
+        "freq_logging": 10,
+    }
+    defaults.update(kwargs)
+    return train(_DummyGenerativeModel(dim=x.shape[1]), target_data=x, visitors=visitors, **defaults)
+
+
 class _CounterVisitor(TrainVisitor):
     name = "counter"
 
     def __init__(self):
         self.train_start = 0
-        self.epoch_start = 0
-        self.batch_end = 0
         self.epoch_end = 0
-        self.train_end = 0
+        self.losses = []
+        self.grad_vars = []
+        self.grad_norms = []
 
     def on_train_start(self, target, source, config):
         self.train_start += 1
 
-    def on_epoch_start(self):
-        self.epoch_start += 1
-
-    def on_batch_end(self, loss: float, grad_var, grad_norm):
-        self.batch_end += 1
-
-    def on_epoch_end(self):
+    def on_epoch_end(self, loss: float, grad_var, grad_norm):
         self.epoch_end += 1
-
-    def on_train_end(self):
-        self.train_end += 1
+        self.losses.append(loss)
+        self.grad_vars.append(grad_var)
+        self.grad_norms.append(grad_norm)
 
     def get_records(self):
         return {
             "train_start": self.train_start,
-            "epoch_start": self.epoch_start,
-            "batch_end": self.batch_end,
             "epoch_end": self.epoch_end,
-            "train_end": self.train_end,
+            "losses": self.losses,
+            "grad_vars": self.grad_vars,
+            "grad_norms": self.grad_norms,
         }
 
 
 def test_train_diagnostics_with_core_visitor_enabled():
-    dim = 3
-    gm = _DummyGenerativeModel(dim=dim)
-    x = torch.randn(96, dim, dtype=torch.float32)
-
-    _, diagnostics = train(
-        gm,
-        target_data=x,
-        batch_size=24,
-        n_epochs=4,
-        lr=1e-3,
-        device="cpu",
-        num_workers=0,
-        lr_schedule="constant",
-        freq_logging=10,
-        visitors=[CoreMetricsVisitor()],
-    )
+    x = torch.randn(96, 3, dtype=torch.float32)
+    _, diagnostics = _run_train(x, n_epochs=4, visitors=[CoreMetricsVisitor()])
 
     assert "train_config" in diagnostics
     assert "visitors" in diagnostics
@@ -92,21 +86,8 @@ def test_train_diagnostics_with_core_visitor_enabled():
 
 
 def test_train_default_uses_core_visitor_only():
-    dim = 3
-    gm = _DummyGenerativeModel(dim=dim)
-    x = torch.randn(96, dim, dtype=torch.float32)
-
-    _, diagnostics = train(
-        gm,
-        target_data=x,
-        batch_size=24,
-        n_epochs=2,
-        lr=1e-3,
-        device="cpu",
-        num_workers=0,
-        lr_schedule="constant",
-        freq_logging=10,
-    )
+    x = torch.randn(96, 3, dtype=torch.float32)
+    _, diagnostics = _run_train(x)
 
     assert set(diagnostics["visitors"].keys()) == {"core"}
     core = diagnostics["visitors"]["core"]
@@ -117,53 +98,24 @@ def test_train_default_uses_core_visitor_only():
 
 
 def test_train_accepts_custom_visitors():
-    dim = 3
-    gm = _DummyGenerativeModel(dim=dim)
-    x = torch.randn(96, dim, dtype=torch.float32)
-
+    x = torch.randn(96, 3, dtype=torch.float32)
     counter = _CounterVisitor()
     core = CoreMetricsVisitor()
-
-    _, diagnostics = train(
-        gm,
-        target_data=x,
-        batch_size=24,
-        n_epochs=3,
-        lr=1e-3,
-        device="cpu",
-        num_workers=0,
-        lr_schedule="constant",
-        freq_logging=10,
-        visitors=[core, counter],
-    )
+    _, diagnostics = _run_train(x, n_epochs=3, visitors=[core, counter])
 
     assert counter.train_start == 1
-    assert counter.epoch_start == 3
     assert counter.epoch_end == 3
-    assert counter.train_end == 1
-    assert counter.batch_end == 12  # 96 / 24 * 3 epochs
+    assert len(counter.losses) == 3
+    assert len(counter.grad_vars) == 3
+    assert len(counter.grad_norms) == 3
 
     assert "core" in diagnostics["visitors"]
     assert "counter" in diagnostics["visitors"]
 
 
 def test_train_tiny_dataset_with_large_batch_still_trains():
-    dim = 3
-    gm = _DummyGenerativeModel(dim=dim)
-    x = torch.randn(3, dim, dtype=torch.float32)
-
-    _, diagnostics = train(
-        gm,
-        target_data=x,
-        batch_size=16,
-        n_epochs=2,
-        lr=1e-3,
-        device="cpu",
-        num_workers=0,
-        lr_schedule="constant",
-        freq_logging=10,
-        visitors=[CoreMetricsVisitor()],
-    )
+    x = torch.randn(3, 3, dtype=torch.float32)
+    _, diagnostics = _run_train(x, batch_size=16, visitors=[CoreMetricsVisitor()])
 
     core = diagnostics["visitors"]["core"]
     assert len(core["training_loss"]) == 2
@@ -171,22 +123,10 @@ def test_train_tiny_dataset_with_large_batch_still_trains():
 
 
 def test_train_empty_dataset_raises_clear_error():
-    dim = 3
-    gm = _DummyGenerativeModel(dim=dim)
-    x = torch.empty(0, dim, dtype=torch.float32)
+    x = torch.empty(0, 3, dtype=torch.float32)
 
     with pytest.raises(ValueError, match="target_data is empty"):
-        train(
-            gm,
-            target_data=x,
-            batch_size=8,
-            n_epochs=1,
-            lr=1e-3,
-            device="cpu",
-            num_workers=0,
-            lr_schedule="constant",
-            freq_logging=10,
-        )
+        _run_train(x, batch_size=8, n_epochs=1)
 
 
 def test_train_rejects_weight_decay_without_adamw():

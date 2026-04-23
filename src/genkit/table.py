@@ -109,10 +109,12 @@ def dict_to_double_entry_latex_table(
                 best_in_row[m] = vals[best]
                 best_name_in_row[m] = approaches[best]
 
-    def _fmt_ceil(x: float, t: float = 1e-1) -> float:
+    def _fmt_ceil(x: float, t: float = 1e-1) -> str:
         """Format a p-value into a compact scientific-notation superscript string."""
         if (x < 0) or (x > t):
             return "-"
+        if x == 0:
+            return "0"
         return f"{np.sign(x) * 10:.0f}" + r"^{" + f"{np.ceil(np.log10(np.abs(x))):.0f}" + r"}"
 
     def _fmt_value(v: float) -> str:

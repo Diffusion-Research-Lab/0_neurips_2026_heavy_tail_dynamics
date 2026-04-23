@@ -7,8 +7,6 @@ from typing import Any, Dict, Union
 import yaml
 import torch
 from .utils import set_seed, get_device
-
-
 DEFAULTS: Dict[str, Any] = {
     "authors_root": {"mode": "home_subpath", "subpath": ["src", "DLPM"], "env_var": "DLPM_AUTHORS_ROOT"},
     "n_trials": 5,

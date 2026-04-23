@@ -1,11 +1,8 @@
 #!/usr/bin/env python
 
 from __future__ import annotations
-
 import argparse
 from pathlib import Path
-
-
 def patch_dlpm(vendor_root: Path) -> list[Path]:
     dlpm_root = vendor_root / "DLPM"
     config_dir = dlpm_root / "dlpm" / "configs"

@@ -1,7 +1,6 @@
 """Metric functions module."""
 
 import torch
-
 __all__ = [
     "fid",
     "mmd_rbf",
@@ -183,9 +182,9 @@ def mmd_rbf(x_ref, x_gen, gamma=None, estimator="biased"):
     return float(mmd2.item())
 
 
-def sliced_wasserstein(x_ref, x_gen, n_projections=128, n_grid=1000, eps=1e-12, seed=None, n_quantiles=None):
+def sliced_wasserstein(x_ref, x_gen, n_projections=128, n_grid=1000, eps=1e-12, seed=None):
     """Compute the sliced squared 2-Wasserstein distance."""
-    n_grid = int(n_grid if n_quantiles is None else n_quantiles)
+    n_grid = int(n_grid)
     x_ref = _to_2d_tensor(x_ref)
     x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
     _validate_same_feature_dim(x_ref, x_gen)

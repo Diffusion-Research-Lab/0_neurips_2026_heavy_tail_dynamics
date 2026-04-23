@@ -60,3 +60,11 @@ def test_dict_to_double_entry_latex_table_rejects_invalid_metric_direction():
 def test_dict_to_double_entry_latex_table_rejects_empty_results():
     with pytest.raises(ValueError, match="No columns"):
         dict_to_double_entry_latex_table({})
+
+
+def test_dict_to_double_entry_latex_table_handles_zero_p_value(monkeypatch):
+    monkeypatch.setattr("genkit.table.ttest_ind", lambda *args, **kwargs: (0.0, 0.0))
+
+    tex = dict_to_double_entry_latex_table(_toy_results(), bold_best_in_row=True)
+
+    assert r"{\scriptstyle 0}" in tex

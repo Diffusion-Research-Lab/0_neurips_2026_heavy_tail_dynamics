@@ -1,8 +1,6 @@
 """Reporting helpers for tables, figures, and LaTeX-ready strings."""
 
 import numpy as np
-
-
 PRETTY_RCPARAMS = {
     "font.family": "serif",
     "font.serif": ["Times New Roman", "STIXGeneral", "DejaVu Serif"],
@@ -52,6 +50,8 @@ def summarize_metric_values(values: list[float]) -> dict[str, float | list[float
 
 def to_latex_sci(x: float, digits: int = 2) -> str:
     """Format a scalar in compact LaTeX scientific notation."""
+    if not np.isfinite(x):
+        return str(x)
     if x == 0:
         return "0"
     exponent = int(np.floor(np.log10(abs(x))))

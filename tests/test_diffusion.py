@@ -2,21 +2,22 @@
 
 import pytest
 import torch
-from genkit.diffusion import DLPMEps, DLPMEpsC
-from genkit.nn import MLPModel
+from genkit.diffusion import DLPMEps
+from .utils import _devices
 
 
 class _ZeroNet(torch.nn.Module):
-    """Minimal network that always predicts zero noise."""
-
     def forward(self, x, t):
-        """Return a zero tensor with the same shape as the input batch."""
         return torch.zeros_like(x)
 
 
-def _make_dlpmeps(n_steps: int = 7) -> DLPMEps:
-    """Build one small CPU DLPM model for indexing-focused tests."""
-    return DLPMEps(net=_ZeroNet(), dim=2, n_steps=n_steps, device="cpu", fdtype=torch.float32)
+def _make_dlpmeps(n_steps: int = 7, device="cpu", dtype=torch.float32) -> DLPMEps:
+    return DLPMEps(net=_ZeroNet(), dim=2, n_steps=n_steps, device=device, fdtype=dtype)
+
+
+def _assert_finite_scalar(x: torch.Tensor):
+    assert x.ndim == 0
+    assert torch.isfinite(x).item()
 
 
 def test_dlpmeps_loss_samples_vendor_time_range(monkeypatch):
@@ -30,9 +31,7 @@ def test_dlpmeps_loss_samples_vendor_time_range(monkeypatch):
 
     monkeypatch.setattr(torch, "randint", _patched_randint)
     loss = model.loss(x)
-
-    assert loss.ndim == 0
-    assert torch.isfinite(loss).item()
+    _assert_finite_scalar(loss)
 
 
 def test_dlpmeps_sample_uses_vendor_terminal_sigma_index(monkeypatch):
@@ -62,46 +61,27 @@ def test_dlpmeps_sample_uses_vendor_terminal_sigma_index(monkeypatch):
     assert torch.allclose(out, expected, atol=2e-3, rtol=0.0)
 
 
-def test_dlpmeps_loss_accepts_integer_t():
-    model = _make_dlpmeps(n_steps=7)
-    x = torch.randn(5, 2, dtype=torch.float32)
-
-    loss = model.loss(x, t=3)
-
-    assert loss.ndim == 0
-    assert torch.isfinite(loss).item()
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("device", _devices())
+def test_dlpmeps_loss_accepts_integer_t(device, dtype):
+    model = _make_dlpmeps(n_steps=7, device=device, dtype=dtype)
+    x = torch.randn(5, 2, dtype=dtype, device=device)
+    _assert_finite_scalar(model.loss(x, t=3))
 
 
-def test_dlpmeps_loss_accepts_normalized_float_t():
-    model = _make_dlpmeps(n_steps=7)
-    x = torch.randn(5, 2, dtype=torch.float32)
-
-    loss = model.loss(x, t=0.5)
-
-    assert loss.ndim == 0
-    assert torch.isfinite(loss).item()
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("device", _devices())
+def test_dlpmeps_loss_accepts_normalized_float_t(device, dtype):
+    model = _make_dlpmeps(n_steps=7, device=device, dtype=dtype)
+    x = torch.randn(5, 2, dtype=dtype, device=device)
+    _assert_finite_scalar(model.loss(x, t=0.5))
 
 
-def test_dlpmeps_loss_rejects_invalid_t():
-    model = _make_dlpmeps(n_steps=7)
-    x = torch.randn(5, 2, dtype=torch.float32)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("device", _devices())
+def test_dlpmeps_loss_rejects_invalid_t(device, dtype):
+    model = _make_dlpmeps(n_steps=7, device=device, dtype=dtype)
+    x = torch.randn(5, 2, dtype=dtype, device=device)
 
     with pytest.raises(ValueError):
         model.loss(x, t=0)
-
-
-def test_dlpmepsc_loss_accepts_conditioned_mlp_model():
-    net = MLPModel(input_dim=3, output_dim=2, width=8, depth=1, time_dim=8)
-    model = DLPMEpsC(net=net, dim=2, n_steps=7, device="cpu", fdtype=torch.float32)
-    x = torch.randn(5, 2, dtype=torch.float32)
-
-    loss = model.loss(x)
-
-    assert loss.ndim == 0
-    assert torch.isfinite(loss).item()
-
-
-def test_dlpmepsc_rejects_misconfigured_mlp_model():
-    net = MLPModel(input_dim=2, width=8, depth=1, time_dim=8)
-    with pytest.raises(ValueError, match="net.input_dim=3"):
-        DLPMEpsC(net=net, dim=2, n_steps=7, device="cpu", fdtype=torch.float32)

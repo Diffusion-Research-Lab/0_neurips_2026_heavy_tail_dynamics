@@ -1,10 +1,8 @@
 """Tests for small utility helpers."""
 
 import math
-
 import pytest
 import torch
-
 from genkit.utils import cosine_schedule, format_duration, getpop, to_numpy
 from .utils import _devices
 

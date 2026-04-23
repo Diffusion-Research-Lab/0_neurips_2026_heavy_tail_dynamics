@@ -17,27 +17,15 @@ def test_timestep_embedding_shape_dtype_device(dtype, device):
     assert torch.isfinite(y).all()
 
 
+@pytest.mark.parametrize(("input_dim", "output_dim", "expected_shape"), [(2, None, (17, 2)), (3, 2, (17, 2))])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("device", _devices())
-def test_mlp_model_shape_dtype_device(dtype, device):
-    model = MLPModel(input_dim=2, width=16, depth=2, time_dim=8).to(device=device, dtype=dtype)
-    x = torch.rand(17, 2, device=device, dtype=dtype)
+def test_mlp_model_shape_dtype_device(input_dim, output_dim, expected_shape, dtype, device):
+    model = MLPModel(input_dim=input_dim, output_dim=output_dim, width=16, depth=2, time_dim=8).to(device=device, dtype=dtype)
+    x = torch.rand(17, input_dim, device=device, dtype=dtype)
     t = torch.rand(17, 1, device=device, dtype=dtype)
     y = model(x, t)
-    assert y.shape == x.shape
-    assert y.dtype == dtype
-    assert y.device.type == device.type
-    assert torch.isfinite(y).all()
-
-
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-@pytest.mark.parametrize("device", _devices())
-def test_mlp_model_supports_distinct_output_dim(dtype, device):
-    model = MLPModel(input_dim=3, output_dim=2, width=16, depth=2, time_dim=8).to(device=device, dtype=dtype)
-    x = torch.rand(17, 3, device=device, dtype=dtype)
-    t = torch.rand(17, 1, device=device, dtype=dtype)
-    y = model(x, t)
-    assert y.shape == (17, 2)
+    assert y.shape == expected_shape
     assert y.dtype == dtype
     assert y.device.type == device.type
     assert torch.isfinite(y).all()
