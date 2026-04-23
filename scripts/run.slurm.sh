@@ -16,8 +16,7 @@ set -euo pipefail
 
 # Usage:
 #   sbatch scripts/run.slurm.sh
-#   sbatch --array=0-7 scripts/run.slurm.sh
-#   sbatch --array=0-15 scripts/run.slurm.sh --config benchmarks/configs/02_dimension_effect.yaml
+#   sbatch --array=0-15 scripts/run.slurm.sh
 #
 # Defaults to benchmarks/configs/01_alphastable_baseline.yaml.
 # With a Slurm array, each task runs one shard of the same config.

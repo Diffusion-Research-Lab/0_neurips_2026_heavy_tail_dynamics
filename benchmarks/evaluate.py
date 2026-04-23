@@ -11,8 +11,6 @@ import yaml
 from benchmarks.main import build_dataset, build_model, build_network, setup_logging
 from genkit.inspect import estimate_init_error, estimate_training_loss_error, model_est_jacobian_spectral_curve
 from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein, tail_coverage_error
-
-
 EVAL_METRIC_NAMES = [
     "FID",
     "MMD_RBF",
@@ -24,9 +22,7 @@ MODEL_LABELS = {
     "gaussian_flow_linear": "GF-Linear",
     "ddpm_v": "DDPM-V",
     "dlpm_eps": "DLPM",
-    "dlpm_eps_origin": "DLPM-Orig",
-    "flow_matching_origin": "FM-Orig",
-    "score_sde_origin": "ScoreSDE-Orig",
+    "tedm_origin": "TEDM-Orig",
 }
 
 
@@ -249,7 +245,7 @@ def evaluate_one_run(
 
         x_probe = x_ref_inspect[: min(int(probe_size), len(x_ref_inspect)), :]
         try:
-            jac_curve, t_grid = model_est_jacobian_spectral_curve(
+            jac_curve = model_est_jacobian_spectral_curve(
                 generator,
                 x_probe,
                 n_power_iter=8,
@@ -262,7 +258,6 @@ def evaluate_one_run(
         else:
             jacobian_payload = {
                 "curve": np.asarray(jac_curve, dtype=float),
-                "t_grid": np.asarray(t_grid, dtype=float),
                 "checkpoint_epoch": checkpoint_epoch,
             }
 

@@ -7,7 +7,7 @@ sweep:
   datasets:
     - alpha_stable
   networks:
-    - mlp_tiny
+    - mlp
   models:
     - gaussian_flow_linear
   trains:
@@ -28,7 +28,7 @@ datasets:
       standardize: false
 
 networks:
-  mlp_tiny:
+  mlp:
     name: mlp
     params:
       width: 16

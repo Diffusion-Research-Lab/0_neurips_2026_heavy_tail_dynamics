@@ -13,6 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_ROOT}/.venv"
+TOOLS_BIN="${PROJECT_ROOT}/.tools/bin"
 PYTHONPATH_VALUE="${PROJECT_ROOT}/src"
 DO_CHECK=0
 USE_JZ_MODULE=0
@@ -95,14 +96,20 @@ fi
 echo "[setup] Installing project packages with benchmark extras"
 "${PYTHON_BIN}" -m pip install -e "${PROJECT_ROOT}[dev,bench]" --no-input
 
+echo "[setup] Ensuring wgrib2 is available"
+"${BASH:-bash}" "${SCRIPT_DIR}/ensure.wgrib2.sh"
+export PATH="${TOOLS_BIN}:${PATH}"
+
 echo "[setup] Verifying imports (core + benchmark deps)"
 PYTHONPATH="${PYTHONPATH_VALUE}${PYTHONPATH:+:${PYTHONPATH}}" \
 "${PYTHON_BIN}" - <<'PY'
+import cfgrib
 import genkit
 import pandas
 import torch
+import xarray
 from labkit.config import load_config
-print(f"imports_ok torch={torch.__version__} pandas={pandas.__version__}")
+print(f"imports_ok torch={torch.__version__} pandas={pandas.__version__} xarray={xarray.__version__}")
 PY
 
 if [[ "${DO_CHECK}" == "1" ]]; then
@@ -116,6 +123,7 @@ cat <<NEXT
 [setup] Done.
 To use this environment in your current shell:
   source "${VENV_DIR}/bin/activate"
+  export PATH=${TOOLS_BIN}\${PATH:+:\$PATH}
   export PYTHONPATH=${PYTHONPATH_VALUE}\${PYTHONPATH:+:\$PYTHONPATH}
 
 NEXT

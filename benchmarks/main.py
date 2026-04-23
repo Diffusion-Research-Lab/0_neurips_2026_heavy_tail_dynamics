@@ -14,26 +14,19 @@ import pandas as pd
 import torch
 import yaml
 from genkit.datasets import fetch_real_data, fetch_synthetic_data, list_datasets
-from genkit.diffusion import DDPMV, DDPMX0, DLPMEps
-from genkit.flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+from genkit.diffusion import DDPMV, DLPMEps
+from genkit.flow import GaussianFlowLinear
 from genkit.nn import MLPModel, UNetModel
-from genkit.thirdparty import DLPMEpsOrigin, FlowMatchingOrigin, ScoreSDEOrigin
+from genkit.thirdparty import TEDMOrigin
 from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor
 from labkit.config import parse_dtype
 from labkit.utils import set_seed
-
-
 MODEL_REGISTRY = {
     "ddpm_v": DDPMV,
-    "ddpm_x0": DDPMX0,
     "gaussian_flow_linear": GaussianFlowLinear,
-    "gaussian_flow_ot": GaussianFlowOT,
-    "gaussian_flow_ddpm": GaussianFlowDDPM,
     "dlpm_eps": DLPMEps,
-    "dlpm_eps_origin": DLPMEpsOrigin,
-    "flow_matching_origin": FlowMatchingOrigin,
-    "score_sde_origin": ScoreSDEOrigin,
+    "tedm_origin": TEDMOrigin,
 }
 
 
