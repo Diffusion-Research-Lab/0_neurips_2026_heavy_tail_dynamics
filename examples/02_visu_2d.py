@@ -12,8 +12,6 @@ from genkit.metrics import sliced_wasserstein
 from genkit.nn import MLPModel
 from genkit.training import train
 from labkit.report import PRETTY_RCPARAMS
-
-
 plt.rcParams.update(PRETTY_RCPARAMS)
 
 

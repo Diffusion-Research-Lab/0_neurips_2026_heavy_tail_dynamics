@@ -12,8 +12,6 @@ from genkit.nn import MLPModel
 from genkit.training import train
 from genkit.utils import format_duration
 from labkit.report import PRETTY_RCPARAMS
-
-
 plt.rcParams.update(PRETTY_RCPARAMS)
 
 
