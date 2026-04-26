@@ -12,6 +12,7 @@ _results/
 logs/
 sandbox/figures/
 benchmarks/data/
+benchmarks/data_archive/
 src/genkit/_vendor/physicsnemo/
 src/genkit/_vendor/DLPM/dlpm/configs/2d_sas.yml
 sandbox/report/

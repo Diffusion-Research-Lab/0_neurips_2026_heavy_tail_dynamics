@@ -5,9 +5,9 @@
 #SBATCH --error=htfm_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
+#SBATCH --time=20:00:00
 #SBATCH --partition=gpu_p13
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --account=jcx@v100
@@ -18,7 +18,7 @@ set -euo pipefail
 #   sbatch scripts/run.slurm.sh
 #   sbatch --array=0-15 scripts/run.slurm.sh
 #
-# Defaults to benchmarks/configs/01_alphastable_baseline.yaml.
+# Defaults to benchmarks/configs/02_hrrr_unet.yaml.
 # With a Slurm array, each task runs one shard of the same config.
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
@@ -28,6 +28,7 @@ CLI_CONFIG_PATH=""
 CLI_BATCH_DIR=""
 CLI_SHARD_COUNT=""
 CLI_SHARD_INDEX=""
+CLI_SKIP_EXISTING=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +48,10 @@ while [[ $# -gt 0 ]]; do
       CLI_SHARD_INDEX="$2"
       shift 2
       ;;
+    --skip-existing)
+      CLI_SKIP_EXISTING=1
+      shift
+      ;;
     *)
       echo "[slurm] Unknown argument: $1" >&2
       exit 1
@@ -64,7 +69,7 @@ else
   exit 1
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
-CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/01_alphastable_baseline.yaml}}"
+CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/02_hrrr_unet.yaml}}"
 BATCH_DIR="${CLI_BATCH_DIR:-${BATCH_DIR:-}}"
 
 case "${CONFIG_PATH}" in
@@ -136,6 +141,7 @@ export NUMEXPR_NUM_THREADS="${CPUS}"
 
 SHARD_COUNT="${CLI_SHARD_COUNT:-${SHARD_COUNT:-${SLURM_ARRAY_TASK_COUNT:-1}}}"
 SHARD_INDEX="${CLI_SHARD_INDEX:-${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}}"
+SKIP_EXISTING="${SKIP_EXISTING:-1}"
 
 if [[ -z "${BATCH_DIR}" && "${SHARD_COUNT}" -gt 1 ]]; then
   SAVE_ROOT="$("${PYTHON_BIN}" - <<PY
@@ -147,7 +153,15 @@ PY
 )"
   JOB_TAG="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}"
   CONFIG_STEM="$(basename "${CONFIG_PATH}" .yaml)"
-  BATCH_DIR="${PROJECT_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+  if [[ "${SAVE_ROOT}" = /* ]]; then
+    BATCH_DIR="${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+  elif [[ -n "${RUN_ROOT:-}" ]]; then
+    BATCH_DIR="${RUN_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+  elif [[ -n "${WORK:-}" ]]; then
+    BATCH_DIR="${WORK}/flowbench_runs/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+  else
+    BATCH_DIR="${PROJECT_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+  fi
 fi
 
 if [[ -n "${BATCH_DIR}" ]]; then
@@ -167,6 +181,7 @@ echo "SHARD:         $((SHARD_INDEX + 1))/${SHARD_COUNT}"
 echo "BATCH_DIR:     ${BATCH_DIR:-<auto>}"
 echo "CPUs:          ${CPUS}"
 echo "CUDA devices:  ${CUDA_VISIBLE_DEVICES:-<none>}"
+echo "SKIP_EXISTING: ${SKIP_EXISTING}"
 echo "=============================================================================="
 
 srun nvidia-smi || true
@@ -179,6 +194,10 @@ CMD=(
 
 if [[ -n "${BATCH_DIR}" ]]; then
   CMD+=(--batch-dir "${BATCH_DIR}")
+fi
+
+if [[ "${CLI_SKIP_EXISTING}" -eq 1 || "${SKIP_EXISTING}" == "1" ]]; then
+  CMD+=(--skip-existing)
 fi
 
 srun "${CMD[@]}"

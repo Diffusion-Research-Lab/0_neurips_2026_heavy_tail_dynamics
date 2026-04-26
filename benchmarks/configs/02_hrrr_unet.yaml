@@ -1,0 +1,101 @@
+run:
+  name: 02_hrrr_baseline
+  seed: 0
+  dtype: float32
+  n_trial: 1
+
+sweep:
+  datasets:
+    - hrrr
+  networks:
+    - unet
+  models:
+    - gaussian_flow_ot
+    - gaussian_flow_linear
+    - ddpm_v
+    - dlpm_eps
+    - tedm_origin
+  trains:
+    - standard
+
+datasets:
+  hrrr:
+    kind: real
+    name: hrrr
+    params:
+      n_workers: 16
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: true
+
+networks:
+  unet:
+    name: unet
+    params:
+      model_channels: 64
+      num_res_blocks: 2
+      attention_resolutions:
+        literal: [4]
+      dropout: 0.1
+      channel_mult:
+        literal: [1, 2, 4]
+      conv_resample: true
+      dims: 2
+      num_heads: 4
+      use_scale_shift_norm: true
+
+models:
+  gaussian_flow_ot:
+    name: gaussian_flow_ot
+    params:
+      n_steps: 256
+      sigma_min: 0.001
+      sigma_max: 2.0
+
+  gaussian_flow_linear:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 2.0
+
+  ddpm_v:
+    name: ddpm_v
+    params:
+      n_steps: 256
+      sigma_max: 2.0
+
+  dlpm_eps:
+    name: dlpm_eps
+    params:
+      n_steps: 256
+      alpha: 1.7
+
+  tedm_origin:
+    name: tedm_origin
+    params:
+      n_steps: 18
+      nu: 3.0
+      sigma_min: 0.002
+      sigma_max: 4.0
+
+trains:
+  standard:
+    device: cuda
+    batch_size: 8
+    n_epochs: 512
+    lr: 2e-4
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 1e-4
+    grad_clip_norm: 1.0
+    lr_schedule: cosine
+    warmup_steps: 1000
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 10
+    ckpt_freq_epochs: 64
+    ckpt_keep_last: 4
+
+save:
+  root_dir: _02_results

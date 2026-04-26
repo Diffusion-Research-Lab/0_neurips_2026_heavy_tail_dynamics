@@ -5,9 +5,9 @@
 #SBATCH --error=htfm_eval_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
+#SBATCH --time=20:00:00
 #SBATCH --partition=gpu_p13
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --account=jcx@v100
@@ -25,6 +25,12 @@ CLI_N_EVAL_SAMPLES=""
 CLI_N_EVAL_REPEATS=""
 CLI_INSPECT_SAMPLES=""
 CLI_PROBE_SIZE=""
+CLI_SAMPLE_BATCH_SIZE=""
+CLI_MAX_FID_DIM=""
+CLI_MAX_MMD_DIM=""
+CLI_MAX_MMD_SAMPLES=""
+CLI_MAX_INSPECT_DIM=""
+CLI_INSPECT_IMAGE_DATA=0
 CLI_OVERWRITE=0
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +66,30 @@ while [[ $# -gt 0 ]]; do
     --probe-size)
       CLI_PROBE_SIZE="$2"
       shift 2
+      ;;
+    --sample-batch-size)
+      CLI_SAMPLE_BATCH_SIZE="$2"
+      shift 2
+      ;;
+    --max-fid-dim)
+      CLI_MAX_FID_DIM="$2"
+      shift 2
+      ;;
+    --max-mmd-dim)
+      CLI_MAX_MMD_DIM="$2"
+      shift 2
+      ;;
+    --max-mmd-samples)
+      CLI_MAX_MMD_SAMPLES="$2"
+      shift 2
+      ;;
+    --max-inspect-dim)
+      CLI_MAX_INSPECT_DIM="$2"
+      shift 2
+      ;;
+    --inspect-image-data)
+      CLI_INSPECT_IMAGE_DATA=1
+      shift
       ;;
     --overwrite)
       CLI_OVERWRITE=1
@@ -121,10 +151,15 @@ export NUMEXPR_NUM_THREADS="${CPUS}"
 SHARD_COUNT="${CLI_SHARD_COUNT:-${SHARD_COUNT:-${SLURM_ARRAY_TASK_COUNT:-1}}}"
 SHARD_INDEX="${CLI_SHARD_INDEX:-${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}}"
 DEVICE="${CLI_DEVICE:-${DEVICE:-cuda}}"
-N_EVAL_SAMPLES="${CLI_N_EVAL_SAMPLES:-${N_EVAL_SAMPLES:-10000}}"
-N_EVAL_REPEATS="${CLI_N_EVAL_REPEATS:-${N_EVAL_REPEATS:-10}}"
-INSPECT_SAMPLES="${CLI_INSPECT_SAMPLES:-${INSPECT_SAMPLES:-2048}}"
-PROBE_SIZE="${CLI_PROBE_SIZE:-${PROBE_SIZE:-256}}"
+N_EVAL_SAMPLES="${CLI_N_EVAL_SAMPLES:-${N_EVAL_SAMPLES:-512}}"
+N_EVAL_REPEATS="${CLI_N_EVAL_REPEATS:-${N_EVAL_REPEATS:-2}}"
+INSPECT_SAMPLES="${CLI_INSPECT_SAMPLES:-${INSPECT_SAMPLES:-512}}"
+PROBE_SIZE="${CLI_PROBE_SIZE:-${PROBE_SIZE:-64}}"
+SAMPLE_BATCH_SIZE="${CLI_SAMPLE_BATCH_SIZE:-${SAMPLE_BATCH_SIZE:-16}}"
+MAX_FID_DIM="${CLI_MAX_FID_DIM:-${MAX_FID_DIM:-2048}}"
+MAX_MMD_DIM="${CLI_MAX_MMD_DIM:-${MAX_MMD_DIM:-2048}}"
+MAX_MMD_SAMPLES="${CLI_MAX_MMD_SAMPLES:-${MAX_MMD_SAMPLES:-2048}}"
+MAX_INSPECT_DIM="${CLI_MAX_INSPECT_DIM:-${MAX_INSPECT_DIM:-1024}}"
 
 echo "=============================================================================="
 echo "Heavy Tail Flow Benchmark Evaluator (GPU / Slurm)"
@@ -136,6 +171,12 @@ echo "N_EVAL_SAMPLES:   ${N_EVAL_SAMPLES}"
 echo "N_EVAL_REPEATS:   ${N_EVAL_REPEATS}"
 echo "INSPECT_SAMPLES:  ${INSPECT_SAMPLES}"
 echo "PROBE_SIZE:       ${PROBE_SIZE}"
+echo "SAMPLE_BATCH:     ${SAMPLE_BATCH_SIZE}"
+echo "MAX_FID_DIM:      ${MAX_FID_DIM}"
+echo "MAX_MMD_DIM:      ${MAX_MMD_DIM}"
+echo "MAX_MMD_SAMPLES:  ${MAX_MMD_SAMPLES}"
+echo "MAX_INSPECT_DIM:  ${MAX_INSPECT_DIM}"
+echo "INSPECT_IMAGES:   ${CLI_INSPECT_IMAGE_DATA}"
 echo "=============================================================================="
 
 srun nvidia-smi || true
@@ -149,10 +190,19 @@ CMD=(
   --n-eval-repeats "${N_EVAL_REPEATS}"
   --inspect-samples "${INSPECT_SAMPLES}"
   --probe-size "${PROBE_SIZE}"
+  --sample-batch-size "${SAMPLE_BATCH_SIZE}"
+  --max-fid-dim "${MAX_FID_DIM}"
+  --max-mmd-dim "${MAX_MMD_DIM}"
+  --max-mmd-samples "${MAX_MMD_SAMPLES}"
+  --max-inspect-dim "${MAX_INSPECT_DIM}"
 )
 
 if [[ "${CLI_OVERWRITE}" -eq 1 ]]; then
   CMD+=(--overwrite)
+fi
+
+if [[ "${CLI_INSPECT_IMAGE_DATA}" -eq 1 ]]; then
+  CMD+=(--inspect-image-data)
 fi
 
 srun "${CMD[@]}"

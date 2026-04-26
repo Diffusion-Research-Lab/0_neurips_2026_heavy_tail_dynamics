@@ -15,7 +15,7 @@ import torch
 import yaml
 from genkit.datasets import fetch_real_data, fetch_synthetic_data, list_datasets
 from genkit.diffusion import DDPMV, DLPMEps
-from genkit.flow import GaussianFlowLinear
+from genkit.flow import GaussianFlowLinear, GaussianFlowOT
 from genkit.nn import MLPModel, UNetModel
 from genkit.thirdparty import TEDMOrigin
 from genkit.training import train
@@ -25,6 +25,7 @@ from labkit.utils import set_seed
 MODEL_REGISTRY = {
     "ddpm_v": DDPMV,
     "gaussian_flow_linear": GaussianFlowLinear,
+    "gaussian_flow_ot": GaussianFlowOT,
     "dlpm_eps": DLPMEps,
     "tedm_origin": TEDMOrigin,
 }
@@ -74,6 +75,11 @@ def _slug(value: Any) -> str:
 
 def _grid_items(prefix: str, value: Any) -> list[tuple[str, Any]]:
     """Flatten one nested mapping into dotted leaf paths."""
+    if isinstance(value, dict) and set(value) == {"literal"}:
+        literal = copy.deepcopy(value["literal"])
+        if isinstance(literal, list):
+            literal = tuple(literal)
+        return [(prefix, literal)]
     if not isinstance(value, dict):
         return [(prefix, value)]
     items: list[tuple[str, Any]] = []
@@ -198,7 +204,8 @@ def build_model(
     if name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model.name={name!r}. Available: {sorted(MODEL_REGISTRY)}.")
     params = copy.deepcopy(model_cfg.get("params", {}))
-    params.setdefault("dim", int(x_train.shape[-1]))
+    sample_shape = int(x_train.shape[-1]) if x_train.ndim == 2 else tuple(int(axis) for axis in x_train.shape[1:])
+    params.setdefault("dim", sample_shape)
     params.setdefault("fdtype", dtype)
     params.setdefault("device", device)
     return MODEL_REGISTRY[name](net=net, **params), params
@@ -295,8 +302,28 @@ def run_one(
     trial_idx: int,
     save_cfg: dict[str, Any],
     dtype: torch.dtype,
+    skip_existing: bool = False,
 ) -> dict[str, Any]:
     """Execute one config combination and save its artifacts."""
+    run_dir = batch_dir / f"{combo_index:03d}_{combo_name}"
+    if skip_existing and (run_dir / "checkpoint.pt").exists():
+        logging.info("[%03d] skipping existing run: %s", combo_index, run_dir)
+        return {
+            "combo_index": combo_index,
+            "combo_name": combo_name,
+            "run_dir": str(run_dir),
+            "trial_idx": trial_idx,
+            "dataset_preset": dataset_variant["variant_name"],
+            "network_preset": network_variant["variant_name"],
+            "model_preset": model_variant["variant_name"],
+            "train_preset": train_variant["variant_name"],
+            "status": "skipped",
+            "error_type": "",
+            "error_message": "",
+            "final_loss": float("nan"),
+            "final_grad_norm": float("nan"),
+        }
+
     run_dir = _make_run_dir(batch_dir, combo_index, combo_name)
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -321,7 +348,7 @@ def run_one(
 
     set_seed(int(run_cfg.get("seed", 0)) + combo_index - 1)
     device = str(train_cfg.get("device", "cpu"))
-    x_train, x_val, x_test = build_dataset(dataset_cfg, dtype=dtype, device=device)
+    x_train, x_val, x_test = build_dataset(dataset_cfg, dtype=dtype, device="cpu")
     net, network_params = build_network(network_cfg, x_train)
     net = net.to(device=device, dtype=dtype)
     generative_model, model_params = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
@@ -441,6 +468,7 @@ def main() -> None:
     parser.add_argument("--batch-dir", type=Path, default=None, help="Optional existing/shared batch directory.")
     parser.add_argument("--shard-count", type=int, default=1, help="Split the combination grid into this many shards.")
     parser.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to execute.")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip runs whose final checkpoint already exists.")
     args = parser.parse_args()
 
     if args.shard_count < 1:
@@ -457,7 +485,8 @@ def main() -> None:
     trains_cfg = require_section(config, "trains")
     save_cfg = require_section(config, "save")
 
-    dtype = parse_dtype(str(run_cfg.get("dtype", "float32")))
+    dtype = parse_dtype(str(run_cfg.get("dtype", "float64")))
+    torch.set_default_dtype(dtype)
     dataset_variants = select_entries("datasets", datasets_cfg, list(sweep_cfg.get("datasets", [])))
     network_variants = select_entries("networks", networks_cfg, list(sweep_cfg.get("networks", [])))
     model_variants = select_entries("models", models_cfg, list(sweep_cfg.get("models", [])))
@@ -503,6 +532,7 @@ def main() -> None:
                 trial_idx=trial_idx,
                 save_cfg=save_cfg,
                 dtype=dtype,
+                skip_existing=args.skip_existing,
             )
         )
 
@@ -510,8 +540,10 @@ def main() -> None:
     summary_name = "summary.txt" if args.shard_count == 1 else f"summary_shard_{args.shard_index:03d}.txt"
     pd.DataFrame(manifest_rows).to_csv(batch_dir / manifest_name, index=False)
     n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
+    n_skipped = sum(row.get("status") == "skipped" for row in manifest_rows)
     with (batch_dir / summary_name).open("w", encoding="utf-8") as handle:
         handle.write(f"n_runs: {len(manifest_rows)}\n")
+        handle.write(f"n_skipped: {n_skipped}\n")
         handle.write(f"n_failed: {n_failed}\n")
         handle.write(f"config: {args.config.resolve()}\n")
         handle.write(f"batch_dir: {batch_dir.resolve()}\n")

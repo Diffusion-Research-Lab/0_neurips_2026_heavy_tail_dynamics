@@ -1,6 +1,7 @@
 """Batch evaluation entrypoint for saved benchmark runs."""
 
 import argparse
+import copy
 from pathlib import Path
 import traceback
 from typing import Any
@@ -20,6 +21,7 @@ EVAL_METRIC_NAMES = [
 ]
 MODEL_LABELS = {
     "gaussian_flow_linear": "GF-Linear",
+    "gaussian_flow_ot": "GF-OT",
     "ddpm_v": "DDPM-V",
     "dlpm_eps": "DLPM",
     "tedm_origin": "TEDM-Orig",
@@ -51,6 +53,19 @@ def pretty_model(name: str) -> str:
     return MODEL_LABELS.get(name, name)
 
 
+def sample_generator_in_batches(generator: Any, n_samples: int, batch_size: int) -> torch.Tensor:
+    """Generate samples without requiring the full evaluation batch to fit on the GPU."""
+    chunks = []
+    remaining = int(n_samples)
+    batch_size = int(batch_size)
+    while remaining > 0:
+        n_batch = min(batch_size, remaining)
+        with torch.no_grad():
+            chunks.append(generator.sample(n_samples=n_batch).detach().cpu())
+        remaining -= n_batch
+    return torch.cat(chunks, dim=0)
+
+
 def load_generator_and_data(
     run_dir: Path,
     *,
@@ -71,12 +86,16 @@ def load_generator_and_data(
             )
         resolved_epoch = int(checkpoint_epoch)
 
-    final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location=device)
-    checkpoint = final_checkpoint if checkpoint_epoch is None else torch.load(checkpoint_path, map_location=device)
+    final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
+    checkpoint = final_checkpoint if checkpoint_epoch is None else torch.load(checkpoint_path, map_location="cpu")
     config = yaml.safe_load((run_dir / "config.yaml").read_text())
 
-    dtype_name = str(final_checkpoint["model_init"]["dtype"]).split(".")[-1]
-    dtype = getattr(torch, dtype_name)
+    dtype_spec = config.get("run", {}).get("dtype")
+    if dtype_spec is None:
+        dtype_spec = final_checkpoint.get("model_init", {}).get("dtype", torch.float64)
+    dtype_name = str(dtype_spec).split(".")[-1]
+    dtype = getattr(torch, dtype_name, torch.float64)
+    torch.set_default_dtype(dtype)
 
     network_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["network"]))
     model_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["model"]))
@@ -84,7 +103,7 @@ def load_generator_and_data(
     model_cfg["params"]["fdtype"] = dtype
     model_cfg["params"]["device"] = device
 
-    x_train, _, x_test = build_dataset(config["dataset"], dtype=dtype, device=device)
+    x_train, _, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
     net, _ = build_network(network_cfg, x_train)
     net = net.to(device=device, dtype=dtype)
     generator, _ = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
@@ -103,6 +122,12 @@ def evaluate_one_run(
     n_eval_repeats: int,
     inspect_samples: int,
     probe_size: int,
+    sample_batch_size: int,
+    max_fid_dim: int,
+    max_mmd_dim: int,
+    max_mmd_samples: int,
+    max_inspect_dim: int,
+    inspect_image_data: bool,
     overwrite: bool,
 ) -> dict[str, Any]:
     """Evaluate one saved benchmark run and write per-run artifacts."""
@@ -123,6 +148,23 @@ def evaluate_one_run(
             }
 
     config = yaml.safe_load((run_dir / "config.yaml").read_text())
+    final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
+    dtype_spec = config.get("run", {}).get("dtype")
+    if dtype_spec is None:
+        dtype_spec = final_checkpoint.get("model_init", {}).get("dtype", torch.float64)
+    dtype_name = str(dtype_spec).split(".")[-1]
+    dtype = getattr(torch, dtype_name, torch.float64)
+    torch.set_default_dtype(dtype)
+
+    network_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["network"]))
+    model_cfg_template = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["model"]))
+    model_cfg_template.setdefault("params", {})
+    model_cfg_template["params"]["fdtype"] = dtype
+    model_cfg_template["params"]["device"] = device
+
+    x_train, _, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
+    image_like = x_test.ndim > 2
+    feature_dim = int(x_test[:1].reshape(1, -1).shape[1])
     final_epoch = int(config["train"]["n_epochs"])
     checkpoint_epochs = sorted(set(available_checkpoint_epochs(run_dir) + [final_epoch]))
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -132,11 +174,21 @@ def evaluate_one_run(
     warnings: list[str] = []
 
     for requested_epoch in checkpoint_epochs:
-        generator, _, x_test, resolved_config, resolved_epoch = load_generator_and_data(
-            run_dir,
-            device=device,
-            checkpoint_epoch=None if requested_epoch == final_epoch else requested_epoch,
-        )
+        if requested_epoch == final_epoch:
+            checkpoint = final_checkpoint
+            resolved_epoch = None
+        else:
+            checkpoint_path = run_dir / "checkpoints" / f"ckpt_epoch_{int(requested_epoch):04d}.pt"
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            resolved_epoch = int(requested_epoch)
+        net, _ = build_network(network_cfg, x_train)
+        net = net.to(device=device, dtype=dtype)
+        model_cfg = copy.deepcopy(model_cfg_template)
+        generator, _ = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
+        state_dict = checkpoint["network_state_dict"] if "network_state_dict" in checkpoint else checkpoint["model_state"]
+        generator._net.load_state_dict(state_dict)
+        generator._net.eval()
+        resolved_config = config
         checkpoint_epoch = int(resolved_epoch if resolved_epoch is not None else final_epoch)
         dataset_params = resolved_config.get("dataset", {}).get("params", {})
         model_params = resolved_config.get("model", {}).get("params", {})
@@ -172,17 +224,29 @@ def evaluate_one_run(
                     }
                 )
 
-        x_ref = x_test[: min(int(n_eval_samples), len(x_test)), :]
+        x_ref = x_test[: min(int(n_eval_samples), len(x_test))]
         x_ref_cpu = x_ref.detach().cpu()
         for eval_repeat_idx in range(int(n_eval_repeats)):
-            x_gen_cpu = generator.sample(n_samples=len(x_ref)).detach().cpu()
-            metric_values = {
-                "FID": float(fid(x_ref_cpu, x_gen_cpu)),
-                "MMD_RBF": float(mmd_rbf(x_ref_cpu, x_gen_cpu)),
+            x_gen_cpu = sample_generator_in_batches(generator, len(x_ref), sample_batch_size)
+            metric_values = {name: float("nan") for name in EVAL_METRIC_NAMES}
+            if feature_dim <= int(max_fid_dim):
+                metric_values["FID"] = float(fid(x_ref_cpu, x_gen_cpu))
+            else:
+                warning = f"fid_skipped: feature_dim={feature_dim} exceeds max_fid_dim={max_fid_dim}"
+                if warning not in warnings:
+                    warnings.append(warning)
+            if feature_dim <= int(max_mmd_dim):
+                mmd_n = min(len(x_ref_cpu), int(max_mmd_samples))
+                metric_values["MMD_RBF"] = float(mmd_rbf(x_ref_cpu[:mmd_n], x_gen_cpu[:mmd_n]))
+            else:
+                warning = f"mmd_skipped: feature_dim={feature_dim} exceeds max_mmd_dim={max_mmd_dim}"
+                if warning not in warnings:
+                    warnings.append(warning)
+            metric_values.update({
                 "SLICED_WASSERSTEIN": float(sliced_wasserstein(x_ref_cpu, x_gen_cpu)),
                 "TAIL_COVERAGE_ERROR": float(tail_coverage_error(x_ref_cpu, x_gen_cpu)),
                 "MSSLE": float(mssle(x_ref_cpu, x_gen_cpu)),
-            }
+            })
             for metric_name in EVAL_METRIC_NAMES:
                 scalar_rows.append(
                     {
@@ -195,71 +259,85 @@ def evaluate_one_run(
                     }
                 )
 
-        x_ref_inspect = x_test[: min(int(inspect_samples), len(x_test)), :]
-        try:
-            init_error = float(
-                estimate_init_error(
-                    generator,
-                    x_ref_inspect,
-                    n_samples=min(4096, len(x_ref_inspect)),
-                    k=10,
+        x_ref_inspect = x_test[: min(int(inspect_samples), len(x_test))]
+        can_inspect = len(x_ref_inspect) > 0 and int(inspect_samples) > 0 and (inspect_image_data or (not image_like and feature_dim <= int(max_inspect_dim)))
+        if can_inspect:
+            try:
+                init_error = float(
+                    estimate_init_error(
+                        generator,
+                        x_ref_inspect,
+                        n_samples=min(4096, len(x_ref_inspect)),
+                        k=10,
+                    )
                 )
-            )
-            training_loss_error = float(
-                estimate_training_loss_error(
-                    generator,
-                    x_ref_inspect,
-                    n_batches=16,
-                    batch_size=min(256, len(x_ref_inspect)),
-                    loss_type="native",
+                training_loss_error = float(
+                    estimate_training_loss_error(
+                        generator,
+                        x_ref_inspect,
+                        n_batches=16,
+                        batch_size=min(256, len(x_ref_inspect)),
+                        loss_type="mse",
+                    )
                 )
-            )
-        except ValueError as exc:
-            if "inspect" not in str(exc).lower():
-                raise
-            warnings.append(f"inspect_skipped: {exc}")
+            except ValueError as exc:
+                if "inspect" not in str(exc).lower():
+                    raise
+                warnings.append(f"inspect_skipped: {exc}")
+            else:
+                scalar_rows.extend(
+                    [
+                        {
+                            **base_row,
+                            "source": "inspect",
+                            "metric_name": "init_error",
+                            "value": init_error,
+                            "eval_repeat_idx": np.nan,
+                            "epoch": np.nan,
+                        },
+                        {
+                            **base_row,
+                            "source": "inspect",
+                            "metric_name": "training_loss_error",
+                            "value": training_loss_error,
+                            "eval_repeat_idx": np.nan,
+                            "epoch": np.nan,
+                        },
+                    ]
+                )
         else:
-            scalar_rows.extend(
-                [
-                    {
-                        **base_row,
-                        "source": "inspect",
-                        "metric_name": "init_error",
-                        "value": init_error,
-                        "eval_repeat_idx": np.nan,
-                        "epoch": np.nan,
-                    },
-                    {
-                        **base_row,
-                        "source": "inspect",
-                        "metric_name": "training_loss_error",
-                        "value": training_loss_error,
-                        "eval_repeat_idx": np.nan,
-                        "epoch": np.nan,
-                    },
-                ]
-            )
+            reason = "image_data" if image_like and not inspect_image_data else f"feature_dim={feature_dim}"
+            warning = f"inspect_skipped: {reason}"
+            if warning not in warnings:
+                warnings.append(warning)
 
         if checkpoint_epoch != final_epoch:
             continue
 
-        x_probe = x_ref_inspect[: min(int(probe_size), len(x_ref_inspect)), :]
-        try:
-            jac_curve = model_est_jacobian_spectral_curve(
-                generator,
-                x_probe,
-                n_power_iter=8,
-                max_n_steps=10,
-            )
-        except ValueError as exc:
-            if "inspect" not in str(exc).lower():
-                raise
-            warnings.append(f"jacobian_skipped: {exc}")
+        x_probe = x_ref_inspect[: min(int(probe_size), len(x_ref_inspect))]
+        can_probe = len(x_probe) > 0 and int(probe_size) > 0 and (inspect_image_data or (not image_like and feature_dim <= int(max_inspect_dim)))
+        if can_probe:
+            try:
+                jac_curve = model_est_jacobian_spectral_curve(
+                    generator,
+                    x_probe,
+                    n_power_iter=8,
+                    max_n_steps=10,
+                )
+            except ValueError as exc:
+                if "inspect" not in str(exc).lower():
+                    raise
+                warnings.append(f"jacobian_skipped: {exc}")
+            else:
+                jacobian_payload = {
+                    "curve": np.asarray(jac_curve, dtype=float),
+                    "checkpoint_epoch": checkpoint_epoch,
+                }
         else:
-            jacobian_payload = {
-                "curve": np.asarray(jac_curve, dtype=float),
-                "checkpoint_epoch": checkpoint_epoch,
-            }
+            reason = "image_data" if image_like and not inspect_image_data else f"feature_dim={feature_dim}"
+            warning = f"jacobian_skipped: {reason}"
+            if warning not in warnings:
+                warnings.append(warning)
 
     pd.DataFrame(scalar_rows).to_csv(scalars_path, index=False, compression="gzip")
     if jacobian_payload is not None:
@@ -277,6 +355,14 @@ def evaluate_one_run(
         "n_eval_samples": int(n_eval_samples),
         "inspect_samples": int(inspect_samples),
         "probe_size": int(probe_size),
+        "sample_batch_size": int(sample_batch_size),
+        "feature_dim": feature_dim,
+        "image_like": bool(image_like),
+        "max_fid_dim": int(max_fid_dim),
+        "max_mmd_dim": int(max_mmd_dim),
+        "max_mmd_samples": int(max_mmd_samples),
+        "max_inspect_dim": int(max_inspect_dim),
+        "inspect_image_data": bool(inspect_image_data),
         "metric_names": EVAL_METRIC_NAMES,
         "n_scalar_rows": len(scalar_rows),
         "scalars_path": str(scalars_path),
@@ -305,6 +391,12 @@ if __name__ == "__main__":
     parser.add_argument("--n-eval-repeats", type=int, default=10)
     parser.add_argument("--inspect-samples", type=int, default=2048)
     parser.add_argument("--probe-size", type=int, default=256)
+    parser.add_argument("--sample-batch-size", type=int, default=256)
+    parser.add_argument("--max-fid-dim", type=int, default=2048)
+    parser.add_argument("--max-mmd-dim", type=int, default=2048)
+    parser.add_argument("--max-mmd-samples", type=int, default=2048)
+    parser.add_argument("--max-inspect-dim", type=int, default=1024)
+    parser.add_argument("--inspect-image-data", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -314,6 +406,12 @@ if __name__ == "__main__":
         raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
     if args.n_eval_repeats < 1:
         raise ValueError("--n-eval-repeats must be >= 1.")
+    if args.n_eval_samples < 2:
+        raise ValueError("--n-eval-samples must be >= 2.")
+    if args.max_mmd_samples < 2:
+        raise ValueError("--max-mmd-samples must be >= 2.")
+    if args.sample_batch_size < 1:
+        raise ValueError("--sample-batch-size must be >= 1.")
 
     batch_dir = args.batch_dir.expanduser()
     if not batch_dir.exists():
@@ -340,6 +438,12 @@ if __name__ == "__main__":
                 n_eval_repeats=args.n_eval_repeats,
                 inspect_samples=args.inspect_samples,
                 probe_size=args.probe_size,
+                sample_batch_size=args.sample_batch_size,
+                max_fid_dim=args.max_fid_dim,
+                max_mmd_dim=args.max_mmd_dim,
+                max_mmd_samples=args.max_mmd_samples,
+                max_inspect_dim=args.max_inspect_dim,
+                inspect_image_data=args.inspect_image_data,
                 overwrite=args.overwrite,
             )
         except Exception as exc:

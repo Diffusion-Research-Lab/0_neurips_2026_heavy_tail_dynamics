@@ -2,10 +2,12 @@ BASH            ?= bash
 VENV_DIR        ?= .venv
 JZ_MODULE       ?= pytorch-gpu/py3/2.8.0
 LOG_DIR         ?= logs
-LOG_PREFIX      ?= htfm
+LOG_PREFIX      ?= bench
 ANALYSIS_DATA_DIR ?= benchmarks/data
-JOBID           ?=
-TASK            ?=
+ALPHASTABLE_CONFIG ?= benchmarks/configs/01_alphastable_baseline.yaml
+HRRR_CONFIG     ?= benchmarks/configs/02_hrrr_unet.yaml
+ALPHA_ARRAY     ?= 0-49
+HRRR_ARRAY      ?= 0-4
 VENV_PYTHON      = $(CURDIR)/$(VENV_DIR)/bin/python
 TOOLS_BIN        = $(CURDIR)/.tools/bin
 PATH_EXPORT      = export PATH="$(TOOLS_BIN):$$PATH"
@@ -19,48 +21,25 @@ SBATCH_EXPORT    = --export=ALL,VENV_DIR="$(CURDIR)/$(VENV_DIR)"
 
 .DEFAULT_GOAL := help
 
-.PHONY: setup-local setup-jz prefetch-data run-local run-jz evaluate-jz inspect-jz log-jz check send fetch supp help
+.PHONY: setup prefetch-data run evaluate check send fetch supp help
 
-setup-local:
-	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)"
-	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch.vendor.sh
-
-setup-jz:
+setup:
 	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
 	PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch.vendor.sh
-	$(MAKE) prefetch-data
-
-prefetch-data:
 	$(BASH) -lc 'type module >/dev/null 2>&1 && { module purge || true; module load "$(JZ_MODULE)"; }; $(ACTIVATE); python scripts/prefetch_datasets.py'
 
-run-local:
-	$(BASH) scripts/run.local.sh --run --venv-dir "$(CURDIR)/$(VENV_DIR)"
-
-run-jz:
+run:
 	@mkdir -p "$(LOG_DIR)"
-	sbatch --array=0-0  $(RUN_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config benchmarks/configs/00_blank.yaml
-	sbatch --array=0-15 $(RUN_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config benchmarks/configs/01_alphastable_baseline.yaml
+	sbatch --array=$(ALPHA_ARRAY) $(RUN_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(ALPHASTABLE_CONFIG)"
+	sbatch --array=$(HRRR_ARRAY) $(RUN_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(HRRR_CONFIG)" --skip-existing
 
-evaluate-jz:
+evaluate:
 	@mkdir -p "$(LOG_DIR)"
 	@test -d "$(ANALYSIS_DATA_DIR)" || { echo "Missing: $(ANALYSIS_DATA_DIR)" >&2; exit 2; }
-	sbatch --array=0-15 $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
+	sbatch --array=$(ALPHA_ARRAY) $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
 	  --batch-dir "$$(ls -d "$(ANALYSIS_DATA_DIR)"/*_01_alphastable_baseline | tail -n 1)"
-
-inspect-jz:
-	@test -n "$(JOBID)" || { echo "Usage: make inspect-jz JOBID=<id>" >&2; exit 2; }
-	sacct -j "$(JOBID)" --format=JobID,JobName%20,State,ExitCode,Elapsed,NodeList%30
-
-log-jz:
-	@test -n "$(JOBID)" || { echo "Usage: make log-jz JOBID=<id> [TASK=<index>]" >&2; exit 2; }
-	@if [ -n "$(TASK)" ]; then \
-	  for f in "$(LOG_DIR)/$(LOG_PREFIX)_$(JOBID)_$(TASK).out" \
-	           "$(LOG_DIR)/$(LOG_PREFIX)_$(JOBID)_$(TASK).err"; do \
-	    [ -f "$$f" ] && { echo "==> $$f <=="; tail -n 80 "$$f"; } || true; \
-	  done; \
-	else \
-	  ls -1 "$(LOG_DIR)/$(LOG_PREFIX)_$(JOBID)"_*.{out,err} 2>/dev/null || true; \
-	fi
+	sbatch --array=$(HRRR_ARRAY) $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
+	  --batch-dir "$$(ls -d "$(ANALYSIS_DATA_DIR)"/*_02_hrrr_unet | tail -n 1)"
 
 check:
 	$(BASH) -lc '$(ACTIVATE); flake8 --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples'
@@ -80,14 +59,10 @@ supp:
 
 help:
 	@printf "Available targets:\n"
-	@printf "  %-14s %s\n" "setup-local"   "Install the local benchmark environment"
-	@printf "  %-14s %s\n" "setup-jz"      "Install the Jean Zay environment and prefetch real datasets"
-	@printf "  %-14s %s\n" "prefetch-data" "Download and cache all real datasets under \$$WORK or \$$HOME"
-	@printf "  %-14s %s\n" "run-local"     "Run benchmarks locally"
-	@printf "  %-14s %s\n" "run-jz"        "Submit all benchmark configs via Slurm"
-	@printf "  %-14s %s\n" "evaluate-jz"   "Submit sharded evaluation for the latest alphastable batch"
-	@printf "  %-14s %s\n" "inspect-jz"    "Inspect a Jean Zay array job via sacct (JOBID=...)"
-	@printf "  %-14s %s\n" "log-jz"        "List or tail Jean Zay logs (JOBID=..., TASK=...)"
+	@printf "  %-14s %s\n" "setup"      "Install the Jean Zay environment and prefetch real datasets"
+	@printf "  %-14s %s\n" "prefetch-data" "Download and cache all real datasets under \$$WORK/flowbench_data or \$$HOME/.cache/flowbench_data"
+	@printf "  %-14s %s\n" "run"        "Submit all benchmark configs via Slurm"
+	@printf "  %-14s %s\n" "evaluate"   "Submit sharded evaluation for latest alpha-stable and HRRR batches"
 	@printf "  %-14s %s\n" "check"         "Run lint, tests, smoke, and blank benchmarks"
 	@printf "  %-14s %s\n" "send"          "Send the project tree to the remote benchmark host"
 	@printf "  %-14s %s\n" "fetch"         "Fetch benchmark result directories into benchmarks/data"

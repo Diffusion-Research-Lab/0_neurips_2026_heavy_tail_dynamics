@@ -5,13 +5,13 @@
 From the repo root, locally:
 
 ```bash
-make setup-local
+bash scripts/setup.sh --venv-dir .venv
 ```
 
 Or on Jean Zay:
 
 ```bash
-make setup-jz
+make setup
 ```
 
 ### 2) Run
@@ -25,26 +25,17 @@ bash scripts/run.local.sh --blank
 Local full config sweep:
 
 ```bash
-make run-local
+bash scripts/run.local.sh --run
 ```
 
-Jean Zay full run:
+Jean Zay benchmark run:
 
 ```bash
-make run-jz
-```
-
-Inspect one submitted array job:
-
-```bash
-make inspect-jz JOBID=1985827
-make log-jz JOBID=1985827
-make log-jz JOBID=1985827 TASK=3
+make run
 ```
 
 Launch sharded evaluation for one fetched or remote batch:
 
 ```bash
-make evaluate-jz
-make log-jz LOG_PREFIX=htfm_eval JOBID=1986001 TASK=3
+make evaluate
 ```
