@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Prefetch all real FlowBench datasets into a persistent cache root."""
 
 import argparse
@@ -6,9 +5,8 @@ from pathlib import Path
 import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
-
-from genkit._datasets import _resolve_real_data_home
-from genkit.datasets import fetch_real_data, list_datasets, get_dataset_metadata
+from genkit._datasets import _resolve_real_data_home  # noqa
+from genkit.datasets import fetch_real_data, list_datasets, get_dataset_metadata  # noqa
 
 
 def _parse_args() -> argparse.Namespace:
