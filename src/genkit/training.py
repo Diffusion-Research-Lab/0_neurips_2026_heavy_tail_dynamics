@@ -214,6 +214,17 @@ def train(
 ) -> tuple[Any, dict[str, Any]]:
     """Train a native genkit generative model and return diagnostics."""
     logger = logging.getLogger(__name__)
+    batch_size = int(batch_size)
+    n_epochs = int(n_epochs)
+    lr = float(lr)
+    num_workers = int(num_workers)
+    weight_decay = float(weight_decay)
+    grad_clip_norm = None if grad_clip_norm is None else float(grad_clip_norm)
+    warmup_steps = int(warmup_steps)
+    cosine_eta_min_ratio = float(cosine_eta_min_ratio)
+    freq_logging = int(freq_logging)
+    ckpt_freq_epochs = int(ckpt_freq_epochs)
+    ckpt_keep_last = int(ckpt_keep_last)
     _validate_train_inputs(generative_model, target_data, source_data, use_adamw, weight_decay)
 
     device = torch.device(device)

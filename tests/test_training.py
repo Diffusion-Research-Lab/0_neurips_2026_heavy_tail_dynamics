@@ -100,6 +100,32 @@ def test_train_default_uses_core_visitor_only():
     assert len(core["grad_norm_epoch"]) == 2
 
 
+def test_train_accepts_yaml_numeric_strings():
+    x = torch.randn(24, 3, dtype=torch.float32)
+    _, diagnostics = _run_train(
+        x,
+        batch_size="12",
+        n_epochs="1",
+        lr="5e-4",
+        num_workers="0",
+        weight_decay="1e-6",
+        grad_clip_norm="1.0",
+        warmup_steps="0",
+        cosine_eta_min_ratio="0.05",
+        freq_logging="1",
+        ckpt_freq_epochs="1",
+        ckpt_keep_last="1",
+        visitors=[CoreMetricsVisitor()],
+    )
+
+    config = diagnostics["train_config"]
+    assert config["batch_size"] == 12
+    assert config["n_epochs"] == 1
+    assert config["lr"] == pytest.approx(0.0005)
+    assert config["weight_decay"] == pytest.approx(0.000001)
+    assert config["grad_clip_norm"] == pytest.approx(1.0)
+
+
 def test_train_accepts_custom_visitors():
     x = torch.randn(96, 3, dtype=torch.float32)
     counter = _CounterVisitor()
