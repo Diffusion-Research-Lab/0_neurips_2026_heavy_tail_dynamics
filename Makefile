@@ -60,7 +60,6 @@ supp:
 help:
 	@printf "Available targets:\n"
 	@printf "  %-14s %s\n" "setup"      "Install the Jean Zay environment and prefetch real datasets"
-	@printf "  %-14s %s\n" "prefetch-data" "Download and cache all real datasets under \$$WORK/flowbench_data or \$$HOME/.cache/flowbench_data"
 	@printf "  %-14s %s\n" "run"        "Submit all benchmark configs via Slurm"
 	@printf "  %-14s %s\n" "evaluate"   "Submit sharded evaluation for latest alpha-stable and HRRR batches"
 	@printf "  %-14s %s\n" "check"         "Run lint, tests, smoke, and blank benchmarks"
