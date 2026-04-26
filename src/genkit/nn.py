@@ -11,10 +11,10 @@ def timestep_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10_0
     """Create sinusoidal timestep embeddings."""
     if timesteps.ndim == 0:
         timesteps = timesteps[None]
-    timesteps = timesteps.reshape(-1).float()
+    timesteps = timesteps.reshape(-1).to(dtype=torch.get_default_dtype())
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period) * torch.arange(half, device=timesteps.device, dtype=torch.float32) / max(half, 1)
+        -math.log(max_period) * torch.arange(half, device=timesteps.device, dtype=timesteps.dtype) / max(half, 1)
     )
     args = timesteps[:, None] * freqs[None]
     emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -275,7 +275,7 @@ class _AttentionBlock(nn.Module):
         q, k, v = torch.split(qkv, ch, dim=1)
         scale = 1 / math.sqrt(math.sqrt(ch))
         weight = torch.einsum("bct,bcs->bts", q * scale, k * scale)
-        weight = torch.softmax(weight.float(), dim=-1).to(dtype=weight.dtype)
+        weight = torch.softmax(weight, dim=-1)
         h = torch.einsum("bts,bcs->bct", weight, v).reshape(b, -1, h.shape[-1])
         h = self.proj_out(h)
         return (x.reshape(b, c, -1) + h).reshape(b, c, *spatial)

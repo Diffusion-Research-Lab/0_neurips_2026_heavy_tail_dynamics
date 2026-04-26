@@ -1,7 +1,7 @@
 """Diffusion module."""
 
+import math
 import torch
-from ._sampling import sample_gaussian
 from .utils import cosine_schedule
 
 
@@ -22,7 +22,15 @@ class Base:
         device: torch.device = 'cpu',
     ):
         """Initialize the shared model state and move the network to the target device."""
-        self._dim = int(dim)
+        if isinstance(dim, int):
+            sample_shape = (int(dim),)
+        else:
+            sample_shape = tuple(int(axis) for axis in dim)
+        if not sample_shape or any(axis <= 0 for axis in sample_shape):
+            raise ValueError(f"dim must define a non-empty positive sample shape, got {dim}.")
+
+        self._sample_shape = sample_shape
+        self._dim = sample_shape[0] if len(sample_shape) == 1 else int(math.prod(sample_shape))
         self._base_or_sample = base_or_sample
         self._n_steps = int(n_steps)
 
@@ -50,17 +58,21 @@ class Base:
         if isinstance(self._base_or_sample, torch.Tensor):
             base = self._base_or_sample.to(device=self._device, dtype=self._fdtype)
 
-            if base.ndim == 1:
-                if base.numel() != self._dim:
-                    raise ValueError(f"base_or_sample has dim {base.numel()}, expected {self._dim}")
-                samples = base.unsqueeze(0).expand(n_samples, -1)
+            if tuple(base.shape) == self._sample_shape:
+                samples = base.unsqueeze(0).expand(n_samples, *([-1] * len(self._sample_shape)))
             else:
+                if tuple(base.shape[1:]) != self._sample_shape:
+                    raise ValueError(f"base_or_sample has sample dim/shape {tuple(base.shape[1:])}, expected {self._sample_shape}")
                 idx = torch.randint(0, base.size(0), (n_samples,), device=self._device)
                 samples = base.index_select(0, idx)
 
         else:
             samples = self._sample_source_default(n_samples)
         return samples
+
+    def _expand_batch_scalar(self, value: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
+        """Reshape one scalar per batch item so it broadcasts over sample dimensions."""
+        return value.reshape(value.shape[0], *([1] * (like.ndim - 1)))
 
     def _check_t(self, t, n_samples: int) -> torch.Tensor:
         """Validate and normalize user-provided diffusion timesteps."""
@@ -110,6 +122,7 @@ class DDPMAbstarct(Base):
         dim: int,
         n_steps: int = 1000,
         base_or_sample: torch.Tensor = None,
+        sigma_max: float = 1.0,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = 'cpu',
@@ -117,6 +130,10 @@ class DDPMAbstarct(Base):
         """Build the shared DDPM coefficients and posterior schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
+
+        if float(sigma_max) <= 0.0:
+            raise ValueError(f"sigma_max must be positive, got {sigma_max}.")
+        self._sigma_max = float(sigma_max)
 
         self._alpha_bar, self._alphas, self._betas, self._sqrt_post_var = cosine_schedule(n_steps,
                                                                                           device,
@@ -126,13 +143,13 @@ class DDPMAbstarct(Base):
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         """Draw Gaussian noise used as the DDPM source distribution."""
-        return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+        return self._sigma_max * torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
 
     def _latent(self, x_1: torch.Tensor, eps: torch.Tensor = None, t: int = None):
         """Construct noisy latent states and normalized times for DDPM training."""
         x_1 = x_1.to(device=self._device, dtype=self._fdtype)
-        if x_1.size(-1) != self._dim:
-            raise ValueError(f"Expected last dim {self._dim}, got {x_1.size(-1)}")
+        if tuple(x_1.shape[1:]) != self._sample_shape:
+            raise ValueError(f"Expected x1 shape (N, *{self._sample_shape}), got {tuple(x_1.shape)}")
 
         n_samples = x_1.size(0)
         if t is None:
@@ -149,6 +166,7 @@ class DDPMAbstarct(Base):
         if eps.shape != x_1.shape:
             raise ValueError(f"eps must have shape {tuple(x_1.shape)}, got {tuple(eps.shape)}")
 
+        a_bar_t = self._expand_batch_scalar(a_bar_t, x_1)
         x_t = torch.sqrt(a_bar_t) * x_1 + torch.sqrt(1.0 - a_bar_t) * eps
 
         return x_1, x_t, eps, t_norm, t_idx, a_bar_t
@@ -174,7 +192,7 @@ class DDPMAbstarct(Base):
 
             x = (x - self._betas[t_idx] / torch.sqrt(1.0 - self._alpha_bar[t_idx]) * eps_hat) / torch.sqrt(self._alphas[t_idx])
             if t > 1:
-                x = x + self._sqrt_post_var[t_idx] * torch.randn_like(x)
+                x = x + self._sigma_max * self._sqrt_post_var[t_idx] * torch.randn_like(x)
 
             l_x.append(x)
 
@@ -264,8 +282,8 @@ class FlowAbstract(Base):
     def _latent(self, x_1: torch.Tensor, x_0: torch.Tensor = None, t: int = None) -> torch.Tensor:
         """Prepare paired source/target samples and a time batch for flow losses."""
         x_1 = x_1.to(device=self._device, dtype=self._fdtype)
-        if x_1.ndim != 2 or x_1.size(1) != self._dim:
-            raise ValueError(f"Expected x1 shape (N,{self._dim}), got {tuple(x_1.shape)}")
+        if tuple(x_1.shape[1:]) != self._sample_shape:
+            raise ValueError(f"Expected x1 shape (N, *{self._sample_shape}), got {tuple(x_1.shape)}")
 
         n_samples = x_1.size(0)
         if t is None:  # default to uniform sampling
@@ -317,9 +335,31 @@ class FlowAbstract(Base):
 class GaussianFlowAbstract(FlowAbstract):
     """Abstract Gaussian source flow (Flow Matching)."""
 
+    def __init__(
+        self,
+        net: torch.nn.Module,
+        dim: int,
+        n_steps: int = 1000,
+        t_min: float = 0.01,
+        t_max: float = 0.99,
+        base_or_sample: torch.Tensor = None,
+        sigma_max: float = 1.0,
+        fdtype: torch.dtype = torch.float32,
+        idtype: torch.dtype = torch.int32,
+        device: torch.device = "cpu",
+    ):
+        """Initialize a Gaussian-source flow with a configurable source scale."""
+        super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
+                         base_or_sample=base_or_sample, fdtype=fdtype, idtype=idtype,
+                         device=device)
+
+        if float(sigma_max) <= 0.0:
+            raise ValueError(f"sigma_max must be positive, got {sigma_max}.")
+        self._sigma_max = float(sigma_max)
+
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         """Draw Gaussian source samples for Gaussian flow models."""
-        return sample_gaussian(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+        return self._sigma_max * torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
 
     def _loss_fn(self, u_t: torch.Tensor, v_t: torch.Tensor, t: int) -> torch.Tensor:
         """Compute pointwise mean-squared velocity errors."""

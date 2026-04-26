@@ -1,11 +1,13 @@
 """Adapters around vendored third-party generative backends."""
 
 import importlib
+import importlib.util
 import os
 import sys
 import warnings
 from pathlib import Path
 from typing import Optional
+import types
 import torch
 import torch.nn.functional as F
 from ._abs import Base
@@ -42,6 +44,26 @@ def _vendor_root(package_root: Optional[str], vendor_name: str) -> Path:
     return Path(__file__).resolve().parent / "_vendor" / vendor_name
 
 
+def _load_vendor_module(module_name: str, file_path: Path) -> types.ModuleType:
+    """Load one vendored module directly from a file path."""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load {module_name!r} from {file_path}.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _install_package_stub(package_name: str, package_path: Path, saved_modules: dict[str, object]) -> None:
+    """Install a minimal package stub so file-loaded modules can resolve relatives."""
+    if package_name not in saved_modules:
+        saved_modules[package_name] = sys.modules.get(package_name, None)
+    stub = types.ModuleType(package_name)
+    stub.__path__ = [str(package_path)]
+    sys.modules[package_name] = stub
+
+
 def _import_vendor(
     package_root: Optional[str],
     vendor_name: str,
@@ -72,6 +94,59 @@ def _import_vendor(
             for name in loaded_modules:
                 if any(name == prefix or name.startswith(f"{prefix}.") for prefix in cleanup_prefixes):
                     sys.modules.pop(name, None)
+
+
+def _import_tedm_vendor(package_root: Optional[str]):
+    """Import TEDM components without running the vendor package initializers."""
+    root = _vendor_root(package_root, "physicsnemo")
+    package_dir = root / "physicsnemo" if (root / "physicsnemo").exists() else root
+    modules_before = set(sys.modules)
+    saved_modules: dict[str, object] = {}
+
+    def _first_existing(*paths: Path) -> Path:
+        for path in paths:
+            if path.exists():
+                return path
+        raise FileNotFoundError(f"None of the TEDM vendor files exist under {root}.")
+
+    try:
+        _install_package_stub("physicsnemo", package_dir, saved_modules)
+        _install_package_stub("physicsnemo.diffusion", package_dir / "diffusion", saved_modules)
+
+        noise_path = _first_existing(
+            package_dir / "diffusion" / "noise_schedulers" / "noise_schedulers.py",
+            package_dir / "diffusion" / "noise_schedulers.py",
+        )
+        noise_module = _load_vendor_module("physicsnemo.diffusion.noise_schedulers", noise_path)
+
+        preconditioner_path = _first_existing(
+            package_dir / "diffusion" / "preconditioners" / "preconditioners.py",
+            package_dir / "diffusion" / "preconditioners.py",
+        )
+        preconditioner_module = _load_vendor_module("physicsnemo.diffusion.preconditioners", preconditioner_path)
+
+        sampler_path = _first_existing(
+            package_dir / "diffusion" / "samplers" / "samplers.py",
+            package_dir / "diffusion" / "samplers.py",
+        )
+        _install_package_stub("physicsnemo.diffusion.samplers", sampler_path.parent, saved_modules)
+        sampler_module = _load_vendor_module("physicsnemo.diffusion.samplers.samplers", sampler_path)
+
+        return (
+            noise_module.StudentTEDMNoiseScheduler,
+            preconditioner_module.EDMPreconditioner,
+            sampler_module.sample,
+        )
+    finally:
+        loaded_modules = set(sys.modules) - modules_before
+        for name in loaded_modules:
+            if name == "physicsnemo" or name.startswith("physicsnemo."):
+                sys.modules.pop(name, None)
+        for name, previous in saved_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 def _net_device_dtype(model: torch.nn.Module, fallback: torch.Tensor) -> tuple[torch.device, torch.dtype]:
@@ -476,7 +551,7 @@ class TEDMOrigin(Base):
         if float(p_std) <= 0.0:
             raise ValueError(f"p_std must be positive, got {p_std}.")
 
-        self._nu = int(nu)
+        self._nu = float(nu)
         self._sigma_min = float(sigma_min)
         self._sigma_max = float(sigma_max)
         self._rho = float(rho)
@@ -485,16 +560,7 @@ class TEDMOrigin(Base):
         self._p_std = float(p_std)
         self._solver = str(solver)
 
-        StudentTEDMNoiseScheduler, EDMPreconditioner, pn_sample = _import_vendor(
-            package_root,
-            "physicsnemo",
-            [
-                ("physicsnemo.diffusion.noise_schedulers", ("StudentTEDMNoiseScheduler",)),
-                ("physicsnemo.diffusion.preconditioners", ("EDMPreconditioner",)),
-                ("physicsnemo.diffusion.samplers", ("sample",)),
-            ],
-            cleanup_prefixes=("physicsnemo",),
-        )
+        StudentTEDMNoiseScheduler, EDMPreconditioner, pn_sample = _import_tedm_vendor(package_root)
         self._pn_sample = pn_sample
         self._scheduler = StudentTEDMNoiseScheduler(
             sigma_min=self._sigma_min,
@@ -512,7 +578,7 @@ class TEDMOrigin(Base):
 
     def _sample_source_default(self, n_samples: int) -> torch.Tensor:
         df = torch.tensor(float(self._scheduler.nu), device=self._device, dtype=self._fdtype)
-        return torch.distributions.StudentT(df=df).rsample((n_samples, self._dim)).to(device=self._device, dtype=self._fdtype)
+        return torch.distributions.StudentT(df=df).rsample((n_samples, *self._sample_shape)).to(device=self._device, dtype=self._fdtype)
 
     def _resolve_time(self, t, n_samples: int) -> torch.Tensor:
         if t is None:
@@ -534,8 +600,8 @@ class TEDMOrigin(Base):
 
     def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None, **kwargs) -> torch.Tensor:
         x = x.to(device=self._device, dtype=self._fdtype)
-        if x.ndim != 2 or x.size(1) != self._dim:
-            raise ValueError(f"x must have shape (B, {self._dim}), got {tuple(x.shape)}.")
+        if tuple(x.shape[1:]) != self._sample_shape:
+            raise ValueError(f"x must have shape (B, *{self._sample_shape}), got {tuple(x.shape)}.")
 
         t = self._resolve_time(t, x.size(0))
         if z is None:
@@ -544,13 +610,19 @@ class TEDMOrigin(Base):
             z = z.to(device=self._device, dtype=self._fdtype)
             if z.shape != x.shape:
                 raise ValueError(f"z must have shape {tuple(x.shape)}, got {tuple(z.shape)}.")
-            x_t = x + self._scheduler.sigma(t).unsqueeze(-1) * z
+            x_t = x + self._expand_batch_scalar(self._scheduler.sigma(t), x) * z
 
         x_hat = self._model(x_t, t)
         if x_hat.shape != x.shape:
             raise ValueError(f"Shape mismatch: x_hat={tuple(x_hat.shape)} vs x={tuple(x.shape)}")
 
-        w = self._scheduler.loss_weight(t).unsqueeze(-1)
+        w = self._scheduler.loss_weight(t)
+        if w.ndim == 1:
+            w = self._expand_batch_scalar(w, x)
+        elif w.ndim == 2 and x.ndim >= 3 and w.shape == (x.size(0), x.size(1)):
+            w = w.reshape(x.size(0), x.size(1), *([1] * (x.ndim - 2)))
+        else:
+            raise ValueError(f"loss_weight returned shape {tuple(w.shape)}, incompatible with x shape {tuple(x.shape)}.")
         return (w * F.mse_loss(x_hat, x, reduction="none")).mean()
 
     @torch.no_grad()
@@ -559,9 +631,10 @@ class TEDMOrigin(Base):
         t_steps = self._scheduler.timesteps(self._n_steps, device=self._device, dtype=self._fdtype)
         tN = t_steps[0].expand(n_samples)
         if self._base_or_sample is None:
-            x_init = self._scheduler.init_latents((self._dim,), tN, device=self._device, dtype=self._fdtype)
+            x_init = self._scheduler.init_latents(self._sample_shape, tN, device=self._device, dtype=self._fdtype)
         else:
-            x_init = self._scheduler.sigma(tN).unsqueeze(-1) * self._sample_source(n_samples)
+            source = self._sample_source(n_samples)
+            x_init = self._expand_batch_scalar(self._scheduler.sigma(tN), source) * source
         denoiser = self._scheduler.get_denoiser(x0_predictor=self._model)
         x = self._pn_sample(denoiser, x_init, self._scheduler, num_steps=self._n_steps, solver=self._solver)
         return x.to(device=self._device, dtype=self._fdtype)

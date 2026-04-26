@@ -166,23 +166,24 @@ class DLPMEps(Base):
             A = A.view(self._n_trial_A, 1, n_samples).expand(self._n_trial_A, self._n_trial_G, n_samples).reshape(-1)
             G = torch.randn(
                 self._n_trial_A * self._n_trial_G * n_samples,
-                self._dim,
+                *self._sample_shape,
                 device=self._device,
                 dtype=self._fdtype,
             )
+            scale = self._expand_batch_scalar(A, G).sqrt()
             if return_A:
-                return A.sqrt().unsqueeze(-1) * G, A
-            return A.sqrt().unsqueeze(-1) * G
+                return scale * G, A
+            return scale * G
 
         A = self._draw_A(n_samples).reshape(n_samples)
-        G = torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
-        return A.sqrt().unsqueeze(-1) * G
+        G = torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
+        return self._expand_batch_scalar(A, G).sqrt() * G
 
     def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
         """Evaluate unreduced DLPM epsilon losses with internal Monte Carlo sampling."""
         x_1 = x.to(device=self._device, dtype=self._fdtype)
-        if x_1.ndim != 2 or x_1.size(1) != self._dim:
-            raise ValueError(f"Expected x shape (N,{self._dim}), got {tuple(x.shape)}")
+        if tuple(x_1.shape[1:]) != self._sample_shape:
+            raise ValueError(f"Expected x shape (N, *{self._sample_shape}), got {tuple(x.shape)}")
         self._n = x_1.size(0)
 
         if z is not None:
@@ -193,15 +194,20 @@ class DLPMEps(Base):
         else:  # if t is given
             t = self._check_t(t, self._n)
 
-        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                                             # (_n_trial_A * _n_trial_G * n,)
-        t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)                                     # (_n_trial_A * _n_trial_G * n, 1)
+        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                                          # (_n_trial_A * _n_trial_G * n,)
+        t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)                                  # (_n_trial_A * _n_trial_G * n, 1)
 
-        eps = self._sample_source_default(self._n, expand_trials=True)                                                    # (_n_trial_A * _n_trial_G * n, dim)
+        eps = self._sample_source_default(self._n, expand_trials=True)                                                 # (_n_trial_A * _n_trial_G * n, dim)
 
-        gamma_1_t = self._gamma_1_t.index_select(0, t_e).unsqueeze(-1)                                                    # (_n_trial_A * _n_trial_G * n, 1)
-        sigma_1_t = self._sigma_1_t.index_select(0, t_e).unsqueeze(-1)                                                    # (_n_trial_A * _n_trial_G * n, 1)
-        x_1_e = x_1.view(1, 1, self._n, self._dim).expand(self._n_trial_A, self._n_trial_G, self._n, self._dim)
-        x_1_e = x_1_e.reshape(-1, self._dim)
+        x_1_e = x_1.view(1, 1, self._n, *self._sample_shape).expand(
+            self._n_trial_A,
+            self._n_trial_G,
+            self._n,
+            *self._sample_shape,
+        )
+        x_1_e = x_1_e.reshape(-1, *self._sample_shape)
+        gamma_1_t = self._expand_batch_scalar(self._gamma_1_t.index_select(0, t_e), x_1_e)
+        sigma_1_t = self._expand_batch_scalar(self._sigma_1_t.index_select(0, t_e), x_1_e)
 
         x_t = gamma_1_t * x_1_e + sigma_1_t * eps
 
@@ -236,10 +242,12 @@ class DLPMEps(Base):
             # NOTE see L276 in src/genkit/_vendor/DLPM/dlpm/methods/dlpm.py
             # NOTE We follow the released code rather than the paper here.
             eps_hat = self._net(x, t_norm)
-            x = (x - Gamma_t.unsqueeze(-1) * self._sigma_1_t[t] * eps_hat) / gamma_t
+            gamma_t_data = self._expand_batch_scalar(Gamma_t, x)
+            x = (x - gamma_t_data * self._sigma_1_t[t] * eps_hat) / gamma_t
 
             if t > 1:
-                x = x + Sigma_hat.sqrt().unsqueeze(-1) * torch.randn(n_samples, self._dim, device=self._device, dtype=self._fdtype)
+                innovation = torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
+                x = x + self._expand_batch_scalar(Sigma_hat.sqrt(), innovation) * innovation
 
             l_x.append(x)
 

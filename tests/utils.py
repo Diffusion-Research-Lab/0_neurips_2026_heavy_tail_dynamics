@@ -296,7 +296,7 @@ class StudentTEDMNoiseScheduler:
         return torch.full_like(t, self.sigma_data)
 
     def add_noise(self, x, t):
-        return x + self.sigma(t).unsqueeze(-1) * torch.ones_like(x)
+        return x + self.sigma(t).reshape(t.numel(), *([1] * (x.ndim - 1))) * torch.ones_like(x)
 
     def loss_weight(self, t):
         return torch.ones_like(t)
@@ -306,7 +306,8 @@ class StudentTEDMNoiseScheduler:
 
     def init_latents(self, shape, t, device=None, dtype=None):
         batch = int(t.numel())
-        return self.sigma(t).unsqueeze(-1) * torch.ones((batch,) + tuple(shape), device=device, dtype=dtype)
+        spatial_shape = tuple(shape)
+        return self.sigma(t).reshape(batch, *([1] * len(spatial_shape))) * torch.ones((batch,) + spatial_shape, device=device, dtype=dtype)
 
     def get_denoiser(self, x0_predictor):
         def denoiser(x, sigma=None, **kwargs):
@@ -334,6 +335,93 @@ class EDMPreconditioner(nn.Module):
     )
     _write(
         root / "physicsnemo" / "diffusion" / "samplers.py",
+        """
+def sample(denoiser, x, scheduler, num_steps=18, solver="edm_stochastic_heun"):
+    sigma = scheduler.timesteps(num_steps, device=x.device, dtype=x.dtype)[0].expand(x.size(0))
+    return denoiser(x, sigma)
+""",
+    )
+    return root
+
+
+def _make_tedm_vendor_package_layout(tmp_path: Path) -> Path:
+    root = tmp_path / "physicsnemo_vendor_pkg"
+    _write(root / "physicsnemo" / "__init__.py", "")
+    _write(root / "physicsnemo" / "diffusion" / "__init__.py", "")
+    _write(
+        root / "physicsnemo" / "diffusion" / "noise_schedulers" / "__init__.py",
+        "raise RuntimeError('noise_schedulers package initializer should not run')\n",
+    )
+    _write(
+        root / "physicsnemo" / "diffusion" / "noise_schedulers" / "noise_schedulers.py",
+        """
+import torch
+
+
+class StudentTEDMNoiseScheduler:
+    def __init__(self, sigma_min=0.002, sigma_max=80.0, rho=7.0, nu=10, sigma_data=0.5, P_mean=-1.2, P_std=1.2):
+        self.sigma_min = float(sigma_min)
+        self.sigma_max = float(sigma_max)
+        self.rho = float(rho)
+        self.nu = float(nu)
+        self.sigma_data = float(sigma_data)
+        self.P_mean = float(P_mean)
+        self.P_std = float(P_std)
+
+    def sample_time(self, batch_size, device=None, dtype=None):
+        return torch.full((int(batch_size),), 0.5, device=device, dtype=dtype)
+
+    def sigma(self, t):
+        return torch.full_like(t, self.sigma_data)
+
+    def add_noise(self, x, t):
+        return x + self.sigma(t).reshape(t.numel(), *([1] * (x.ndim - 1))) * torch.ones_like(x)
+
+    def loss_weight(self, t):
+        return torch.ones_like(t)
+
+    def timesteps(self, n_steps, device=None, dtype=None):
+        return torch.linspace(1.0, 0.0, int(n_steps), device=device, dtype=dtype)
+
+    def init_latents(self, shape, t, device=None, dtype=None):
+        batch = int(t.numel())
+        spatial_shape = tuple(shape)
+        return self.sigma(t).reshape(batch, *([1] * len(spatial_shape))) * torch.ones((batch,) + spatial_shape, device=device, dtype=dtype)
+
+    def get_denoiser(self, x0_predictor):
+        def denoiser(x, sigma=None, **kwargs):
+            if sigma is None:
+                sigma = torch.zeros(x.size(0), device=x.device, dtype=x.dtype)
+            return x0_predictor(x, sigma, **kwargs)
+        return denoiser
+""",
+    )
+    _write(
+        root / "physicsnemo" / "diffusion" / "preconditioners" / "__init__.py",
+        "raise RuntimeError('preconditioners package initializer should not run')\n",
+    )
+    _write(
+        root / "physicsnemo" / "diffusion" / "preconditioners" / "preconditioners.py",
+        """
+import torch.nn as nn
+
+
+class EDMPreconditioner(nn.Module):
+    def __init__(self, model, sigma_data=0.5):
+        super().__init__()
+        self.model = model
+        self.sigma_data = float(sigma_data)
+
+    def forward(self, x, t, condition=None, **kwargs):
+        return self.model(x, t, condition=condition, **kwargs)
+""",
+    )
+    _write(
+        root / "physicsnemo" / "diffusion" / "samplers" / "__init__.py",
+        "raise RuntimeError('samplers package initializer should not run')\n",
+    )
+    _write(
+        root / "physicsnemo" / "diffusion" / "samplers" / "samplers.py",
         """
 def sample(denoiser, x, scheduler, num_steps=18, solver="edm_stochastic_heun"):
     sigma = scheduler.timesteps(num_steps, device=x.device, dtype=x.dtype)[0].expand(x.size(0))

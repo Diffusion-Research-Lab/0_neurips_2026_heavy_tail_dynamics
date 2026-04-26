@@ -4,7 +4,18 @@ import pytest
 import torch
 from genkit.nn import MLPModel
 from genkit.thirdparty import DLPMEpsOrigin, FlowMatchingOrigin, ScoreSDEOrigin, TEDMOrigin
-from .utils import _make_dlpm_vendor, _make_flow_matching_vendor, _make_score_sde_vendor, _make_tedm_vendor
+from .utils import (
+    _make_dlpm_vendor,
+    _make_flow_matching_vendor,
+    _make_score_sde_vendor,
+    _make_tedm_vendor,
+    _make_tedm_vendor_package_layout,
+)
+
+
+class _ZeroNet(torch.nn.Module):
+    def forward(self, x, t, **kwargs):
+        return torch.zeros_like(x)
 
 
 def _run_smoke(model, *, dtype=torch.float32):
@@ -63,6 +74,35 @@ def test_tedm_origin_loss_and_sample(tmp_path):
         dim=2,
         n_steps=4,
         package_root=str(_make_tedm_vendor(tmp_path)),
+        fdtype=torch.float32,
+    )
+    _run_smoke(model)
+
+
+def test_tedm_origin_accepts_image_shaped_batches(tmp_path):
+    model = TEDMOrigin(
+        net=_ZeroNet(),
+        dim=(1, 4, 4),
+        n_steps=4,
+        package_root=str(_make_tedm_vendor(tmp_path)),
+        fdtype=torch.float32,
+    )
+    x = torch.randn(3, 1, 4, 4, dtype=torch.float32)
+
+    loss = model.loss(x)
+    sample = model.sample(2)
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss).item()
+    assert sample.shape == (2, 1, 4, 4)
+
+
+def test_tedm_origin_bypasses_vendor_package_initializers(tmp_path):
+    model = TEDMOrigin(
+        net=MLPModel(input_dim=2, width=8, depth=1),
+        dim=2,
+        n_steps=4,
+        package_root=str(_make_tedm_vendor_package_layout(tmp_path)),
         fdtype=torch.float32,
     )
     _run_smoke(model)

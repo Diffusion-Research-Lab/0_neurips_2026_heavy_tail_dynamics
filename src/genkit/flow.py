@@ -14,7 +14,8 @@ class GaussianFlowLinear(GaussianFlowAbstract):
         """Build linear-path flow targets and corresponding network predictions."""
         x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
-        x_t = (1.0 - t) * x_0 + t * x_1
+        t_data = self._expand_batch_scalar(t, x_0)
+        x_t = (1.0 - t_data) * x_0 + t_data * x_1
         v_t = x_1 - x_0
         v_t_hat = self._net(x_t, t)
 
@@ -52,14 +53,15 @@ class GaussianFlowOT(GaussianFlowAbstract):
         t_max: float = 0.95,
         sigma_min: float = 1e-5,
         base_or_sample: torch.Tensor = None,
+        sigma_max: float = 1.0,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
     ):
         """Initialize the OT-style Gaussian flow with a minimum variance floor."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
-                         base_or_sample=base_or_sample, fdtype=fdtype, idtype=idtype,
-                         device=device)
+                         base_or_sample=base_or_sample, sigma_max=sigma_max, fdtype=fdtype,
+                         idtype=idtype, device=device)
 
         if not (0.0 < sigma_min < 1.0):
             raise ValueError("`sigma_min` must be in (0,1).")
@@ -70,7 +72,8 @@ class GaussianFlowOT(GaussianFlowAbstract):
         """Build OT-path flow targets and corresponding network predictions."""
         x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
-        x_t = (1.0 - (1.0 - self._sigma_min) * t) * x_0 + t * x_1
+        t_data = self._expand_batch_scalar(t, x_0)
+        x_t = (1.0 - (1.0 - self._sigma_min) * t_data) * x_0 + t_data * x_1
         v_t = x_1 - (1.0 - self._sigma_min) * x_0
         v_t_hat = self._net(x_t, t)
 
@@ -108,14 +111,15 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         t_max: float = 0.95,
         cosine_s: float = 0.008,
         base_or_sample: torch.Tensor = None,
+        sigma_max: float = 1.0,
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
     ):
         """Initialize the VP-inspired Gaussian flow and its cosine schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
-                         base_or_sample=base_or_sample, fdtype=fdtype, idtype=idtype,
-                         device=device)
+                         base_or_sample=base_or_sample, sigma_max=sigma_max, fdtype=fdtype,
+                         idtype=idtype, device=device)
 
         self._s0 = float(cosine_s)
 
@@ -141,7 +145,7 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         """Build VP-path velocity targets and network predictions."""
         x_0, x_1, t = self._latent(x_1=x, x_0=z, t=t)
 
-        beta_s, abar, a, sigma = self._vp_coefs(t)
+        beta_s, abar, a, sigma = (self._expand_batch_scalar(value, x_0) for value in self._vp_coefs(t))
         x_t = a * x_1 + sigma * x_0
         v_t = -0.5 * beta_s * (abar * x_t - a * x_1) / (1.0 - abar).clamp_min(self._eps)
         v_t_hat = self._net(x_t, t)

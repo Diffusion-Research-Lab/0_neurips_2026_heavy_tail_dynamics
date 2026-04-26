@@ -61,6 +61,16 @@ def test_dlpmeps_sample_uses_vendor_terminal_sigma_index(monkeypatch):
     assert torch.allclose(out, expected, atol=2e-3, rtol=0.0)
 
 
+def test_dlpmeps_accepts_image_shaped_batches():
+    model = DLPMEps(net=_ZeroNet(), dim=(1, 4, 4), n_steps=4, device="cpu", fdtype=torch.float32)
+    x = torch.randn(3, 1, 4, 4)
+
+    loss = model.loss(x, t=0.5)
+
+    _assert_finite_scalar(loss)
+    assert model.sample(2).shape == (2, 1, 4, 4)
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("device", _devices())
 def test_dlpmeps_loss_accepts_integer_t(device, dtype):
