@@ -1,5 +1,6 @@
 """Private dataset helpers and registries."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 from typing import Any, Callable
 from urllib.request import urlretrieve
 import numpy as np
@@ -87,11 +89,11 @@ def _resolve_real_data_home() -> Path:
         candidates.append(Path(env_root).expanduser())
     work_root = os.getenv("WORK")
     if work_root:
-        candidates.append(Path(work_root).expanduser() / "flowbench" / "data")
+        candidates.append(Path(work_root).expanduser() / "flowbench_data")
     home_root = os.getenv("HOME")
     if home_root:
-        candidates.append(Path(home_root).expanduser() / ".cache" / "flowbench" / "data")
-    candidates.append(Path("/tmp") / "flowbench" / "data")
+        candidates.append(Path(home_root).expanduser() / ".cache" / "flowbench_data")
+    candidates.append(Path("/tmp") / "flowbench_data")
 
     seen: set[Path] = set()
     for candidate in candidates:
@@ -486,6 +488,15 @@ def _load_default_credit(**kwargs: Any) -> pd.DataFrame:
     return frame
 
 
+_hrrr_thread_local = threading.local()
+
+
+def _hrrr_session() -> requests.Session:
+    if not hasattr(_hrrr_thread_local, "session"):
+        _hrrr_thread_local.session = requests.Session()
+    return _hrrr_thread_local.session
+
+
 def _hrrr_apcp_byte_range(url: str, session: requests.Session) -> tuple[int, int | None] | None:
     """Return (start, end) byte range for the APCP 0-6h field, or None if unavailable."""
     try:
@@ -502,13 +513,63 @@ def _hrrr_apcp_byte_range(url: str, session: requests.Session) -> tuple[int, int
     return None
 
 
+def _hrrr_fetch_one(
+    dt: datetime,
+    tmp_root: Path,
+    lon_w: float,
+    lon_e: float,
+    lat_s: float,
+    lat_n: float,
+) -> np.ndarray | None:
+    """Download, subset, and decode one HRRR APCP timestamp. Returns None on any failure."""
+    session = _hrrr_session()
+    ymd = dt.strftime("%Y%m%d")
+    hh = dt.strftime("%H")
+    url = f"https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{ymd}/conus/hrrr.t{hh}z.wrfsfcf06.grib2"
+    tag = f"{ymd}{hh}"
+    raw_path = tmp_root / f"_raw_{tag}.grib2"
+    cut_path = tmp_root / f"_cut_{tag}.grib2"
+    try:
+        byte_range = _hrrr_apcp_byte_range(url, session)
+        if byte_range is None:
+            return None
+        start_byte, end_byte = byte_range
+        range_header = f"bytes={start_byte}-{end_byte}" if end_byte is not None else f"bytes={start_byte}-"
+        resp = session.get(url, headers={"Range": range_header}, timeout=120, stream=True)
+        resp.raise_for_status()
+        with open(raw_path, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                fh.write(chunk)
+        subprocess.run(
+            ["wgrib2", str(raw_path), "-small_grib", f"{lon_w}:{lon_e}", f"{lat_s}:{lat_n}", str(cut_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with xr.open_dataset(cut_path, engine="cfgrib", backend_kwargs={"indexpath": ""}) as ds:
+            var_name = next(iter(ds.data_vars))
+            values = np.asarray(ds.data_vars[var_name].squeeze(drop=True).values, dtype=np.float32)
+        height, width = values.shape
+        if height < 100 or width < 100:
+            return None
+        i0 = (height - 100) // 2
+        j0 = (width - 100) // 2
+        return np.nan_to_num(values[i0:i0 + 100, j0:j0 + 100], nan=0.0, posinf=0.0, neginf=0.0)
+    except Exception:
+        return None
+    finally:
+        raw_path.unlink(missing_ok=True)
+        cut_path.unlink(missing_ok=True)
+
+
 def _load_hrrr(**kwargs: Any) -> torch.Tensor:
     """Load HRRR accumulated precipitation fields as one image-like tensor."""
     data_home_arg = kwargs.pop("data_home", None)
     out_dir_arg = kwargs.pop("out_dir", None)
-    start = str(kwargs.pop("start", "2015-01-01 00:00:00"))
+    start = str(kwargs.pop("start", "2018-01-01 00:00:00"))
     end = str(kwargs.pop("end", "2025-09-30 18:00:00"))
     bbox = tuple(kwargs.pop("bbox", (-96.0, -91.5, 28.5, 32.0)))
+    n_workers = int(kwargs.pop("n_workers", 32))
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
         raise TypeError(f"Unexpected HRRR loader kwargs: {unexpected}.")
@@ -536,65 +597,39 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
     if shutil.which("wgrib2") is None:
         raise RuntimeError("HRRR loader requires wgrib2.")
 
-    current = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
-    end_time = datetime.fromisoformat(end).replace(tzinfo=timezone.utc)
-    if end_time < current:
+    t0 = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    t1 = datetime.fromisoformat(end).replace(tzinfo=timezone.utc)
+    if t1 < t0:
         raise ValueError(f"end must be >= start, got {end!r} < {start!r}.")
-    if current.hour not in {0, 6, 12, 18} or end_time.hour not in {0, 6, 12, 18}:
+    if t0.hour not in {0, 6, 12, 18} or t1.hour not in {0, 6, 12, 18}:
         raise ValueError("start/end hour must be one of 00, 06, 12, 18 UTC")
-    total_seconds = int((end_time - current).total_seconds())
+    total_seconds = int((t1 - t0).total_seconds())
     if total_seconds % 21600 != 0:
         raise ValueError("start/end must be spaced on a 6-hour HRRR grid.")
-    n_samples = total_seconds // 21600 + 1
 
-    frames: list[np.ndarray] = []
+    timestamps: list[datetime] = []
+    current = t0
+    while current <= t1:
+        timestamps.append(current)
+        current += timedelta(hours=6)
+
     lon_w, lon_e, lat_s, lat_n = bbox
-    with requests.Session() as session, \
-         tempfile.TemporaryDirectory(prefix="flowbench-hrrr-", dir=str(cache_root)) as tmp_dir:
+    frame_map: dict[datetime, np.ndarray] = {}
+    with tempfile.TemporaryDirectory(prefix="flowbench-hrrr-", dir=str(cache_root)) as tmp_dir:
         tmp_root = Path(tmp_dir)
-        raw_path = tmp_root / "_raw.grib2"
-        cut_path = tmp_root / "_cut.grib2"
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(_hrrr_fetch_one, dt, tmp_root, lon_w, lon_e, lat_s, lat_n): dt
+                for dt in timestamps
+            }
+            with tqdm(total=len(timestamps), desc="Fetching HRRR") as pbar:
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result is not None:
+                        frame_map[futures[future]] = result
+                    pbar.update(1)
 
-        for _ in tqdm(range(n_samples), desc="Fetching HRRR"):
-            ymd = current.strftime("%Y%m%d")
-            hh = current.strftime("%H")
-            url = f"https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{ymd}/conus/hrrr.t{hh}z.wrfsfcf06.grib2"
-            current += timedelta(hours=6)
-
-            byte_range = _hrrr_apcp_byte_range(url, session)
-            if byte_range is None:
-                continue
-            start_byte, end_byte = byte_range
-            range_header = f"bytes={start_byte}-{end_byte}" if end_byte is not None else f"bytes={start_byte}-"
-            try:
-                resp = session.get(url, headers={"Range": range_header}, timeout=120, stream=True)
-                resp.raise_for_status()
-                with open(raw_path, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                        fh.write(chunk)
-            except Exception:
-                continue
-
-            subprocess.run(
-                ["wgrib2", str(raw_path), "-small_grib", f"{lon_w}:{lon_e}", f"{lat_s}:{lat_n}", str(cut_path)],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            with xr.open_dataset(cut_path, engine="cfgrib", backend_kwargs={"indexpath": ""}) as ds:
-                var_name = next(iter(ds.data_vars))
-                values = np.asarray(ds.data_vars[var_name].squeeze(drop=True).values, dtype=np.float32)
-
-            height, width = values.shape
-            if height < 100 or width < 100:
-                raise ValueError(f"bbox too small: got {(height, width)}, need at least (100, 100)")
-
-            i0 = (height - 100) // 2
-            j0 = (width - 100) // 2
-            window = values[i0:i0 + 100, j0:j0 + 100]
-            frames.append(np.nan_to_num(window, nan=0.0, posinf=0.0, neginf=0.0))
-
+    frames = [frame_map[dt] for dt in sorted(frame_map)]
     fields = np.stack(frames, axis=0)[:, np.newaxis]
     tensor = torch.from_numpy(fields)
     torch.save(tensor, cache_path)

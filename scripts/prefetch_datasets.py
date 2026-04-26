@@ -13,7 +13,12 @@ from genkit.datasets import fetch_real_data, list_datasets, get_dataset_metadata
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download and cache all FlowBench real datasets.")
-    parser.add_argument("--data-root", type=Path, default=None, help="Cache root. Defaults to $WORK/flowbench/data, then $HOME/.cache/flowbench/data.")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="Cache root. Defaults to $WORK/flowbench_data, then $HOME/.cache/flowbench_data.",
+    )
     return parser.parse_args()
 
 

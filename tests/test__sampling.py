@@ -7,12 +7,16 @@ import pytest
 import torch
 from genkit._sampling import (
     sample_balanced_bimodal_gaussian,
+    sample_checker,
+    sample_exponential,
     sample_gaussian,
     sample_scaled_isotropic_alpha_stable,
     sample_scaled_scalar_alpha_stable,
     sample_spiral,
     sample_student_t,
     sample_unbalanced_highdim_gaussian_mixture,
+    _orthonormal_embedding,
+    _structured_mode_codebook,
 )
 
 
@@ -227,3 +231,56 @@ def test_bimodal_respects_device_cuda():
     torch.manual_seed(0)
     x = sample_balanced_bimodal_gaussian(1024, 2, device=torch.device("cuda"), dtype=torch.float32)
     assert x.device.type == "cuda"
+
+
+def test_alpha_stable_alpha_eq_2_returns_constant_2():
+    a = sample_scaled_scalar_alpha_stable(8, alpha=2.0, device="cpu", dtype=torch.float32)
+    assert a.shape == (8, 1)
+    assert (a == 2.0).all()
+
+
+def test_sample_checker_shape_and_finiteness():
+    torch.manual_seed(0)
+    x = sample_checker(n_samples=500, device="cpu", dtype=torch.float32)
+    assert x.shape == (500, 2)
+    assert torch.isfinite(x).all()
+
+
+def test_sample_exponential_valid_returns_positive():
+    torch.manual_seed(0)
+    x = sample_exponential(n_samples=200, dim=3, rate=2.0, device="cpu", dtype=torch.float32)
+    assert x.shape == (200, 3)
+    assert (x > 0).all()
+    assert torch.isfinite(x).all()
+
+
+def test_sample_exponential_nonpositive_rate_raises():
+    with pytest.raises(ValueError, match="rate must be > 0"):
+        sample_exponential(10, dim=2, rate=0.0)
+    with pytest.raises(ValueError, match="rate must be > 0"):
+        sample_exponential(10, dim=2, rate=-1.0)
+
+
+def test_highdim_mixture_n_modes_one_raises():
+    with pytest.raises(ValueError, match="n_modes"):
+        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=1)
+
+
+def test_highdim_mixture_negative_imbalance_tau_raises():
+    with pytest.raises(ValueError, match="imbalance_tau"):
+        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=4, imbalance_tau=-0.1)
+
+
+def test_highdim_mixture_nonpositive_mean_scale_raises():
+    with pytest.raises(ValueError, match="mean_scale"):
+        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=4, mean_scale=0.0)
+
+
+def test_orthonormal_embedding_rank_exceeds_dim_raises():
+    with pytest.raises(ValueError, match="rank"):
+        _orthonormal_embedding(dim=3, rank=5, device=torch.device("cpu"), dtype=torch.float32)
+
+
+def test_structured_mode_codebook_zero_rank_raises():
+    with pytest.raises(ValueError, match="rank"):
+        _structured_mode_codebook(n_modes=4, rank=0, device=torch.device("cpu"), dtype=torch.float32)

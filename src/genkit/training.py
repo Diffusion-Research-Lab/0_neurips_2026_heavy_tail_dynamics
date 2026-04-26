@@ -116,13 +116,17 @@ def _build_scheduler(
     lr_schedule: str,
     warmup_steps: int,
     total_steps: int,
+    cosine_eta_min_ratio: float = 0.0,
 ) -> torch.optim.lr_scheduler.LRScheduler:
     """Build a native PyTorch LR scheduler for the requested schedule."""
     main_steps = max(1, total_steps - warmup_steps)
     if lr_schedule in (None, "none", "constant"):
         main = torch.optim.lr_scheduler.ConstantLR(opt, factor=1.0, total_iters=main_steps)
     elif lr_schedule == "cosine":
-        main = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=main_steps, eta_min=0.0)
+        if not 0.0 <= cosine_eta_min_ratio < 1.0:
+            raise ValueError("cosine_eta_min_ratio must satisfy 0.0 <= cosine_eta_min_ratio < 1.0.")
+        eta_min = float(opt.param_groups[0]["lr"]) * float(cosine_eta_min_ratio)
+        main = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=main_steps, eta_min=eta_min)
     elif lr_schedule == "linear":
         main = torch.optim.lr_scheduler.LinearLR(opt, start_factor=1.0, end_factor=0.0, total_iters=main_steps)
     else:
@@ -201,6 +205,7 @@ def train(
     grad_clip_norm: float | None = None,
     lr_schedule: str = "cosine",
     warmup_steps: int = 0,
+    cosine_eta_min_ratio: float = 0.0,
     freq_logging: int = 10,
     ckpt_dir: str | None = None,
     ckpt_freq_epochs: int = 10,
@@ -221,7 +226,13 @@ def train(
     opt_cls = torch.optim.AdamW if use_adamw else torch.optim.Adam
     opt = opt_cls(net.parameters(), lr=lr, weight_decay=weight_decay)
     steps_per_epoch = max(len(loader), 1)
-    scheduler = _build_scheduler(opt, lr_schedule, warmup_steps, n_epochs * steps_per_epoch)
+    scheduler = _build_scheduler(
+        opt,
+        lr_schedule,
+        warmup_steps,
+        n_epochs * steps_per_epoch,
+        cosine_eta_min_ratio=cosine_eta_min_ratio,
+    )
 
     ckpt_path = Path(ckpt_dir) if ckpt_dir is not None else None
     if ckpt_path is not None:
@@ -232,6 +243,7 @@ def train(
     train_config = {
         "batch_size": batch_size, "n_epochs": n_epochs, "lr": lr,
         "lr_schedule": lr_schedule, "warmup_steps": warmup_steps,
+        "cosine_eta_min_ratio": cosine_eta_min_ratio,
         "weight_decay": weight_decay, "use_adamw": use_adamw,
         "grad_clip_norm": grad_clip_norm, "dtype": str(dtype), "device": str(device),
         "num_workers": num_workers, "persistent_workers": persistent_workers,
@@ -244,7 +256,8 @@ def train(
 
     logger.info(
         f"train | epochs={n_epochs} bs={batch_size} lr={lr:g} schedule={lr_schedule} "
-        f"warmup_steps={warmup_steps} opt={'AdamW' if use_adamw else 'Adam'} "
+        f"warmup_steps={warmup_steps} cosine_eta_min_ratio={cosine_eta_min_ratio:g} "
+        f"opt={'AdamW' if use_adamw else 'Adam'} "
         f"wd={weight_decay:g} device={device} dtype={dtype} ckpt_dir={ckpt_dir}"
     )
     _fire("on_train_start", target=target, source=source, config=train_config,

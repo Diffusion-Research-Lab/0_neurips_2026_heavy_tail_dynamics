@@ -6,7 +6,12 @@ from sklearn.utils import Bunch
 import pandas as pd
 import pytest
 import torch
-from genkit._datasets import _load_default_credit, _load_earthquakes, _load_hrrr, _load_wildfires, _resolve_real_data_home
+from genkit._datasets import (
+    _load_default_credit, _load_earthquakes, _load_hrrr, _load_wildfires,
+    _resolve_real_data_home, _decode_byte_string, _standardize_split_arrays,
+    _resolve_dataset, split_frame, split_tensor_data, _cache_remote_text_file,
+    ALL_DATASETS,
+)
 from genkit.datasets import fetch_real_data, fetch_synthetic_data, get_dataset_metadata, list_datasets
 
 
@@ -79,7 +84,7 @@ def test_resolve_real_data_home_prefers_work(tmp_path, monkeypatch):
 
     resolved = _resolve_real_data_home()
 
-    assert resolved == work_root / "flowbench" / "data"
+    assert resolved == work_root / "flowbench_data"
 
 
 def test_resolve_real_data_home_uses_home_when_work_is_missing(tmp_path, monkeypatch):
@@ -89,7 +94,7 @@ def test_resolve_real_data_home_uses_home_when_work_is_missing(tmp_path, monkeyp
 
     resolved = _resolve_real_data_home()
 
-    assert resolved == home_root / ".cache" / "flowbench" / "data"
+    assert resolved == home_root / ".cache" / "flowbench_data"
 
 
 def test_load_earthquakes_uses_cached_file(tmp_path, monkeypatch):
@@ -173,8 +178,10 @@ def test_load_hrrr_saves_and_reuses_cache(tmp_path, monkeypatch):
         import subprocess as _sp
         return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
 
+    _fake_session = _FakeSession()
     monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("genkit._datasets.requests.Session", _FakeSession)
+    monkeypatch.setattr("genkit._datasets._hrrr_session", lambda: _fake_session)
     monkeypatch.setattr("genkit._datasets.subprocess.run", _fake_run)
     monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: _FakeDataset(values))
 
@@ -309,3 +316,98 @@ def test_unbalanced_bimodal_gaussian_metadata_exposes_legacy_alias():
 def test_fetch_synthetic_data_rejects_real_dataset_name():
     with pytest.raises(ValueError, match="expected 'synthetic'"):
         fetch_synthetic_data("default_credit", n_samples=8)
+
+
+def test_fetch_synthetic_data_unknown_name_raises_key_error():
+    with pytest.raises(KeyError, match="no_such_dataset"):
+        fetch_synthetic_data("no_such_dataset")
+
+
+def test_decode_byte_string_decodes_bytes_to_str():
+    assert _decode_byte_string(b"hello") == "hello"
+
+
+def test_decode_byte_string_passes_through_non_bytes():
+    assert _decode_byte_string("hello") == "hello"
+    assert _decode_byte_string(42) == 42
+
+
+def test_resolve_real_data_home_flowbench_data_home_takes_precedence(tmp_path, monkeypatch):
+    custom = tmp_path / "custom_root"
+    monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(custom))
+    monkeypatch.setenv("WORK", str(tmp_path / "work"))
+    resolved = _resolve_real_data_home()
+    assert resolved == custom
+    assert custom.exists()
+
+
+def test_split_frame_chronological_preserves_temporal_order():
+    frame = pd.DataFrame({"x": list(range(20))})
+    train, val, test = split_frame(
+        frame, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological"
+    )
+    assert int(train[-1, 0]) < int(val[0, 0])
+    assert int(val[-1, 0]) < int(test[0, 0])
+
+
+def test_split_frame_chronological_too_small_raises():
+    # 3 rows with val/test=0.2 each: floor(0.2*3)=0 → empty val/test split
+    frame = pd.DataFrame({"x": [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError, match="empty split"):
+        split_frame(frame, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological")
+
+
+def test_split_frame_invalid_split_mode_raises():
+    frame = pd.DataFrame({"x": list(range(10))})
+    with pytest.raises(ValueError, match="split_mode"):
+        split_frame(frame, val_size=0.2, test_size=0.2, random_state=0, split_mode="bad_mode")
+
+
+def test_standardize_split_arrays_zero_variance_column_does_not_produce_nan():
+    train = np.array([[1.0, 0.0], [1.0, 1.0], [1.0, 2.0]])
+    val = np.array([[1.0, 3.0]])
+    test = np.array([[1.0, -1.0]])
+    tr, v, te = _standardize_split_arrays(train, val, test)
+    assert np.isfinite(tr).all()
+    assert np.isfinite(v).all()
+    assert np.isfinite(te).all()
+    # constant column → mean=1, std clamped to 1 → (1-1)/1 = 0
+    assert (tr[:, 0] == 0.0).all()
+
+
+def test_resolve_dataset_type_mismatch_raises_value_error():
+    with pytest.raises(ValueError, match="expected 'real'"):
+        _resolve_dataset("gaussian", ALL_DATASETS, dataset_type="real")
+
+
+def test_split_tensor_data_chronological_preserves_leading_order():
+    data = torch.arange(10, dtype=torch.float32).unsqueeze(1)
+    train, val, test = split_tensor_data(
+        data, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological"
+    )
+    assert float(train[-1, 0]) < float(val[0, 0])
+    assert float(val[-1, 0]) < float(test[0, 0])
+
+
+def test_fetch_real_data_n_samples_exceeding_available_warns(monkeypatch):
+    small_df = pd.DataFrame({"x": list(range(6)), "y": list(range(6, 12))})
+    fake_entry = SimpleNamespace(
+        loader=lambda **kw: small_df,
+        split_mode="random",
+        dataset_type="real",
+        standardize_default=False,
+    )
+    monkeypatch.setattr("genkit.datasets._resolve_dataset", lambda *a, **kw: fake_entry)
+    with pytest.warns(UserWarning, match="exceeds available"):
+        fetch_real_data("anything", n_samples=100, val_size=0.2, test_size=0.2)
+
+
+def test_cache_remote_text_file_cache_hit_skips_download(tmp_path, monkeypatch):
+    cached = tmp_path / "data.txt"
+    cached.write_text("1.0\n2.0\n")
+    monkeypatch.setattr(
+        "genkit._datasets.urlretrieve",
+        lambda *a, **kw: pytest.fail("should not download when cached"),
+    )
+    result = _cache_remote_text_file("http://example.com/data.txt", data_home=tmp_path, filename="data.txt")
+    assert result == cached
