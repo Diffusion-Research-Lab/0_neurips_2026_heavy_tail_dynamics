@@ -4,6 +4,7 @@ import json
 import numpy as np
 import os
 from types import SimpleNamespace
+from datetime import datetime
 from sklearn.utils import Bunch
 import pandas as pd
 import pytest
@@ -11,6 +12,7 @@ import torch
 from genkit._datasets import (
     DatasetPayload,
     _load_default_credit, _load_earthquakes, _load_hrrr, _load_lvis, _load_wildfires,
+    _hrrr_cache_path,
     _resolve_real_data_home, _decode_byte_string, _standardize_split_arrays,
     _resolve_dataset, split_frame, split_tensor_data, _cache_remote_text_file,
     ALL_DATASETS,
@@ -248,6 +250,215 @@ def test_load_hrrr_saves_and_reuses_cache(tmp_path, monkeypatch):
     assert torch.equal(cached, loaded)
 
 
+def test_load_hrrr_resumes_from_partial_cache(tmp_path, monkeypatch):
+    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
+
+    class _FakeVar:
+        def __init__(self, array):
+            self._array = array
+
+        def squeeze(self, drop=True):
+            return self
+
+        @property
+        def values(self):
+            return self._array
+
+    class _FakeDataset:
+        def __init__(self, array):
+            self.data_vars = {"apcp": _FakeVar(array)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    _FAKE_IDX = "1:0:d=2014100100:APCP:surface:0-1 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
+
+    class _FakeResponse:
+        def __init__(self, text="", content=b""):
+            self.text = text
+            self.ok = True
+            self.status_code = 200
+            self._content = content
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=None):
+            yield self._content
+
+    class _FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            if url.endswith(".idx"):
+                return _FakeResponse(text=_FAKE_IDX)
+            return _FakeResponse(content=b"")
+
+    subprocess_calls = []
+
+    def _fake_run(*args, **kwargs):
+        cmd = args[0]
+        subprocess_calls.append(cmd)
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    cache_root = tmp_path
+    cache_path = _hrrr_cache_path(
+        cache_root,
+        start=datetime(2014, 10, 1, 0),
+        end=datetime(2014, 10, 1, 2),
+        bbox=(-96.0, -91.5, 28.5, 32.0),
+        step_hours=1,
+        forecast_hours=(1,),
+    )
+    torch.save(
+        {
+            "timestamps": ["2014-10-01T00:00:00Z"],
+            "frames": torch.from_numpy(values).reshape(1, 1, 100, 100),
+        },
+        cache_path,
+    )
+
+    _fake_session = _FakeSession()
+    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("genkit._datasets.requests.Session", _FakeSession)
+    monkeypatch.setattr("genkit._datasets._hrrr_session", lambda: _fake_session)
+    monkeypatch.setattr("genkit._datasets.subprocess.run", _fake_run)
+    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: _FakeDataset(values))
+
+    loaded = _load_hrrr(
+        data_home=cache_root,
+        start="2014-10-01 00:00:00",
+        end="2014-10-01 02:00:00",
+    )
+
+    assert loaded.shape == (3, 1, 100, 100)
+    assert len(subprocess_calls) == 2
+    assert cache_path.exists()
+
+
+def test_load_hrrr_returns_immediately_when_cache_has_requested_n_samples(tmp_path, monkeypatch):
+    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
+
+    cache_path = _hrrr_cache_path(
+        tmp_path,
+        start=datetime(2014, 10, 1, 0),
+        end=datetime(2014, 10, 1, 2),
+        bbox=(-96.0, -91.5, 28.5, 32.0),
+        step_hours=1,
+        forecast_hours=(1,),
+    )
+    torch.save(
+        {
+            "timestamps": ["2014-10-01T00:00:00Z", "2014-10-01T01:00:00Z"],
+            "frames": torch.from_numpy(np.stack([values, values + 1], axis=0)[:, np.newaxis]),
+        },
+        cache_path,
+    )
+
+    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("genkit._datasets.subprocess.run", lambda *args, **kwargs: pytest.fail("should not fetch more frames"))
+    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: pytest.fail("should not fetch more frames"))
+
+    loaded = _load_hrrr(
+        data_home=tmp_path,
+        start="2014-10-01 00:00:00",
+        end="2014-10-01 02:00:00",
+        n_samples=2,
+    )
+
+    assert loaded.shape == (2, 1, 100, 100)
+    assert torch.equal(loaded[0, 0], torch.from_numpy(values))
+    assert torch.equal(loaded[1, 0], torch.from_numpy(values + 1))
+    assert cache_path.exists()
+
+
+def test_load_hrrr_fetches_only_missing_target_samples(tmp_path, monkeypatch):
+    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
+
+    class _FakeVar:
+        def __init__(self, array):
+            self._array = array
+
+        def squeeze(self, drop=True):
+            return self
+
+        @property
+        def values(self):
+            return self._array
+
+    class _FakeDataset:
+        def __init__(self, array):
+            self.data_vars = {"apcp": _FakeVar(array)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeResponse:
+        text = "1:0:d=2014100100:APCP:surface:0-1 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
+        ok = True
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=None):
+            yield b""
+
+    class _FakeSession:
+        def get(self, url, **kwargs):
+            return _FakeResponse()
+
+    cache_path = _hrrr_cache_path(
+        tmp_path,
+        start=datetime(2014, 10, 1, 0),
+        end=datetime(2014, 10, 1, 2),
+        bbox=(-96.0, -91.5, 28.5, 32.0),
+        step_hours=1,
+        forecast_hours=(1,),
+    )
+    torch.save(
+        {
+            "timestamps": ["2014-10-01T00:00:00Z"],
+            "frames": torch.from_numpy(values).reshape(1, 1, 100, 100),
+        },
+        cache_path,
+    )
+
+    subprocess_calls = []
+
+    def _fake_run(*args, **kwargs):
+        subprocess_calls.append(args[0])
+        import subprocess as _sp
+        return _sp.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("genkit._datasets._hrrr_session", lambda: _FakeSession())
+    monkeypatch.setattr("genkit._datasets.subprocess.run", _fake_run)
+    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: _FakeDataset(values + 1))
+
+    loaded = _load_hrrr(
+        data_home=tmp_path,
+        start="2014-10-01 00:00:00",
+        end="2014-10-01 02:00:00",
+        n_samples=2,
+        n_workers=8,
+    )
+
+    assert loaded.shape == (2, 1, 100, 100)
+    assert len(subprocess_calls) == 1
+
+
 def test_fetch_real_data_supports_hrrr_tensor_dataset(tmp_path):
     def _fake_loader(**kwargs):
         assert kwargs["data_home"] == tmp_path
@@ -255,7 +466,7 @@ def test_fetch_real_data_supports_hrrr_tensor_dataset(tmp_path):
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        "genkit.datasets._resolve_dataset",
+        "genkit.datasets._dataset._resolve_dataset",
         lambda target_data, all_datasets, dataset_type=None: SimpleNamespace(
             loader=_fake_loader,
             split_mode="random",
@@ -617,7 +828,7 @@ def test_fetch_real_data_n_samples_exceeding_available_warns(monkeypatch):
         dataset_type="real",
         standardize_default=False,
     )
-    monkeypatch.setattr("genkit.datasets._resolve_dataset", lambda *a, **kw: fake_entry)
+    monkeypatch.setattr("genkit.datasets._dataset._resolve_dataset", lambda *a, **kw: fake_entry)
     with pytest.warns(UserWarning, match="exceeds available"):
         fetch_real_data("anything", n_samples=100, val_size=0.2, test_size=0.2)
 

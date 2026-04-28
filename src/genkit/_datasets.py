@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 import tempfile
 import threading
 from typing import Any, Callable
@@ -1013,7 +1014,7 @@ def _hrrr_cache_path(
 ) -> Path:
     """Build a cache filename that changes when the requested HRRR grid changes."""
     payload = {
-        "version": 2,
+        "version": 3,
         "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "bbox": [round(float(value), 5) for value in bbox],
@@ -1027,6 +1028,46 @@ def _hrrr_cache_path(
         f"hrrr_apcp_100x100_{start:%Y%m%d%H}_{end:%Y%m%d%H}"
         f"_step{int(step_hours):02d}_f{'-'.join(f'{hour:02d}' for hour in forecast_hours)}_{digest}.pt"
     )
+
+
+def _hrrr_key(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_hrrr_cache(cache_path: Path) -> dict[str, np.ndarray]:
+    """Load the resumable HRRR cache as timestamp -> frame."""
+    if not cache_path.exists():
+        return {}
+
+    state = torch.load(cache_path, map_location="cpu", weights_only=False)
+    if not isinstance(state, dict) or "timestamps" not in state or "frames" not in state:
+        raise ValueError(f"Unexpected HRRR cache format in {cache_path}.")
+
+    timestamps = [str(value) for value in state["timestamps"]]
+    frames = torch.as_tensor(state["frames"], dtype=torch.float32)
+    if frames.ndim != 4 or tuple(frames.shape[1:]) != (1, 100, 100) or len(timestamps) != frames.shape[0]:
+        raise ValueError(f"Unexpected HRRR cache shape in {cache_path}.")
+
+    frame_map: dict[str, np.ndarray] = {}
+    for timestamp, frame in zip(timestamps, frames[:, 0]):
+        frame_map[timestamp] = frame.numpy()
+    return frame_map
+
+
+def _hrrr_tensor(timestamp_keys: list[str], frame_map: dict[str, np.ndarray], max_samples: int | None = None) -> tuple[list[str], torch.Tensor]:
+    keys = [key for key in timestamp_keys if key in frame_map]
+    if max_samples is not None:
+        keys = keys[:max_samples]
+    frames = np.stack([frame_map[key] for key in keys], axis=0)[:, np.newaxis]
+    return keys, torch.from_numpy(frames)
+
+
+def _save_hrrr_cache(cache_path: Path, timestamp_keys: list[str], frame_map: dict[str, np.ndarray]) -> None:
+    """Atomically persist the current HRRR fetch progress."""
+    keys, tensor = _hrrr_tensor(timestamp_keys, frame_map)
+    tmp_path = cache_path.with_name(f"{cache_path.name}.tmp")
+    torch.save({"timestamps": keys, "frames": tensor}, tmp_path)
+    os.replace(tmp_path, cache_path)
 
 
 def _hrrr_fetch_one(
@@ -1095,6 +1136,9 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
     forecast_hours_raw = kwargs.pop("forecast_hours", None)
     forecast_hour_raw = kwargs.pop("forecast_hour", 1)
     n_workers = int(kwargs.pop("n_workers", 32))
+    n_samples_raw = kwargs.pop("n_samples", None)
+    checkpoint_every = int(kwargs.pop("checkpoint_every", 64))
+    checkpoint_seconds = int(kwargs.pop("checkpoint_seconds", 300))
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
         raise TypeError(f"Unexpected HRRR loader kwargs: {unexpected}.")
@@ -1113,6 +1157,13 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
         raise ValueError("forecast_hours must contain at least one forecast hour.")
     if any(hour <= 0 for hour in forecast_hours):
         raise ValueError(f"forecast_hours must be positive, got {forecast_hours}.")
+    n_samples = None if n_samples_raw is None else int(n_samples_raw)
+    if n_samples is not None and n_samples < 1:
+        raise ValueError(f"n_samples must be >= 1, got {n_samples}.")
+    if checkpoint_every < 1:
+        raise ValueError(f"checkpoint_every must be >= 1, got {checkpoint_every}.")
+    if checkpoint_seconds < 0:
+        raise ValueError(f"checkpoint_seconds must be >= 0, got {checkpoint_seconds}.")
 
     cache_root_arg = data_home_arg if data_home_arg is not None else out_dir_arg
     cache_root = Path(cache_root_arg).expanduser() if cache_root_arg is not None else _resolve_real_data_home() / "hrrr"
@@ -1135,46 +1186,77 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
         step_hours=step_hours,
         forecast_hours=forecast_hours,
     )
-    cache_candidates = [cache_path]
-    if (start == "2018-01-01 00:00:00" and end == "2025-09-30 18:00:00" and step_hours == 6 and forecast_hours == (6,)):
-        cache_candidates.extend([cache_root / "hrrr.pt", cache_root / "hrrr_apcp_100x100.pt"])
-    for path in cache_candidates:
-        if not path.exists():
-            continue
-        cached = torch.as_tensor(torch.load(path, map_location="cpu"))
-        if cached.ndim == 3:
-            cached = cached.unsqueeze(1)
-        if cached.ndim != 4 or tuple(cached.shape[1:]) != (1, 100, 100):
-            raise ValueError(f"Unexpected cached HRRR tensor shape {tuple(cached.shape)} in {path}.")
-        cached = cached.to(device="cpu", dtype=torch.float32)
-        if path != cache_path:
-            torch.save(cached, cache_path)
-        return cached
-
-    if shutil.which("wgrib2") is None:
-        raise RuntimeError("HRRR loader requires wgrib2.")
-
     timestamps: list[datetime] = []
     current = t0
     while current <= t1:
         timestamps.append(current)
         current += timedelta(hours=step_hours)
+    timestamp_keys = [_hrrr_key(dt) for dt in timestamps]
 
     lon_w, lon_e, lat_s, lat_n = bbox
-    frame_map: dict[datetime, np.ndarray] = {}
+    frame_map = _load_hrrr_cache(cache_path)
+    target_samples = n_samples or len(timestamp_keys)
+    if len(frame_map) >= target_samples or all(key in frame_map for key in timestamp_keys):
+        _, tensor = _hrrr_tensor(timestamp_keys, frame_map, max_samples=target_samples)
+        return tensor
+
+    if shutil.which("wgrib2") is None:
+        raise RuntimeError("HRRR loader requires wgrib2.")
+
+    pending_timestamps = [dt for dt, key in zip(timestamps, timestamp_keys) if key not in frame_map]
     with tempfile.TemporaryDirectory(prefix="flowbench-hrrr-", dir=str(cache_root)) as tmp_dir:
         tmp_root = Path(tmp_dir)
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            futures = {
-                executor.submit(_hrrr_fetch_one, dt, tmp_root, lon_w, lon_e, lat_s, lat_n, forecast_hours): dt
-                for dt in timestamps
-            }
-            with tqdm(total=len(timestamps), desc="Fetching HRRR") as pbar:
-                for future in as_completed(futures):
+            pending_iter = iter(pending_timestamps)
+            futures: dict[Any, datetime] = {}
+            saved_since_checkpoint = 0
+            tried = 0
+
+            def submit_next() -> bool:
+                if n_samples is not None and len(futures) >= n_samples - len(frame_map):
+                    return False
+                try:
+                    dt = next(pending_iter)
+                except StopIteration:
+                    return False
+                futures[executor.submit(_hrrr_fetch_one, dt, tmp_root, lon_w, lon_e, lat_s, lat_n, forecast_hours)] = dt
+                return True
+
+            while len(futures) < n_workers and submit_next():
+                pass
+
+            with tqdm(total=target_samples, initial=min(len(frame_map), target_samples), desc="Fetching HRRR") as pbar:
+                last_checkpoint = time.monotonic()
+                while futures and len(frame_map) < target_samples:
+                    future = next(as_completed(futures))
+                    dt = futures.pop(future)
+                    key = _hrrr_key(dt)
+                    before = min(len(frame_map), target_samples)
                     result = future.result()
+                    tried += 1
                     if result is not None:
-                        frame_map[futures[future]] = result
-                    pbar.update(1)
+                        frame_map[key] = result
+                        saved_since_checkpoint += 1
+                    after = min(len(frame_map), target_samples)
+                    if after > before:
+                        pbar.update(after - before)
+                    elif n_samples is None:
+                        pbar.update(1)
+                    pbar.set_postfix(saved=min(len(frame_map), target_samples), tried=tried)
+
+                    should_checkpoint = saved_since_checkpoint >= checkpoint_every
+                    if checkpoint_seconds > 0:
+                        should_checkpoint = should_checkpoint or (time.monotonic() - last_checkpoint) >= checkpoint_seconds
+                    if should_checkpoint and frame_map:
+                        _save_hrrr_cache(cache_path, timestamp_keys, frame_map)
+                        saved_since_checkpoint = 0
+                        last_checkpoint = time.monotonic()
+
+                    while len(futures) < n_workers and len(frame_map) < target_samples and submit_next():
+                        pass
+
+                for future in futures:
+                    future.cancel()
 
     if not frame_map:
         raise RuntimeError(
@@ -1182,16 +1264,19 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
             f"Requested {len(timestamps)} timestamps from {start!r} to {end!r} "
             f"with step_hours={step_hours} and forecast_hours={forecast_hours}."
         )
-    if len(frame_map) < len(timestamps):
+    if n_samples is None and len(frame_map) < len(timestamps):
         warnings.warn(
             f"Fetched {len(frame_map)} / {len(timestamps)} HRRR frames; missing timestamps were skipped.",
             stacklevel=2,
         )
+    if n_samples is not None and len(frame_map) < n_samples:
+        warnings.warn(
+            f"Fetched {len(frame_map)} / {n_samples} requested HRRR frames; missing timestamps were skipped.",
+            stacklevel=2,
+        )
 
-    frames = [frame_map[dt] for dt in sorted(frame_map)]
-    fields = np.stack(frames, axis=0)[:, np.newaxis]
-    tensor = torch.from_numpy(fields)
-    torch.save(tensor, cache_path)
+    _save_hrrr_cache(cache_path, timestamp_keys, frame_map)
+    _, tensor = _hrrr_tensor(timestamp_keys, frame_map, max_samples=target_samples)
     return tensor
 
 

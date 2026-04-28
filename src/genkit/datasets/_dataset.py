@@ -1,11 +1,13 @@
-"""Public dataset."""
+"""Public dataset implementation."""
 
 from pathlib import Path
-import warnings
 from typing import Any
+import warnings
+
 import pandas as pd
 import torch
-from ._datasets import (
+
+from .._datasets import (
     ALL_DATASETS,
     DatasetPayload,
     _resolve_dataset,
@@ -14,11 +16,12 @@ from ._datasets import (
     split_sample_indices,
     to_tensor_triplet,
 )
-from .utils import getpop
+from ..utils import getpop
+from ._hrrr import prepare_hrrr_loader_kwargs
+from ._lvis import prepare_lvis_loader_kwargs
 
 
 def _metadata_value(value: Any) -> Any:
-    """Convert common runtime objects to metadata-friendly values."""
     if isinstance(value, dict):
         return {str(key): _metadata_value(val) for key, val in value.items()}
     if isinstance(value, (list, tuple)):
@@ -41,7 +44,6 @@ def _split_frame_to_tensors(
     device: str | torch.device,
     dtype: torch.dtype,
 ) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], tuple[Any, Any, Any]]:
-    """Split a frame into tensors and return the exact row indices used."""
     train_idx, val_idx, test_idx = split_sample_indices(
         len(frame),
         val_size=val_size,
@@ -54,9 +56,10 @@ def _split_frame_to_tensors(
     x_test = frame.iloc[test_idx].reset_index(drop=True).to_numpy()
     if standardize:
         x_train, x_val, x_test = _standardize_split_arrays(x_train, x_val, x_test)
-    return (
-        to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype),
-        (train_idx, val_idx, test_idx),
+    return to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype), (
+        train_idx,
+        val_idx,
+        test_idx,
     )
 
 
@@ -71,7 +74,6 @@ def _split_tensor_to_tensors(
     device: str | torch.device,
     dtype: torch.dtype,
 ) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], tuple[Any, Any, Any]]:
-    """Split a tensor along the sample axis and return the exact row indices used."""
     train_idx, val_idx, test_idx = split_sample_indices(
         int(data.shape[0]),
         val_size=val_size,
@@ -80,13 +82,12 @@ def _split_tensor_to_tensors(
         split_mode=split_mode,
     )
 
-    def index_rows(indices) -> torch.Tensor:
-        index_tensor = torch.as_tensor(indices, dtype=torch.long)
-        return data.index_select(0, index_tensor)
+    def select(indices) -> torch.Tensor:
+        return data.index_select(0, torch.as_tensor(indices, dtype=torch.long))
 
-    x_train = index_rows(train_idx).to(dtype=dtype)
-    x_val = index_rows(val_idx).to(dtype=dtype)
-    x_test = index_rows(test_idx).to(dtype=dtype)
+    x_train = select(train_idx).to(dtype=dtype)
+    x_val = select(val_idx).to(dtype=dtype)
+    x_test = select(test_idx).to(dtype=dtype)
     if standardize:
         mean = x_train.mean(dim=0, keepdim=True)
         std = x_train.std(dim=0, keepdim=True)
@@ -94,23 +95,18 @@ def _split_tensor_to_tensors(
         x_train = (x_train - mean) / std
         x_val = (x_val - mean) / std
         x_test = (x_test - mean) / std
-    return (
-        (
-            x_train.to(device=device, dtype=dtype),
-            x_val.to(device=device, dtype=dtype),
-            x_test.to(device=device, dtype=dtype),
-        ),
-        (train_idx, val_idx, test_idx),
+    return (x_train.to(device=device, dtype=dtype), x_val.to(device=device, dtype=dtype), x_test.to(device=device, dtype=dtype)), (
+        train_idx,
+        val_idx,
+        test_idx,
     )
 
 
 def _split_records(records: list[dict[str, Any]], indices) -> list[dict[str, Any]]:
-    """Select records matching split indices."""
     return [records[int(index)] for index in indices]
 
 
 def _record_histograms(records: list[dict[str, Any]]) -> dict[str, dict[Any, int]]:
-    """Build image-level category and frequency histograms from dataset-specific records."""
     category_histogram: dict[int, int] = {}
     frequency_histogram: dict[str, int] = {}
     for record in records:
@@ -118,14 +114,10 @@ def _record_histograms(records: list[dict[str, Any]]) -> dict[str, dict[Any, int
             category_histogram[category_id] = category_histogram.get(category_id, 0) + 1
         for frequency in set(str(value) for value in record.get("category_frequencies", []) if value):
             frequency_histogram[frequency] = frequency_histogram.get(frequency, 0) + 1
-    return {
-        "category_histogram": category_histogram,
-        "frequency_histogram": frequency_histogram,
-    }
+    return {"category_histogram": category_histogram, "frequency_histogram": frequency_histogram}
 
 
 def _split_metadata(indices, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Build metadata for one returned split."""
     split_meta: dict[str, Any] = {
         "indices": [int(index) for index in indices],
         "n_samples": int(len(indices)),
@@ -150,7 +142,6 @@ def _build_return_metadata(
     split_indices: tuple[Any, Any, Any],
     payload_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble dataset-level and split-level metadata for optional API returns."""
     payload_metadata = dict(payload_metadata or {})
     records = payload_metadata.pop("records", None)
     train_idx, val_idx, test_idx = split_indices
@@ -175,7 +166,6 @@ def _build_return_metadata(
 
 
 def fetch_synthetic_data(target_data: str, **kwargs: Any):
-    """Fetch train, val, and test tensors from a synthetic dataset."""
     return_metadata = bool(getpop(kwargs, "return_metadata", False))
     entry = _resolve_dataset(target_data, ALL_DATASETS, dataset_type="synthetic")
     if entry.sampler is None:
@@ -222,7 +212,6 @@ def fetch_synthetic_data(target_data: str, **kwargs: Any):
 
 
 def fetch_real_data(target_data: str, **kwargs: Any):
-    """Fetch a real dataset as split tensors."""
     return_metadata = bool(kwargs.pop("return_metadata", False))
     entry = _resolve_dataset(target_data, ALL_DATASETS, dataset_type="real")
     if entry.loader is None:
@@ -231,20 +220,19 @@ def fetch_real_data(target_data: str, **kwargs: Any):
     n_samples = kwargs.pop("n_samples", None)
     if n_samples is not None:
         n_samples = int(n_samples)
-    if getattr(entry, "name", target_data) == "lvis" and n_samples is not None and "max_samples" not in kwargs:
-        kwargs["max_samples"] = n_samples
-        n_samples = None
+
+    entry_name = getattr(entry, "name", target_data)
+    kwargs, n_samples = prepare_lvis_loader_kwargs(entry_name, kwargs, n_samples)
+    kwargs, n_samples = prepare_hrrr_loader_kwargs(entry_name, kwargs, n_samples)
+
     val_size = float(kwargs.pop("val_size", 0.15))
     test_size = float(kwargs.pop("test_size", 0.15))
     random_state = int(kwargs.pop("random_state", 0))
-    _standardize_sentinel = kwargs.pop("standardize", None)
-    standardize = bool(entry.standardize_default if _standardize_sentinel is None else _standardize_sentinel)
+    standardize_value = kwargs.pop("standardize", None)
+    standardize = bool(entry.standardize_default if standardize_value is None else standardize_value)
     device = kwargs.pop("device", "cpu")
     dtype = kwargs.pop("dtype", torch.float32)
 
-    loader_kwargs = dict(kwargs)
-    if n_samples is not None:
-        loader_kwargs["n_samples"] = n_samples
     loaded = entry.loader(**kwargs)
     payload_metadata: dict[str, Any] = {}
     if isinstance(loaded, DatasetPayload):
@@ -280,7 +268,7 @@ def fetch_real_data(target_data: str, **kwargs: Any):
             entry=entry,
             kind="real",
             target_data=target_data,
-            params=loader_kwargs,
+            params=kwargs,
             split_config={"val_size": val_size, "test_size": test_size, "random_state": random_state},
             standardize=standardize,
             device=device,
@@ -319,7 +307,7 @@ def fetch_real_data(target_data: str, **kwargs: Any):
         entry=entry,
         kind="real",
         target_data=target_data,
-        params=loader_kwargs,
+        params=kwargs,
         split_config={"val_size": val_size, "test_size": test_size, "random_state": random_state},
         standardize=standardize,
         device=device,
@@ -331,10 +319,8 @@ def fetch_real_data(target_data: str, **kwargs: Any):
 
 
 def get_dataset_metadata(target_data: str) -> dict[str, Any]:
-    """Return metadata for one synthetic or real dataset."""
     return _resolve_dataset(target_data, ALL_DATASETS).metadata()
 
 
 def list_datasets() -> list[str]:
-    """List available synthetic and real datasets."""
     return sorted(ALL_DATASETS)
