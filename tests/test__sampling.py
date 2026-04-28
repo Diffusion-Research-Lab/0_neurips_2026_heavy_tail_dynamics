@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 import torch
 from genkit._sampling import (
-    sample_balanced_bimodal_gaussian,
     sample_checker,
     sample_exponential,
     sample_gaussian,
@@ -14,6 +13,7 @@ from genkit._sampling import (
     sample_scaled_scalar_alpha_stable,
     sample_spiral,
     sample_student_t,
+    sample_unbalanced_highdim_alpha_stable_mixture,
     sample_unbalanced_highdim_gaussian_mixture,
     _orthonormal_embedding,
     _structured_mode_codebook,
@@ -117,27 +117,6 @@ def test_spiral_noise_increases_radius_variance():
     assert (1 + r_tol) * r1.var(unbiased=True).item() + a_tol > r0.var(unbiased=True).item()
 
 
-def test_bimodal_balanced_mean_var_and_weight():
-    torch.manual_seed(4)
-    n, d = 60000, 4
-    mu, s = 3.0, 0.2
-    x = sample_balanced_bimodal_gaussian(n, d, mu=mu, s=s, device="cpu", dtype=torch.float64)
-    assert x.shape == (n, d)
-    assert torch.isfinite(x).all()
-
-    mean = x.mean(dim=0)
-    assert mean.abs().max().item() < 0.05
-
-    # For p=0.5, Var = s^2 + mu^2 (per coordinate)
-    var_emp = x.var(dim=0, unbiased=True)
-    var_true = s * s + mu * mu
-    assert (var_emp - var_true).abs().max().item() < 0.12
-
-    # With small s, sign estimates mixture weights well (balanced -> ~0.5 negative)
-    frac_neg = (x[:, 0] < 0.0).to(torch.float64).mean().item()
-    assert abs(frac_neg - 0.5) < 0.02
-
-
 def test_unbalanced_highdim_gaussian_mixture_exhibits_mode_imbalance():
     torch.manual_seed(5)
     n, d = 50_000, 20
@@ -161,6 +140,30 @@ def test_unbalanced_highdim_gaussian_mixture_exhibits_mode_imbalance():
     positive_bins = bins[bins > 0]
     assert len(positive_bins) >= 8
     assert (positive_bins.max() / positive_bins.min()).item() > 8.0
+
+
+def test_unbalanced_highdim_alpha_stable_mixture_returns_heavy_tailed_samples():
+    torch.manual_seed(6)
+    np.random.seed(6)
+    n, d = 10_000, 20
+    x = sample_unbalanced_highdim_alpha_stable_mixture(
+        n,
+        d,
+        alpha=1.6,
+        n_modes=12,
+        rank=4,
+        imbalance_tau=1.3,
+        mean_scale=6.0,
+        base_scale=0.35,
+        anisotropy=0.8,
+        device="cpu",
+        dtype=torch.float64,
+    )
+    assert x.shape == (n, d)
+    assert torch.isfinite(x).all()
+
+    abs_values = x.abs().reshape(-1)
+    assert torch.quantile(abs_values, 0.99) > 4.0 * torch.quantile(abs_values, 0.5)
 
 
 def test_scaled_scalar_alpha_stable_shape_and_positivity():
@@ -225,14 +228,6 @@ def test_input_validation_alpha_stable():
         _ = sample_scaled_scalar_alpha_stable(10, alpha=2.1, device="cpu")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_bimodal_respects_device_cuda():
-    # This test is meant to catch device-mismatch bugs (e.g., multinomial probs on CPU).
-    torch.manual_seed(0)
-    x = sample_balanced_bimodal_gaussian(1024, 2, device=torch.device("cuda"), dtype=torch.float32)
-    assert x.device.type == "cuda"
-
-
 def test_alpha_stable_alpha_eq_2_returns_constant_2():
     a = sample_scaled_scalar_alpha_stable(8, alpha=2.0, device="cpu", dtype=torch.float32)
     assert a.shape == (8, 1)
@@ -274,6 +269,11 @@ def test_highdim_mixture_negative_imbalance_tau_raises():
 def test_highdim_mixture_nonpositive_mean_scale_raises():
     with pytest.raises(ValueError, match="mean_scale"):
         sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=4, mean_scale=0.0)
+
+
+def test_alpha_stable_highdim_mixture_invalid_alpha_raises():
+    with pytest.raises(ValueError, match="alpha"):
+        sample_unbalanced_highdim_alpha_stable_mixture(10, dim=4, alpha=0.0)
 
 
 def test_orthonormal_embedding_rank_exceeds_dim_raises():

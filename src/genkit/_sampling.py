@@ -211,6 +211,38 @@ def sample_unbalanced_highdim_gaussian_mixture(
     if anisotropy < 0.0:
         raise ValueError("anisotropy must be >= 0.")
 
+    centers, directions, mode_index = _unbalanced_highdim_mixture_structure(
+        n_samples=n_samples,
+        dim=dim,
+        n_modes=n_modes,
+        rank=rank,
+        imbalance_tau=imbalance_tau,
+        mean_scale=mean_scale,
+        structure_seed=structure_seed,
+        device=device,
+        dtype=dtype,
+    )
+
+    noise_iso = torch.randn(n_samples, dim, device=device, dtype=dtype)
+    noise_axis = torch.randn(n_samples, 1, device=device, dtype=dtype) * directions[mode_index]
+    noise = noise_iso + anisotropy * noise_axis
+
+    return centers[mode_index] + base_std * noise
+
+
+def _unbalanced_highdim_mixture_structure(
+    n_samples: int,
+    dim: int,
+    n_modes: int,
+    rank: int,
+    imbalance_tau: float,
+    mean_scale: float,
+    structure_seed: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build shared centers, directions, and sampled mode ids for high-dimensional mixtures."""
     rank = min(int(rank), int(dim))
     embedding = _orthonormal_embedding(
         dim,
@@ -232,67 +264,73 @@ def sample_unbalanced_highdim_gaussian_mixture(
     weights = torch.arange(1, n_modes + 1, device=device, dtype=dtype).pow(-imbalance_tau)
     weights = weights / weights.sum()
     mode_index = torch.multinomial(weights, n_samples, replacement=True)
-
-    noise_iso = torch.randn(n_samples, dim, device=device, dtype=dtype)
-    noise_axis = torch.randn(n_samples, 1, device=device, dtype=dtype) * directions[mode_index]
-    noise = noise_iso + anisotropy * noise_axis
-
-    return centers[mode_index] + base_std * noise
+    return centers, directions, mode_index
 
 
-def _sample_bimodal_gaussian(
+def sample_unbalanced_highdim_alpha_stable_mixture(
     n_samples: int,
     dim: int,
-    mu: float = 2.0,
-    s: float = 0.5,
-    p: float = 0.5,
-    device: torch.device = 'cpu',
+    alpha: float = 1.7,
+    n_modes: int = 16,
+    rank: int = 6,
+    imbalance_tau: float = 1.2,
+    mean_scale: float = 7.5,
+    base_scale: float = 0.55,
+    anisotropy: float = 1.0,
+    structure_seed: int = 0,
+    device: torch.device = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """
-    Helper for sampling a bimodal Gaussian distribution.
-    """
-    centers = torch.tensor([-mu, mu], device=device, dtype=dtype)
-    idx = torch.multinomial(torch.tensor([p, 1 - p]), n_samples, replacement=True)
-    return centers[idx].unsqueeze(1) + s * torch.randn(n_samples, dim, device=device, dtype=dtype)
+    Sample an imbalanced high-dimensional mixture with alpha-stable local noise.
 
+    This uses the same low-rank centers and power-law mode weights as
+    ``sample_unbalanced_highdim_gaussian_mixture`` but replaces each component's
+    Gaussian noise with symmetric alpha-stable noise.
+    """
+    if n_samples <= 0:
+        raise ValueError("n_samples must be > 0.")
+    if dim <= 0:
+        raise ValueError("dim must be > 0.")
+    if n_modes <= 1:
+        raise ValueError("n_modes must be > 1.")
+    if not (0.0 < float(alpha) <= 2.0):
+        raise ValueError(f"`alpha` must be in (0,2], got {alpha}.")
+    if imbalance_tau < 0.0:
+        raise ValueError("imbalance_tau must be >= 0.")
+    if mean_scale <= 0.0:
+        raise ValueError("mean_scale must be > 0.")
+    if base_scale <= 0.0:
+        raise ValueError("base_scale must be > 0.")
+    if anisotropy < 0.0:
+        raise ValueError("anisotropy must be >= 0.")
 
-def sample_balanced_bimodal_gaussian(
-    n_samples: int,
-    dim: int,
-    mu: float = 2.0,
-    s: float = 0.6,
-    device: torch.device = 'cpu',
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """
-    Sample a balanced bimodal Gaussian distribution.
-    """
-    return _sample_bimodal_gaussian(n_samples=n_samples, dim=dim, mu=mu, s=s,
-                                    p=0.5, device=device, dtype=dtype)
-
-
-def sample_unbalanced_bimodal_gaussian(
-    n_samples: int,
-    dim: int,
-    mu: float = 4.0,
-    s: float = 0.3,
-    device: torch.device = 'cpu',
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """
-    Legacy alias for the stronger unbalanced multimodal benchmark dataset.
-    """
-    del mu, s
-    return sample_unbalanced_highdim_gaussian_mixture(
+    centers, directions, mode_index = _unbalanced_highdim_mixture_structure(
         n_samples=n_samples,
         dim=dim,
-        n_modes=16,
-        rank=min(6, dim),
-        imbalance_tau=1.2,
-        mean_scale=7.5,
-        base_std=0.55,
-        anisotropy=1.0,
+        n_modes=n_modes,
+        rank=rank,
+        imbalance_tau=imbalance_tau,
+        mean_scale=mean_scale,
+        structure_seed=structure_seed,
         device=device,
         dtype=dtype,
     )
+
+    noise_iso = sample_scaled_isotropic_alpha_stable(
+        n_samples,
+        dim=dim,
+        alpha=alpha,
+        device=device,
+        dtype=dtype,
+    )
+    noise_axis = sample_scaled_isotropic_alpha_stable(
+        n_samples,
+        dim=1,
+        alpha=alpha,
+        device=device,
+        dtype=dtype,
+    ) * directions[mode_index]
+    noise = noise_iso + anisotropy * noise_axis
+
+    return centers[mode_index] + base_scale * noise

@@ -1,13 +1,16 @@
 """Dataset module unittests."""
 
+import json
 import numpy as np
+import os
 from types import SimpleNamespace
 from sklearn.utils import Bunch
 import pandas as pd
 import pytest
 import torch
 from genkit._datasets import (
-    _load_default_credit, _load_earthquakes, _load_hrrr, _load_wildfires,
+    DatasetPayload,
+    _load_default_credit, _load_earthquakes, _load_hrrr, _load_lvis, _load_wildfires,
     _resolve_real_data_home, _decode_byte_string, _standardize_split_arrays,
     _resolve_dataset, split_frame, split_tensor_data, _cache_remote_text_file,
     ALL_DATASETS,
@@ -31,6 +34,46 @@ def _mock_default_credit_bunch():
         target=frame["default payment next month"],
         target_names="default payment next month",
     )
+
+
+def _write_lvis_fixture(root):
+    image_mod = pytest.importorskip("PIL.Image")
+    annotations_dir = root / "annotations"
+    image_dir = root / "coco" / "train2017"
+    annotations_dir.mkdir(parents=True)
+    image_dir.mkdir(parents=True)
+
+    images = []
+    for image_id in range(1, 7):
+        file_name = f"{image_id:012d}.jpg"
+        color = (image_id * 30 % 255, image_id * 40 % 255, image_id * 50 % 255)
+        image_mod.new("RGB", (10, 12), color=color).save(image_dir / file_name)
+        images.append(
+            {
+                "id": image_id,
+                "file_name": file_name,
+                "coco_url": f"http://images.cocodataset.org/train2017/{file_name}",
+            }
+        )
+
+    payload = {
+        "images": images,
+        "categories": [
+            {"id": 1, "name": "rare thing", "frequency": "r"},
+            {"id": 2, "name": "frequent thing", "frequency": "f"},
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1},
+            {"id": 2, "image_id": 1, "category_id": 1},
+            {"id": 3, "image_id": 2, "category_id": 2},
+            {"id": 4, "image_id": 3, "category_id": 1},
+            {"id": 5, "image_id": 4, "category_id": 2},
+            {"id": 6, "image_id": 5, "category_id": 1},
+            {"id": 7, "image_id": 6, "category_id": 2},
+        ],
+    }
+    (annotations_dir / "lvis_v1_train.json").write_text(json.dumps(payload), encoding="utf-8")
+    return root
 
 
 def test_load_default_credit_drops_identifier_and_coerces_numeric(monkeypatch):
@@ -143,7 +186,7 @@ def test_load_hrrr_saves_and_reuses_cache(tmp_path, monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    _FAKE_IDX = "1:0:d=2014100100:APCP:surface:0-6 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
+    _FAKE_IDX = "1:0:d=2014100100:APCP:surface:0-1 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
 
     class _FakeResponse:
         def __init__(self, text="", content=b""):
@@ -188,19 +231,19 @@ def test_load_hrrr_saves_and_reuses_cache(tmp_path, monkeypatch):
     loaded = _load_hrrr(
         data_home=tmp_path,
         start="2014-10-01 00:00:00",
-        end="2014-10-01 06:00:00",
+        end="2014-10-01 02:00:00",
     )
-    cache_path = tmp_path / "hrrr.pt"
+    cache_paths = list(tmp_path.glob("hrrr_apcp_100x100_*.pt"))
 
-    assert loaded.shape == (2, 1, 100, 100)
+    assert loaded.shape == (3, 1, 100, 100)
     assert loaded.dtype == torch.float32
     assert torch.equal(loaded[0, 0], torch.from_numpy(values))
-    assert cache_path.exists()
-    assert len(subprocess_calls) == 2  # per sample: wgrib2 only
+    assert len(cache_paths) == 1
+    assert len(subprocess_calls) == 3  # per sample: wgrib2 only
 
     monkeypatch.setattr("genkit._datasets.subprocess.run", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
     monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: pytest.fail("cache should bypass decoding"))
-    cached = _load_hrrr(data_home=tmp_path, start="2014-10-01 00:00:00", end="2014-10-01 06:00:00")
+    cached = _load_hrrr(data_home=tmp_path, start="2014-10-01 00:00:00", end="2014-10-01 02:00:00")
 
     assert torch.equal(cached, loaded)
 
@@ -252,6 +295,143 @@ def test_hrrr_dataset_is_registered():
     }
 
 
+def test_load_lvis_reads_local_fixture_and_filters_frequency(tmp_path):
+    data_home = _write_lvis_fixture(tmp_path / "lvis")
+
+    loaded = _load_lvis(
+        data_home=data_home,
+        split="train",
+        image_size=8,
+        max_samples=10,
+        category_frequency="r",
+    )
+
+    assert isinstance(loaded, DatasetPayload)
+    tensor = loaded.data
+    assert tensor.shape == (3, 3, 8, 8)
+    assert tensor.dtype == torch.float32
+    assert tensor.min().item() >= 0.0
+    assert tensor.max().item() <= 1.0
+    assert loaded.metadata["source_split"] == "train"
+    assert loaded.metadata["category_frequency_filter"] == "r"
+    assert loaded.metadata["n_selected_images"] == 3
+    assert [record["image_id"] for record in loaded.metadata["records"]] == [1, 3, 5]
+    assert all(record["category_frequencies"] == ["r"] for record in loaded.metadata["records"])
+
+
+def test_fetch_real_data_supports_lvis_tensor_dataset(tmp_path):
+    data_home = _write_lvis_fixture(tmp_path / "lvis")
+
+    x_train, x_val, x_test = fetch_real_data(
+        "lvis",
+        data_home=data_home,
+        split="train",
+        image_size=8,
+        max_samples=5,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        standardize=False,
+    )
+
+    assert x_train.shape == (3, 3, 8, 8)
+    assert x_val.shape == (1, 3, 8, 8)
+    assert x_test.shape == (1, 3, 8, 8)
+    assert x_train.dtype == torch.float32
+
+
+def test_fetch_real_data_passes_lvis_n_samples_as_max_samples(tmp_path):
+    data_home = _write_lvis_fixture(tmp_path / "lvis")
+
+    x_train, x_val, x_test = fetch_real_data(
+        "lvis",
+        data_home=data_home,
+        split="train",
+        image_size=8,
+        n_samples=5,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        standardize=False,
+    )
+
+    assert x_train.shape[0] + x_val.shape[0] + x_test.shape[0] == 5
+
+
+def test_fetch_real_data_return_metadata_includes_lvis_records_and_histograms(tmp_path):
+    data_home = _write_lvis_fixture(tmp_path / "lvis")
+
+    x_train, x_val, x_test, metadata = fetch_real_data(
+        "lvis",
+        data_home=data_home,
+        split="train",
+        image_size=8,
+        max_samples=5,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        standardize=False,
+        return_metadata=True,
+    )
+
+    assert x_train.shape == (3, 3, 8, 8)
+    assert x_val.shape == (1, 3, 8, 8)
+    assert x_test.shape == (1, 3, 8, 8)
+    assert metadata["dataset"] == get_dataset_metadata("lvis")
+    assert metadata["request"]["name"] == "lvis"
+    assert metadata["request"]["params"]["max_samples"] == 5
+    assert metadata["loader"]["image_size"] == 8
+    assert metadata["loader"]["n_selected_images"] == 5
+
+    split_records = [
+        record
+        for split_name in ("train", "val", "test")
+        for record in metadata["splits"][split_name]["records"]
+    ]
+    assert len(split_records) == 5
+    assert len({record["image_id"] for record in split_records}) == 5
+    assert sum(metadata["splits"][name]["n_samples"] for name in ("train", "val", "test")) == 5
+    assert all("category_histogram" in metadata["splits"][name] for name in ("train", "val", "test"))
+    assert all("frequency_histogram" in metadata["splits"][name] for name in ("train", "val", "test"))
+
+
+def test_lvis_uses_dsdir_and_fails_clearly_when_absent(monkeypatch):
+    monkeypatch.delenv("DSDIR", raising=False)
+
+    with pytest.raises(RuntimeError, match="DSDIR"):
+        _load_lvis(max_samples=1)
+
+
+def test_lvis_dataset_is_registered():
+    assert "lvis" in list_datasets()
+    assert get_dataset_metadata("lvis") == {
+        "name": "lvis",
+        "tail_index_alpha": None,
+        "description": "LVIS long-tailed object categories from local Jean Zay COCO/LVIS files; default image_size=64.",
+        "split_mode": "random",
+        "dataset_type": "real",
+        "dim": (3, 64, 64),
+        "n_samples": None,
+    }
+
+
+def test_lvis_smoke_from_dsdir_if_available():
+    if not os.getenv("DSDIR"):
+        pytest.skip("Jean Zay $DSDIR is not set.")
+    try:
+        loaded = _load_lvis(split="train", image_size=8, max_samples=3, seed=0)
+    except RuntimeError as exc:
+        pytest.skip(f"LVIS assets are not available under $DSDIR: {exc}")
+
+    assert isinstance(loaded, DatasetPayload)
+    tensor = loaded.data
+    assert tensor.shape == (3, 3, 8, 8)
+    assert tensor.dtype == torch.float32
+    assert tensor.min().item() >= 0.0
+    assert tensor.max().item() <= 1.0
+    assert len(loaded.metadata["records"]) == 3
+
+
 def test_kddcup_dataset_is_registered():
     assert "kddcup" in list_datasets()
     assert get_dataset_metadata("kddcup") == {
@@ -282,6 +462,28 @@ def test_fetch_synthetic_data_supports_gaussian():
     assert x_train.dtype == torch.float32
 
 
+def test_fetch_synthetic_data_return_metadata_includes_dataset_and_splits():
+    x_train, x_val, x_test, metadata = fetch_synthetic_data(
+        "gaussian",
+        n_samples=20,
+        dim=3,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        dtype=torch.float32,
+        return_metadata=True,
+    )
+
+    assert x_train.shape == (12, 3)
+    assert x_val.shape == (4, 3)
+    assert x_test.shape == (4, 3)
+    assert metadata["dataset"] == get_dataset_metadata("gaussian")
+    assert metadata["request"]["kind"] == "synthetic"
+    assert metadata["request"]["params"]["n_samples"] == 20
+    assert metadata["request"]["params"]["dim"] == 3
+    assert sum(metadata["splits"][name]["n_samples"] for name in ("train", "val", "test")) == 20
+
+
 def test_fetch_synthetic_data_supports_unbalanced_highdim_gaussian_mixture():
     x_train, x_val, x_test = fetch_synthetic_data(
         "unbalanced_highdim_gaussian_mixture",
@@ -301,16 +503,34 @@ def test_fetch_synthetic_data_supports_unbalanced_highdim_gaussian_mixture():
     assert x_train.dtype == torch.float64
 
 
-def test_unbalanced_bimodal_gaussian_metadata_exposes_legacy_alias():
-    assert get_dataset_metadata("unbalanced_bimodal_gaussian") == {
-        "name": "unbalanced_bimodal_gaussian",
-        "tail_index_alpha": None,
-        "description": "Legacy alias for an imbalanced high-dimensional Gaussian mixture synthetic dataset.",
-        "split_mode": "random",
-        "dataset_type": "synthetic",
-        "dim": None,
-        "n_samples": None,
-    }
+def test_fetch_synthetic_data_supports_unbalanced_highdim_alpha_stable_mixture():
+    x_train, x_val, x_test = fetch_synthetic_data(
+        "unbalanced_highdim_alpha_stable_mixture",
+        n_samples=40,
+        dim=10,
+        alpha=1.6,
+        n_modes=8,
+        rank=3,
+        base_std=0.35,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        dtype=torch.float64,
+    )
+
+    assert x_train.shape == (24, 10)
+    assert x_val.shape == (8, 10)
+    assert x_test.shape == (8, 10)
+    assert x_train.dtype == torch.float64
+
+
+def test_bimodal_gaussian_datasets_are_not_registered():
+    assert "balanced_bimodal_gaussian" not in list_datasets()
+    assert "unbalanced_bimodal_gaussian" not in list_datasets()
+    with pytest.raises(KeyError, match="balanced_bimodal_gaussian"):
+        get_dataset_metadata("balanced_bimodal_gaussian")
+    with pytest.raises(KeyError, match="unbalanced_bimodal_gaussian"):
+        fetch_synthetic_data("unbalanced_bimodal_gaussian", n_samples=8)
 
 
 def test_fetch_synthetic_data_rejects_real_dataset_name():

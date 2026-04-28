@@ -17,20 +17,30 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Cache root. Defaults to $WORK/flowbench_data, then $HOME/.cache/flowbench_data.",
     )
+    parser.add_argument(
+        "--include-lvis",
+        action="store_true",
+        help="Also try LVIS from local Jean Zay files. Disabled by default because LVIS is not downloaded or cached here.",
+    )
     return parser.parse_args()
 
 
-def _real_dataset_names() -> list[str]:
-    return [
+def _real_dataset_names(*, include_lvis: bool) -> list[str]:
+    names = [
         name
         for name in list_datasets()
         if get_dataset_metadata(name)["dataset_type"] == "real"
     ]
+    if not include_lvis:
+        names = [name for name in names if name != "lvis"]
+    return names
 
 
 def _dataset_kwargs(name: str, *, data_root: Path) -> dict[str, str]:
     if name == "hrrr":
         return {"data_home": str(data_root / "hrrr")}
+    if name == "lvis":
+        return {}
     if name in {"default_credit", "kddcup"}:
         return {"data_home": str(data_root / "scikit_learn")}
     return {"data_home": str(data_root / "powerlaws")}
@@ -48,11 +58,12 @@ def main() -> int:
     data_root.mkdir(parents=True, exist_ok=True)
 
     print(f"[prefetch] caching real datasets under {data_root}")
-    for name in _real_dataset_names():
+    for name in _real_dataset_names(include_lvis=bool(args.include_lvis)):
         kwargs = _dataset_kwargs(name, data_root=data_root)
         print(f"[prefetch] {name} ...", flush=True)
         data = fetch_real_data(name, **kwargs)
-        print(f"[prefetch] {name} ready shape={_shape_summary(data)} cache={next(iter(kwargs.values()))}", flush=True)
+        cache = next(iter(kwargs.values()), "local dataset filesystem")
+        print(f"[prefetch] {name} ready shape={_shape_summary(data)} cache={cache}", flush=True)
 
     return 0
 
