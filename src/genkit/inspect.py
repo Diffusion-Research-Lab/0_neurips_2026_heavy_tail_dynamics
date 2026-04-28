@@ -313,10 +313,11 @@ def estimate_training_loss_error(
     was_training = model._net.training
     model._net.eval()
     try:
+        x_data = x_data.to(device=model._device, dtype=model._fdtype)
         values = []
         for _ in range(int(n_batches)):
             idx = torch.randint(x_data.shape[0], (int(batch_size),), device=model._device)
-            x = x_data.index_select(0, idx).to(device=model._device, dtype=model._fdtype)
+            x = x_data.index_select(0, idx)
             if loss_type == "native":
                 values.append(model.loss(x, t=t).detach())
             else:

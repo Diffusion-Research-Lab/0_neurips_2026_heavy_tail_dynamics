@@ -187,6 +187,17 @@ def test_estimate_training_loss_error_supports_native_and_mse_loss(device, model
     assert mse >= 0.0
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for CPU-data/CUDA-model regression")
+def test_estimate_training_loss_error_accepts_cpu_data_for_cuda_model():
+    x = torch.randn(8, 1, device="cpu", dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(device="cuda", dtype=torch.float64)
+    model = GaussianFlowLinear(net=net, dim=1, n_steps=8, fdtype=torch.float64, device="cuda")
+
+    value = estimate_training_loss_error(model, x, n_batches=2, batch_size=4, loss_type="mse")
+
+    assert value >= 0.0
+
+
 def test_estimate_training_loss_error_rejects_unknown_loss_type():
     x = torch.randn(8, 1, dtype=torch.float64)
     net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
