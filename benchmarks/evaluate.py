@@ -12,6 +12,8 @@ import yaml
 from benchmarks.main import build_dataset, build_model, build_network, setup_logging
 from genkit.inspect import estimate_init_error, estimate_training_loss_error, model_est_jacobian_spectral_curve
 from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein, tail_coverage_error
+
+
 EVAL_METRIC_NAMES = [
     "FID",
     "MMD_RBF",
@@ -19,6 +21,7 @@ EVAL_METRIC_NAMES = [
     "TAIL_COVERAGE_ERROR",
     "MSSLE",
 ]
+
 MODEL_LABELS = {
     "gaussian_flow_linear": "GF-Linear",
     "gaussian_flow_ot": "GF-OT",
@@ -53,6 +56,34 @@ def pretty_model(name: str) -> str:
     return MODEL_LABELS.get(name, name)
 
 
+def checkpoint_dtype(config: dict[str, Any], checkpoint: dict[str, Any]) -> torch.dtype:
+    """Resolve the dtype used to train a saved run."""
+    dtype_spec = config.get("run", {}).get("dtype")
+    if dtype_spec is None:
+        dtype_spec = checkpoint.get("model_init", {}).get("dtype", torch.float64)
+    return getattr(torch, str(dtype_spec).split(".")[-1], torch.float64)
+
+
+def restore_generator(
+    checkpoint: dict[str, Any],
+    network_cfg: dict[str, Any],
+    model_cfg_template: dict[str, Any],
+    x_train: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+    device: str,
+):
+    """Rebuild one generator and load a checkpoint into it."""
+    net, _ = build_network(network_cfg, x_train)
+    net = net.to(device=device, dtype=dtype)
+    model_cfg = copy.deepcopy(model_cfg_template)
+    generator, _ = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
+    state_dict = checkpoint["network_state_dict"] if "network_state_dict" in checkpoint else checkpoint["model_state"]
+    generator._net.load_state_dict(state_dict)
+    generator._net.eval()
+    return generator
+
+
 def sample_generator_in_batches(generator: Any, n_samples: int, batch_size: int) -> torch.Tensor:
     """Generate samples without requiring the full evaluation batch to fit on the GPU."""
     chunks = []
@@ -64,6 +95,42 @@ def sample_generator_in_batches(generator: Any, n_samples: int, batch_size: int)
             chunks.append(generator.sample(n_samples=n_batch).detach().cpu())
         remaining -= n_batch
     return torch.cat(chunks, dim=0)
+
+
+def compute_test_metrics(
+    x_ref_cpu: torch.Tensor,
+    x_gen_cpu: torch.Tensor,
+    *,
+    feature_dim: int,
+    max_fid_dim: int,
+    max_mmd_dim: int,
+    max_mmd_samples: int,
+) -> tuple[dict[str, float], list[str]]:
+    """Compute sample-quality metrics, leaving failed metrics as NaN."""
+    values = {name: float("nan") for name in EVAL_METRIC_NAMES}
+    warnings: list[str] = []
+
+    def compute_one(name: str, metric_fn) -> None:
+        try:
+            values[name] = float(metric_fn())
+        except Exception as exc:
+            warnings.append(f"{name}_failed: {type(exc).__name__}: {exc}")
+
+    if feature_dim <= int(max_fid_dim):
+        compute_one("FID", lambda: fid(x_ref_cpu, x_gen_cpu))
+    else:
+        warnings.append(f"fid_skipped: feature_dim={feature_dim} exceeds max_fid_dim={max_fid_dim}")
+
+    if feature_dim <= int(max_mmd_dim):
+        mmd_n = min(len(x_ref_cpu), int(max_mmd_samples))
+        compute_one("MMD_RBF", lambda: mmd_rbf(x_ref_cpu[:mmd_n], x_gen_cpu[:mmd_n]))
+    else:
+        warnings.append(f"mmd_skipped: feature_dim={feature_dim} exceeds max_mmd_dim={max_mmd_dim}")
+
+    compute_one("SLICED_WASSERSTEIN", lambda: sliced_wasserstein(x_ref_cpu, x_gen_cpu))
+    compute_one("TAIL_COVERAGE_ERROR", lambda: tail_coverage_error(x_ref_cpu, x_gen_cpu))
+    compute_one("MSSLE", lambda: mssle(x_ref_cpu, x_gen_cpu))
+    return values, warnings
 
 
 def load_generator_and_data(
@@ -89,12 +156,7 @@ def load_generator_and_data(
     final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
     checkpoint = final_checkpoint if checkpoint_epoch is None else torch.load(checkpoint_path, map_location="cpu")
     config = yaml.safe_load((run_dir / "config.yaml").read_text())
-
-    dtype_spec = config.get("run", {}).get("dtype")
-    if dtype_spec is None:
-        dtype_spec = final_checkpoint.get("model_init", {}).get("dtype", torch.float64)
-    dtype_name = str(dtype_spec).split(".")[-1]
-    dtype = getattr(torch, dtype_name, torch.float64)
+    dtype = checkpoint_dtype(config, final_checkpoint)
     torch.set_default_dtype(dtype)
 
     network_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["network"]))
@@ -104,12 +166,7 @@ def load_generator_and_data(
     model_cfg["params"]["device"] = device
 
     x_train, _, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
-    net, _ = build_network(network_cfg, x_train)
-    net = net.to(device=device, dtype=dtype)
-    generator, _ = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
-    state_dict = checkpoint["network_state_dict"] if "network_state_dict" in checkpoint else checkpoint["model_state"]
-    generator._net.load_state_dict(state_dict)
-    generator._net.eval()
+    generator = restore_generator(checkpoint, network_cfg, model_cfg, x_train, dtype=dtype, device=device)
     return generator, x_train, x_test, config, resolved_epoch
 
 
@@ -149,11 +206,7 @@ def evaluate_one_run(
 
     config = yaml.safe_load((run_dir / "config.yaml").read_text())
     final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
-    dtype_spec = config.get("run", {}).get("dtype")
-    if dtype_spec is None:
-        dtype_spec = final_checkpoint.get("model_init", {}).get("dtype", torch.float64)
-    dtype_name = str(dtype_spec).split(".")[-1]
-    dtype = getattr(torch, dtype_name, torch.float64)
+    dtype = checkpoint_dtype(config, final_checkpoint)
     torch.set_default_dtype(dtype)
 
     network_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["network"]))
@@ -167,11 +220,16 @@ def evaluate_one_run(
     feature_dim = int(x_test[:1].reshape(1, -1).shape[1])
     final_epoch = int(config["train"]["n_epochs"])
     checkpoint_epochs = sorted(set(available_checkpoint_epochs(run_dir) + [final_epoch]))
+    train_stats = pd.read_csv(run_dir / "train_stats.csv")
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     scalar_rows: list[dict[str, Any]] = []
     jacobian_payload: dict[str, Any] | None = None
     warnings: list[str] = []
+
+    def warn_once(warning: str) -> None:
+        if warning not in warnings:
+            warnings.append(warning)
 
     for requested_epoch in checkpoint_epochs:
         if requested_epoch == final_epoch:
@@ -181,38 +239,33 @@ def evaluate_one_run(
             checkpoint_path = run_dir / "checkpoints" / f"ckpt_epoch_{int(requested_epoch):04d}.pt"
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
             resolved_epoch = int(requested_epoch)
-        net, _ = build_network(network_cfg, x_train)
-        net = net.to(device=device, dtype=dtype)
-        model_cfg = copy.deepcopy(model_cfg_template)
-        generator, _ = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
-        state_dict = checkpoint["network_state_dict"] if "network_state_dict" in checkpoint else checkpoint["model_state"]
-        generator._net.load_state_dict(state_dict)
-        generator._net.eval()
-        resolved_config = config
+        generator = restore_generator(checkpoint, network_cfg, model_cfg_template, x_train, dtype=dtype, device=device)
         checkpoint_epoch = int(resolved_epoch if resolved_epoch is not None else final_epoch)
-        dataset_params = resolved_config.get("dataset", {}).get("params", {})
-        model_params = resolved_config.get("model", {}).get("params", {})
+        dataset_params = config.get("dataset", {}).get("params", {})
+        model_params = config.get("model", {}).get("params", {})
         base_row = {
             "run_dir": run_dir.name,
             "checkpoint_epoch": checkpoint_epoch,
-            "trial_idx": int(resolved_config.get("run", {}).get("trial_idx", 0)),
-            "dataset_name": resolved_config["dataset"]["name"],
+            "trial_idx": int(config.get("run", {}).get("trial_idx", 0)),
+            "dataset_preset": config["dataset"].get("preset_name", config["dataset"]["name"]),
+            "dataset_name": config["dataset"]["name"],
             "dataset_alpha": dataset_params.get("alpha", np.nan),
             "dataset_dim": dataset_params.get("dim", np.nan),
-            "model_name": resolved_config["model"]["name"],
-            "model_label": pretty_model(resolved_config["model"]["name"]),
+            "model_name": config["model"]["name"],
+            "model_label": pretty_model(config["model"]["name"]),
+            "model_preset": config["model"].get("preset_name", config["model"]["name"]),
             "model_alpha": model_params.get("alpha", np.nan),
-            "network_preset": resolved_config["network"]["preset_name"],
-            "train_preset": resolved_config["train"]["preset_name"],
+            "network_preset": config["network"]["preset_name"],
+            "train_preset": config["train"]["preset_name"],
         }
 
-        train_stats = pd.read_csv(run_dir / "train_stats.csv")
+        epoch_stats = train_stats
         if "epoch" in train_stats.columns:
-            train_stats = train_stats[train_stats["epoch"] <= checkpoint_epoch].copy()
+            epoch_stats = train_stats[train_stats["epoch"] <= checkpoint_epoch]
         for column in ["training_loss", "training_loss_std", "grad_variance_epoch", "grad_norm_epoch"]:
-            if column not in train_stats.columns:
+            if column not in epoch_stats.columns:
                 continue
-            for _, row in train_stats[["epoch", column]].dropna().iterrows():
+            for _, row in epoch_stats[["epoch", column]].dropna().iterrows():
                 scalar_rows.append(
                     {
                         **base_row,
@@ -228,25 +281,16 @@ def evaluate_one_run(
         x_ref_cpu = x_ref.detach().cpu()
         for eval_repeat_idx in range(int(n_eval_repeats)):
             x_gen_cpu = sample_generator_in_batches(generator, len(x_ref), sample_batch_size)
-            metric_values = {name: float("nan") for name in EVAL_METRIC_NAMES}
-            if feature_dim <= int(max_fid_dim):
-                metric_values["FID"] = float(fid(x_ref_cpu, x_gen_cpu))
-            else:
-                warning = f"fid_skipped: feature_dim={feature_dim} exceeds max_fid_dim={max_fid_dim}"
-                if warning not in warnings:
-                    warnings.append(warning)
-            if feature_dim <= int(max_mmd_dim):
-                mmd_n = min(len(x_ref_cpu), int(max_mmd_samples))
-                metric_values["MMD_RBF"] = float(mmd_rbf(x_ref_cpu[:mmd_n], x_gen_cpu[:mmd_n]))
-            else:
-                warning = f"mmd_skipped: feature_dim={feature_dim} exceeds max_mmd_dim={max_mmd_dim}"
-                if warning not in warnings:
-                    warnings.append(warning)
-            metric_values.update({
-                "SLICED_WASSERSTEIN": float(sliced_wasserstein(x_ref_cpu, x_gen_cpu)),
-                "TAIL_COVERAGE_ERROR": float(tail_coverage_error(x_ref_cpu, x_gen_cpu)),
-                "MSSLE": float(mssle(x_ref_cpu, x_gen_cpu)),
-            })
+            metric_values, metric_warnings = compute_test_metrics(
+                x_ref_cpu,
+                x_gen_cpu,
+                feature_dim=feature_dim,
+                max_fid_dim=max_fid_dim,
+                max_mmd_dim=max_mmd_dim,
+                max_mmd_samples=max_mmd_samples,
+            )
+            for warning in metric_warnings:
+                warn_once(warning)
             for metric_name in EVAL_METRIC_NAMES:
                 scalar_rows.append(
                     {
@@ -262,54 +306,47 @@ def evaluate_one_run(
         x_ref_inspect = x_test[: min(int(inspect_samples), len(x_test))]
         can_inspect = len(x_ref_inspect) > 0 and int(inspect_samples) > 0 and (inspect_image_data or (not image_like and feature_dim <= int(max_inspect_dim)))
         if can_inspect:
-            try:
-                init_error = float(
-                    estimate_init_error(
+            inspect_metrics = [
+                (
+                    "init_error",
+                    lambda: estimate_init_error(
                         generator,
                         x_ref_inspect,
                         n_samples=min(4096, len(x_ref_inspect)),
                         k=10,
-                    )
-                )
-                training_loss_error = float(
-                    estimate_training_loss_error(
+                    ),
+                ),
+                (
+                    "training_loss_error",
+                    lambda: estimate_training_loss_error(
                         generator,
                         x_ref_inspect,
                         n_batches=16,
                         batch_size=min(256, len(x_ref_inspect)),
                         loss_type="mse",
-                    )
-                )
-            except ValueError as exc:
-                if "inspect" not in str(exc).lower():
-                    raise
-                warnings.append(f"inspect_skipped: {exc}")
-            else:
-                scalar_rows.extend(
-                    [
-                        {
-                            **base_row,
-                            "source": "inspect",
-                            "metric_name": "init_error",
-                            "value": init_error,
-                            "eval_repeat_idx": np.nan,
-                            "epoch": np.nan,
-                        },
-                        {
-                            **base_row,
-                            "source": "inspect",
-                            "metric_name": "training_loss_error",
-                            "value": training_loss_error,
-                            "eval_repeat_idx": np.nan,
-                            "epoch": np.nan,
-                        },
-                    ]
+                    ),
+                ),
+            ]
+            for metric_name, metric_fn in inspect_metrics:
+                try:
+                    metric_value = float(metric_fn())
+                except Exception as exc:
+                    reason = "skipped" if isinstance(exc, ValueError) and "inspect" in str(exc).lower() else "failed"
+                    warn_once(f"inspect_{metric_name}_{reason}: {type(exc).__name__}: {exc}")
+                    continue
+                scalar_rows.append(
+                    {
+                        **base_row,
+                        "source": "inspect",
+                        "metric_name": metric_name,
+                        "value": metric_value,
+                        "eval_repeat_idx": np.nan,
+                        "epoch": np.nan,
+                    }
                 )
         else:
             reason = "image_data" if image_like and not inspect_image_data else f"feature_dim={feature_dim}"
-            warning = f"inspect_skipped: {reason}"
-            if warning not in warnings:
-                warnings.append(warning)
+            warn_once(f"inspect_skipped: {reason}")
 
         if checkpoint_epoch != final_epoch:
             continue
@@ -324,10 +361,9 @@ def evaluate_one_run(
                     n_power_iter=8,
                     max_n_steps=10,
                 )
-            except ValueError as exc:
-                if "inspect" not in str(exc).lower():
-                    raise
-                warnings.append(f"jacobian_skipped: {exc}")
+            except Exception as exc:
+                reason = "skipped" if isinstance(exc, ValueError) and "inspect" in str(exc).lower() else "failed"
+                warn_once(f"jacobian_{reason}: {type(exc).__name__}: {exc}")
             else:
                 jacobian_payload = {
                     "curve": np.asarray(jac_curve, dtype=float),
@@ -335,9 +371,7 @@ def evaluate_one_run(
                 }
         else:
             reason = "image_data" if image_like and not inspect_image_data else f"feature_dim={feature_dim}"
-            warning = f"jacobian_skipped: {reason}"
-            if warning not in warnings:
-                warnings.append(warning)
+            warn_once(f"jacobian_skipped: {reason}")
 
     pd.DataFrame(scalar_rows).to_csv(scalars_path, index=False, compression="gzip")
     if jacobian_payload is not None:
@@ -473,3 +507,4 @@ if __name__ == "__main__":
         handle.write(f"device: {args.device}\n")
         handle.write(f"shard_index: {args.shard_index}\n")
         handle.write(f"shard_count: {args.shard_count}\n")
+    print("done")

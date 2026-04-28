@@ -1,0 +1,228 @@
+run:
+  name: 01_alphastable_pilot
+  seed: 0
+  dtype: float64
+  n_trial: 3
+
+sweep:
+  datasets:
+    - alpha_stable_target
+    - alpha_stable_mixture_target
+  networks:
+    - mlp_pilot
+  models:
+    - gaussian_flow_ot_s2
+    - gaussian_flow_ot_s5
+    - gaussian_flow_ot_s8
+    - gaussian_flow_linear_s2
+    - gaussian_flow_linear_s5
+    - gaussian_flow_linear_s8
+    - ddpm_v_s2
+    - ddpm_v_s5
+    - ddpm_v_s8
+    - dlpm_eps_a15
+    - dlpm_eps_a17
+    - dlpm_eps_a19
+    - tedm_origin_nu25
+    - tedm_origin_nu21
+    - tedm_origin_nu30
+  trains:
+    - pilot_lr2e4
+    - pilot_lr5e4
+    - pilot_lr1e3
+
+datasets:
+  alpha_stable_target:
+    kind: synthetic
+    name: alpha_stable
+    params:
+      n_samples: 100000
+      alpha: 1.7
+      dim: 100
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
+  alpha_stable_mixture_target:
+    kind: synthetic
+    name: unbalanced_highdim_alpha_stable_mixture
+    params:
+      n_samples: 100000
+      alpha: 1.7
+      dim: 100
+      n_modes: 16
+      rank: 6
+      imbalance_tau: 1.2
+      mean_scale: 7.5
+      base_scale: 0.55
+      anisotropy: 1.0
+      structure_seed: 0
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
+networks:
+  mlp_pilot:
+    name: mlp
+    params:
+      width: 256
+      depth: 4
+      time_dim: 128
+      dropout: 0.0
+      use_norm: true
+
+models:
+  gaussian_flow_ot_s2:
+    name: gaussian_flow_ot
+    params:
+      n_steps: 256
+      sigma_min: 0.001
+      sigma_max: 2.0
+
+  gaussian_flow_ot_s5:
+    name: gaussian_flow_ot
+    params:
+      n_steps: 256
+      sigma_min: 0.001
+      sigma_max: 5.0
+
+  gaussian_flow_ot_s8:
+    name: gaussian_flow_ot
+    params:
+      n_steps: 256
+      sigma_min: 0.001
+      sigma_max: 8.0
+
+  gaussian_flow_linear_s2:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 2.0
+
+  gaussian_flow_linear_s5:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 5.0
+
+  gaussian_flow_linear_s8:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 8.0
+
+  ddpm_v_s2:
+    name: ddpm_v
+    params:
+      n_steps: 256
+      sigma_max: 2.0
+
+  ddpm_v_s5:
+    name: ddpm_v
+    params:
+      n_steps: 256
+      sigma_max: 5.0
+
+  ddpm_v_s8:
+    name: ddpm_v
+    params:
+      n_steps: 256
+      sigma_max: 8.0
+
+  dlpm_eps_a15:
+    name: dlpm_eps
+    params:
+      n_steps: 256
+      alpha: 1.5
+
+  dlpm_eps_a17:
+    name: dlpm_eps
+    params:
+      n_steps: 256
+      alpha: 1.7
+
+  dlpm_eps_a19:
+    name: dlpm_eps
+    params:
+      n_steps: 256
+      alpha: 1.9
+
+  tedm_origin_nu25:
+    name: tedm_origin
+    params:
+      n_steps: 18
+      nu: 2.5
+      sigma_min: 0.005
+      sigma_max: 5.0
+
+  tedm_origin_nu21:
+    name: tedm_origin
+    params:
+      n_steps: 18
+      nu: 2.1
+      sigma_min: 0.005
+      sigma_max: 5.0
+
+  tedm_origin_nu30:
+    name: tedm_origin
+    params:
+      n_steps: 18
+      nu: 3.0
+      sigma_min: 0.005
+      sigma_max: 5.0
+
+trains:
+  pilot_lr2e4:
+    device: cuda
+    batch_size: 1024
+    n_epochs: 16
+    lr: 0.0002
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 20
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 4
+    ckpt_freq_epochs: 16
+    ckpt_keep_last: 1
+
+  pilot_lr5e4:
+    device: cuda
+    batch_size: 1024
+    n_epochs: 16
+    lr: 0.0005
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 20
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 4
+    ckpt_freq_epochs: 16
+    ckpt_keep_last: 1
+
+  pilot_lr1e3:
+    device: cuda
+    batch_size: 1024
+    n_epochs: 16
+    lr: 0.001
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 20
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 4
+    ckpt_freq_epochs: 16
+    ckpt_keep_last: 1
+
+save:
+  root_dir: benchmarks/data

@@ -1,5 +1,5 @@
 run:
-  name: 02_hrrr_baseline
+  name: 04_image_bench
   seed: 0
   dtype: float32
   n_trial: 1
@@ -7,6 +7,7 @@ run:
 sweep:
   datasets:
     - hrrr
+    - lvis
   networks:
     - unet
   models:
@@ -29,6 +30,21 @@ datasets:
       test_size: 0.1
       random_state: 0
       standardize: true
+
+  lvis:
+    kind: real
+    name: lvis
+    params:
+      split: train
+      image_size: 64
+      max_samples: 10000
+      category_frequency: r
+      seed: 0
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
 
 networks:
   unet:
@@ -84,12 +100,12 @@ trains:
   standard:
     device: cuda
     batch_size: 8
-    n_epochs: 512
+    n_epochs: 1024
     lr: 0.0002
     num_workers: 0
     use_adamw: true
     weight_decay: 0.0001
-    grad_clip_norm: 1.0
+    grad_clip_norm: 5.0
     lr_schedule: cosine
     warmup_steps: 1000
     cosine_eta_min_ratio: 0.05
@@ -98,4 +114,4 @@ trains:
     ckpt_keep_last: 4
 
 save:
-  root_dir: _02_results
+  root_dir: benchmarks/data

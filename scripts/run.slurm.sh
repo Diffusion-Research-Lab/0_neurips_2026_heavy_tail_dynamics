@@ -18,7 +18,7 @@ set -euo pipefail
 #   sbatch scripts/run.slurm.sh
 #   sbatch --array=0-15 scripts/run.slurm.sh
 #
-# Defaults to benchmarks/configs/02_hrrr_unet.yaml.
+# Defaults to benchmarks/configs/04_image_bench.yaml.
 # With a Slurm array, each task runs one shard of the same config.
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
@@ -69,7 +69,7 @@ else
   exit 1
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
-CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/02_hrrr_unet.yaml}}"
+CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/04_image_bench.yaml}}"
 BATCH_DIR="${CLI_BATCH_DIR:-${BATCH_DIR:-}}"
 
 case "${CONFIG_PATH}" in
@@ -155,6 +155,8 @@ PY
   CONFIG_STEM="$(basename "${CONFIG_PATH}" .yaml)"
   if [[ "${SAVE_ROOT}" = /* ]]; then
     BATCH_DIR="${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
+  elif [[ "${SAVE_ROOT}" == "benchmarks/data" || "${SAVE_ROOT}" == "benchmarks/data/"* ]]; then
+    BATCH_DIR="${PROJECT_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
   elif [[ -n "${RUN_ROOT:-}" ]]; then
     BATCH_DIR="${RUN_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
   elif [[ -n "${WORK:-}" ]]; then

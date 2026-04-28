@@ -1,5 +1,5 @@
 run:
-  name: 01_alphastable_baseline
+  name: 02_alphastable_bench
   seed: 0
   dtype: float64
   n_trial: 10
@@ -7,6 +7,7 @@ run:
 sweep:
   datasets:
     - alpha_stable_target
+    - alpha_stable_mixture_target
   networks:
     - mlp
   models:
@@ -26,6 +27,26 @@ datasets:
       n_samples: 100000
       alpha: 1.7
       dim: 100
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
+  alpha_stable_mixture_target:
+    kind: synthetic
+    name: unbalanced_highdim_alpha_stable_mixture
+    params:
+      n_samples: 100000
+      alpha: 1.7
+      dim: 100
+      n_modes: 16
+      rank: 6
+      imbalance_tau: 1.2
+      mean_scale: 7.5
+      base_scale: 0.55
+      anisotropy: 1.0
+      structure_seed: 0
     split:
       val_size: 0.1
       test_size: 0.1
@@ -94,4 +115,4 @@ trains:
     ckpt_keep_last: 8
 
 save:
-  root_dir: _01_results
+  root_dir: benchmarks/data

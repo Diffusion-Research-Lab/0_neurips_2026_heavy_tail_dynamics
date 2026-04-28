@@ -22,6 +22,8 @@ from genkit.training import train
 from genkit.visitor import CoreMetricsVisitor
 from labkit.config import parse_dtype
 from labkit.utils import set_seed
+
+
 MODEL_REGISTRY = {
     "ddpm_v": DDPMV,
     "gaussian_flow_linear": GaussianFlowLinear,
@@ -153,13 +155,6 @@ def make_batch_dir(run_cfg: dict[str, Any], save_cfg: dict[str, Any]) -> Path:
     return batch_dir
 
 
-def _make_run_dir(batch_dir: Path, combo_index: int, combo_name: str) -> Path:
-    """Create one run subdirectory inside the batch directory."""
-    run_dir = batch_dir / f"{combo_index:03d}_{combo_name}"
-    run_dir.mkdir(parents=True, exist_ok=False)
-    return run_dir
-
-
 def build_dataset(dataset_cfg: dict[str, Any], dtype: torch.dtype, device: str | torch.device):
     """Load one dataset split triplet from config."""
     kind = str(dataset_cfg.get("kind", "synthetic")).lower()
@@ -230,11 +225,13 @@ def _resolved_config(
     config_path: Path,
     dtype: torch.dtype,
     batch_dir: Path,
+    run_cfg: dict[str, Any],
     dataset_cfg: dict[str, Any],
     network_cfg: dict[str, Any],
     model_cfg: dict[str, Any],
     train_cfg: dict[str, Any],
     save_cfg: dict[str, Any],
+    trial_idx: int,
     x_train: torch.Tensor,
     x_val: torch.Tensor,
     x_test: torch.Tensor,
@@ -242,17 +239,16 @@ def _resolved_config(
 ) -> dict[str, Any]:
     """Build the saved resolved config for one run."""
     resolved = {
-        "run": {
-            "resolved_config_path": str(config_path.resolve()),
-            "resolved_batch_dir": str(batch_dir.resolve()),
-            "resolved_dtype": str(dtype),
-        },
+        "run": {**copy.deepcopy(run_cfg), "trial_idx": int(trial_idx)},
         "dataset": copy.deepcopy(dataset_cfg),
         "network": copy.deepcopy(network_cfg),
         "model": copy.deepcopy(model_cfg),
         "train": copy.deepcopy(train_cfg),
         "save": copy.deepcopy(save_cfg),
     }
+    resolved["run"]["resolved_config_path"] = str(config_path.resolve())
+    resolved["run"]["resolved_batch_dir"] = str(batch_dir.resolve())
+    resolved["run"]["resolved_dtype"] = str(dtype)
     resolved["dataset"]["resolved_train_shape"] = list(x_train.shape)
     resolved["dataset"]["resolved_val_shape"] = list(x_val.shape)
     resolved["dataset"]["resolved_test_shape"] = list(x_test.shape)
@@ -306,77 +302,89 @@ def run_one(
 ) -> dict[str, Any]:
     """Execute one config combination and save its artifacts."""
     run_dir = batch_dir / f"{combo_index:03d}_{combo_name}"
+    result = {
+        "combo_index": combo_index,
+        "combo_name": combo_name,
+        "run_dir": str(run_dir),
+        "trial_idx": trial_idx,
+        "dataset_preset": dataset_variant["variant_name"],
+        "network_preset": network_variant["variant_name"],
+        "model_preset": model_variant["variant_name"],
+        "train_preset": train_variant["variant_name"],
+        "status": "failed",
+        "error_type": "",
+        "error_message": "",
+        "final_loss": float("nan"),
+        "final_grad_norm": float("nan"),
+    }
+
     if skip_existing and (run_dir / "checkpoint.pt").exists():
         logging.info("[%03d] skipping existing run: %s", combo_index, run_dir)
+        return {**result, "status": "skipped"}
+
+    if run_dir.exists() and not skip_existing:
         return {
-            "combo_index": combo_index,
-            "combo_name": combo_name,
-            "run_dir": str(run_dir),
-            "trial_idx": trial_idx,
-            "dataset_preset": dataset_variant["variant_name"],
-            "network_preset": network_variant["variant_name"],
-            "model_preset": model_variant["variant_name"],
-            "train_preset": train_variant["variant_name"],
-            "status": "skipped",
-            "error_type": "",
-            "error_message": "",
-            "final_loss": float("nan"),
-            "final_grad_norm": float("nan"),
+            **result,
+            "error_type": "FileExistsError",
+            "error_message": f"Run directory already exists: {run_dir}",
         }
 
-    run_dir = _make_run_dir(batch_dir, combo_index, combo_name)
+    run_dir.mkdir(parents=True, exist_ok=skip_existing)
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_cfg = {**copy.deepcopy(dataset_variant["config"]), "preset_name": dataset_variant["variant_name"]}
-    network_cfg = {**copy.deepcopy(network_variant["config"]), "preset_name": network_variant["variant_name"]}
-    model_cfg = {**copy.deepcopy(model_variant["config"]), "preset_name": model_variant["variant_name"]}
-    train_cfg = {**copy.deepcopy(train_variant["config"]), "preset_name": train_variant["variant_name"]}
-
-    requested_config = to_serializable(
-        {
-            "run": {**copy.deepcopy(run_cfg), "trial_idx": int(trial_idx)},
-            "dataset": dataset_cfg,
-            "network": network_cfg,
-            "model": model_cfg,
-            "train": train_cfg,
-            "save": copy.deepcopy(save_cfg),
-        }
-    )
-    with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(requested_config, handle, sort_keys=False)
-
-    set_seed(int(run_cfg.get("seed", 0)) + combo_index - 1)
-    device = str(train_cfg.get("device", "cpu"))
-    x_train, x_val, x_test = build_dataset(dataset_cfg, dtype=dtype, device="cpu")
-    net, network_params = build_network(network_cfg, x_train)
-    net = net.to(device=device, dtype=dtype)
-    generative_model, model_params = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
-
-    train_kwargs = copy.deepcopy(train_cfg)
-    train_kwargs.pop("preset_name", None)
-    train_kwargs["device"] = device
-    train_kwargs["ckpt_dir"] = str(ckpt_dir)
-
-    logging.info(f"[{combo_index:03d}] run_dir: {run_dir}")
-    logging.info(
-        f"[{combo_index:03d}] dataset={dataset_variant['variant_name']} "
-        f"network={network_variant['variant_name']} "
-        f"model={model_variant['variant_name']} "
-        f"train={train_variant['variant_name']}"
-    )
-
     try:
+        (run_dir / "error.txt").unlink(missing_ok=True)
+        dataset_cfg = {**copy.deepcopy(dataset_variant["config"]), "preset_name": dataset_variant["variant_name"]}
+        network_cfg = {**copy.deepcopy(network_variant["config"]), "preset_name": network_variant["variant_name"]}
+        model_cfg = {**copy.deepcopy(model_variant["config"]), "preset_name": model_variant["variant_name"]}
+        train_cfg = {**copy.deepcopy(train_variant["config"]), "preset_name": train_variant["variant_name"]}
+
+        requested_config = to_serializable(
+            {
+                "run": {**copy.deepcopy(run_cfg), "trial_idx": int(trial_idx)},
+                "dataset": dataset_cfg,
+                "network": network_cfg,
+                "model": model_cfg,
+                "train": train_cfg,
+                "save": copy.deepcopy(save_cfg),
+            }
+        )
+        with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(requested_config, handle, sort_keys=False)
+
+        set_seed(int(run_cfg.get("seed", 0)) + combo_index - 1)
+        device = str(train_cfg.get("device", "cpu"))
+        x_train, x_val, x_test = build_dataset(dataset_cfg, dtype=dtype, device="cpu")
+        net, network_params = build_network(network_cfg, x_train)
+        net = net.to(device=device, dtype=dtype)
+        generative_model, model_params = build_model(model_cfg, net, x_train, dtype=dtype, device=device)
+
+        train_kwargs = copy.deepcopy(train_cfg)
+        train_kwargs.pop("preset_name", None)
+        train_kwargs["device"] = device
+        train_kwargs["ckpt_dir"] = str(ckpt_dir)
+
+        logging.info(f"[{combo_index:03d}] run_dir: {run_dir}")
+        logging.info(
+            f"[{combo_index:03d}] dataset={dataset_variant['variant_name']} "
+            f"network={network_variant['variant_name']} "
+            f"model={model_variant['variant_name']} "
+            f"train={train_variant['variant_name']}"
+        )
+
         _, diagnostics = train(generative_model=generative_model, target_data=x_train, visitors=[CoreMetricsVisitor()], **train_kwargs)
         resolved_config = _resolved_config(
             config_path,
             dtype,
             batch_dir,
+            run_cfg,
             dataset_cfg,
             network_cfg,
             model_cfg,
             train_cfg,
             save_cfg,
+            trial_idx,
             x_train,
             x_val,
             x_test,
@@ -409,17 +417,8 @@ def run_one(
         losses = core_records.get("training_loss", [])
         grad_norms = core_records.get("grad_norm_epoch", [])
         return {
-            "combo_index": combo_index,
-            "combo_name": combo_name,
-            "run_dir": str(run_dir),
-            "trial_idx": trial_idx,
-            "dataset_preset": dataset_variant["variant_name"],
-            "network_preset": network_variant["variant_name"],
-            "model_preset": model_variant["variant_name"],
-            "train_preset": train_variant["variant_name"],
+            **result,
             "status": "ok",
-            "error_type": "",
-            "error_message": "",
             "final_loss": losses[-1] if losses else float("nan"),
             "final_grad_norm": grad_norms[-1] if grad_norms else float("nan"),
         }
@@ -443,24 +442,15 @@ def run_one(
         )
         logging.exception("[%03d] run failed: %s", combo_index, run_dir)
         return {
-            "combo_index": combo_index,
-            "combo_name": combo_name,
-            "run_dir": str(run_dir),
-            "trial_idx": trial_idx,
-            "dataset_preset": dataset_variant["variant_name"],
-            "network_preset": network_variant["variant_name"],
-            "model_preset": model_variant["variant_name"],
-            "train_preset": train_variant["variant_name"],
+            **result,
             "status": "failed",
             "error_type": type(exc).__name__,
             "error_message": str(exc),
-            "final_loss": float("nan"),
-            "final_grad_norm": float("nan"),
         }
 
 
-def main() -> None:
-    """Run the configured benchmark sweep."""
+if __name__ == "__main__":
+
     setup_logging()
 
     parser = argparse.ArgumentParser(description="Run benchmark sweeps from one YAML config.")
@@ -550,7 +540,3 @@ def main() -> None:
         handle.write(f"shard_index: {args.shard_index}\n")
         handle.write(f"shard_count: {args.shard_count}\n")
     print("done")
-
-
-if __name__ == "__main__":
-    main()
