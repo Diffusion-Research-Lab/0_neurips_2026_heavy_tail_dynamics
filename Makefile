@@ -10,6 +10,8 @@ PILOT_ANALYSIS  ?= benchmarks/03_pilot_analysis.py
 BENCH_PLOTTING  ?= benchmarks/04_plotting_bench.py
 ARTIFACT_DIR      ?= benchmarks/artifacts
 LEGACY_ARTIFACT_DIR ?= benchmarks/data
+TABLE_DIR       ?= benchmarks/tables
+FIGURE_DIR      ?= benchmarks/figures
 PILOT_CONFIG_DIR ?= benchmarks/configs/pilot
 BENCH_TEMPLATE_DIR ?= benchmarks/configs/templates
 BENCH_CONFIG_DIR ?= benchmarks/configs/bench
@@ -194,7 +196,7 @@ evaluate-bench: analyze-pilot
 	done
 
 plotting-bench:
-	$(BASH) -lc '$(ACTIVATE); python "$(BENCH_PLOTTING)" --artifact-root "$(LEGACY_ARTIFACT_DIR)" --table-root benchmarks/tables --figure-root benchmarks/figures'
+	$(BASH) -lc '$(ACTIVATE); python "$(BENCH_PLOTTING)" --artifact-root "$(LEGACY_ARTIFACT_DIR)" --table-root "$(TABLE_DIR)" --figure-root "$(FIGURE_DIR)"'
 
 check:
 	$(BASH) -lc '$(ACTIVATE); flake8 --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples'
@@ -225,6 +227,6 @@ help:
 	@printf "  %-14s %s\n" "evaluate-bench" "Submit benchmark evaluation only"
 	@printf "  %-14s %s\n" "plotting-bench" "Generate benchmark tables and figures from current eval artifacts"
 	@printf "  %-14s %s\n" "check"         "Run lint, tests, local smoke, and examples"
-	@printf "  %-14s %s\n" "send"          "Send the project tree to the remote benchmark host"
+	@printf "  %-14s %s\n" "send"          "Send code and configs only to the remote benchmark host"
 	@printf "  %-14s %s\n" "supp"          "Build the supplementary code archive"
 	@printf "  %-14s %s\n" "help"          "Print this help message"
