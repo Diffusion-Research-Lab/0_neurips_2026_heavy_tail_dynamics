@@ -25,7 +25,7 @@ import yaml  # noqa: E402
 
 from benchmarks.utils import load_yaml  # noqa: E402
 
-DATA_ROOT = PROJECT_ROOT / "benchmarks" / "data"
+ARTIFACT_ROOT = PROJECT_ROOT / "benchmarks" / "artifacts"
 CONFIG_ROOT = PROJECT_ROOT / "benchmarks" / "configs"
 REPORT_ROOT = PROJECT_ROOT / "benchmarks" / "reports"
 BENCH_CONFIG_ROOT = CONFIG_ROOT / "bench"
@@ -75,11 +75,19 @@ FAMILY_SPECS = {
         "match": "image",
     },
 }
+DATASET_TRAIN_OVERRIDES = {
+    "hrrr": {
+        "n_epochs": 256,
+    },
+    "imagenet_lt": {
+        "n_epochs": 128,
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, default=DATA_ROOT, help="Root directory containing evaluated pilot batches.")
+    parser.add_argument("--artifact-root", type=Path, default=ARTIFACT_ROOT, help="Root directory containing benchmark artifacts.")
     parser.add_argument("--report-root", type=Path, default=REPORT_ROOT, help="Output directory for CSV/Markdown/PNG reports.")
     parser.add_argument("--bench-config-root", type=Path, default=BENCH_CONFIG_ROOT, help="Output directory for generated benchmark configs.")
     parser.add_argument("--skip-reports", action="store_true", help="Do not write CSV/Markdown/PNG reports.")
@@ -87,14 +95,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_family_batch(data_root: Path, family: str) -> Path:
+def discover_family_batch(artifact_root: Path, family: str) -> Path:
     spec = FAMILY_SPECS[family]
     candidates = [
-        path for path in data_root.glob(spec["batch_pattern"])
+        path for path in artifact_root.glob(spec["batch_pattern"])
         if path.is_dir() and spec["match"] in path.name.lower()
     ]
     if not candidates:
-        raise FileNotFoundError(f"No evaluated pilot batch found for family={family!r} under {data_root}.")
+        raise FileNotFoundError(f"No evaluated pilot batch found for family={family!r} under {artifact_root}.")
     return sorted(candidates)[-1]
 
 
@@ -203,16 +211,16 @@ def load_artifact_run(artifact_run_dir: Path) -> pd.DataFrame | None:
     return frame
 
 
-def load_batches(data_root: Path) -> pd.DataFrame:
+def load_batches(artifact_root: Path) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for family in FAMILY_SPECS:
-        batch_dir = discover_family_batch(data_root, family)
+        batch_dir = discover_family_batch(artifact_root, family)
         for artifact_run_dir in sorted(path for path in batch_dir.iterdir() if path.is_dir()):
             loaded = load_artifact_run(artifact_run_dir)
             if loaded is not None:
                 frames.append(loaded)
     if not frames:
-        raise FileNotFoundError(f"No evaluated pilot runs with scalars.csv.gz found under {data_root}.")
+        raise FileNotFoundError(f"No evaluated pilot runs with scalars.csv.gz found under {artifact_root}.")
     frame = pd.concat(frames, ignore_index=True)
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
     frame["eval_repeat_idx"] = pd.to_numeric(frame.get("eval_repeat_idx"), errors="coerce")
@@ -403,6 +411,7 @@ def build_bench_config(row: pd.Series) -> dict[str, Any]:
     final_train_name = selected_train_name(train_lr)
     final_train_cfg = copy.deepcopy(bench_template["trains"][bench_template["sweep"]["trains"][0]])
     final_train_cfg["lr"] = train_lr
+    final_train_cfg.update(DATASET_TRAIN_OVERRIDES.get(dataset_preset, {}))
 
     run_name = f"bench_{family}__{dataset_slug}__{model_name}"
     return {
@@ -481,7 +490,7 @@ def write_bench_configs(recommendations_df: pd.DataFrame, bench_config_root: Pat
 
 def main() -> int:
     args = parse_args()
-    pilot_frame = load_batches(args.data_root)
+    pilot_frame = load_batches(args.artifact_root)
     setting_summary = summarize_settings(pilot_frame)
     recommendations_df, _ = rank_settings(setting_summary)
     if recommendations_df.empty:

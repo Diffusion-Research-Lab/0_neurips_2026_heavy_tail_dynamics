@@ -7,7 +7,9 @@ BENCH_MAIN      ?= benchmarks/01_main.py
 BENCH_EVAL      ?= benchmarks/02_evaluate.py
 BENCH_UTILS     ?= benchmarks/utils.py
 PILOT_ANALYSIS  ?= benchmarks/03_pilot_analysis.py
-ANALYSIS_DATA_DIR ?= benchmarks/data
+BENCH_PLOTTING  ?= benchmarks/04_plotting_bench.py
+ARTIFACT_DIR      ?= benchmarks/artifacts
+LEGACY_ARTIFACT_DIR ?= benchmarks/data
 PILOT_CONFIG_DIR ?= benchmarks/configs/pilot
 BENCH_TEMPLATE_DIR ?= benchmarks/configs/templates
 BENCH_CONFIG_DIR ?= benchmarks/configs/bench
@@ -38,8 +40,9 @@ PILOT_SBATCH_ARGS ?= $(JZ_GPU_ARGS) --time=04:00:00
 BENCH_SBATCH_ARGS ?= $(JZ_GPU_ARGS) --time=20:00:00
 EVAL_SBATCH_ARGS ?= $(JZ_GPU_ARGS) --time=02:00:00
 DATASET_SBATCH_ARGS ?= --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=01:00:00
-EVAL_PILOT_ARGS ?= --n-eval-samples 512 --n-eval-repeats 2 --inspect-samples 512 --probe-size 64 --sample-batch-size 16 --max-fid-dim 2048 --max-mmd-dim 2048 --max-mmd-samples 2048 --max-inspect-dim 1024
-EVAL_BENCH_ARGS ?= --n-eval-samples 2048 --n-eval-repeats 4 --inspect-samples 1024 --probe-size 128 --sample-batch-size 64 --max-fid-dim 2048 --max-mmd-dim 2048 --max-mmd-samples 4096 --max-inspect-dim 1024
+EVAL_PILOT_ARGS ?= --n-eval-samples 2048 --n-eval-repeats 4 --inspect-samples 1024 --probe-size 128 --sample-batch-size 64 --max-fid-dim 2048 --max-mmd-dim 2048 --max-mmd-samples 4096 --max-inspect-dim 1024
+EVAL_BENCH_TABULAR_ARGS ?= --n-eval-samples 2048 --n-eval-repeats 4 --inspect-samples 1024 --probe-size 128 --sample-batch-size 64 --max-fid-dim 2048 --max-mmd-dim 2048 --max-mmd-samples 4096 --max-inspect-dim 1024
+EVAL_BENCH_IMAGE_ARGS ?= --n-eval-samples 4096 --n-eval-repeats 6 --inspect-samples 1024 --probe-size 128 --sample-batch-size 64 --max-fid-dim 2048 --max-mmd-dim 2048 --max-mmd-samples 4096 --max-inspect-dim 1024
 PILOT_SYNTH_CONFIG ?= $(PILOT_CONFIG_DIR)/synth.yaml
 PILOT_REAL_CONFIG ?= $(PILOT_CONFIG_DIR)/real.yaml
 PILOT_IMAGE_CONFIG ?= $(PILOT_CONFIG_DIR)/image.yaml
@@ -47,7 +50,7 @@ PREFETCH_CONFIG_INPUTS = $(PILOT_CONFIG_DIR) $(BENCH_TEMPLATE_DIR) $(BENCH_CONFI
 
 .DEFAULT_GOAL := help
 
-.PHONY: setup dataset dataset-tabular dataset-tabular-init dataset-hrrr dataset-lvis dataset-cifar100-lt dataset-cifar100-lt-init dataset-imagenet-lt dataset-imagenet-lt-init pilot analyze-pilot bench evaluate-pilot evaluate-bench check send supp help
+.PHONY: setup dataset dataset-tabular dataset-tabular-init dataset-hrrr dataset-lvis dataset-cifar100-lt dataset-cifar100-lt-init dataset-imagenet-lt dataset-imagenet-lt-init pilot analyze-pilot bench evaluate-pilot evaluate-bench plotting-bench check send supp help
 
 setup:
 	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
@@ -130,7 +133,7 @@ dataset-imagenet-lt-init:
 	@$(BASH) scripts/init.imagenet_lt.sh
 
 define latest_batch
-$(VENV_PYTHON) "$(BENCH_UTILS)" latest-batch --root "$(ANALYSIS_DATA_DIR)" --pattern "$(1)"
+$(VENV_PYTHON) "$(BENCH_UTILS)" latest-batch --root "$(ARTIFACT_DIR)" --pattern "$(1)"
 endef
 
 pilot_array = 0-$(shell expr $(1) - 1)
@@ -169,7 +172,7 @@ bench: analyze-pilot
 
 evaluate-pilot:
 	@mkdir -p "$(LOG_DIR)"
-	@test -d "$(ANALYSIS_DATA_DIR)" || { echo "Missing: $(ANALYSIS_DATA_DIR)" >&2; exit 2; }
+	@test -d "$(ARTIFACT_DIR)" || { echo "Missing: $(ARTIFACT_DIR)" >&2; exit 2; }
 	sbatch --job-name=htfm_evaluate --array=$(call pilot_array,$(EVAL_PILOT_SYNTH_SHARDS)) $(EVAL_SBATCH_ARGS) $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
 	  --batch-dir "$$($(call latest_batch,*_pilot_synth))" $(EVAL_PILOT_ARGS)
 	sbatch --job-name=htfm_evaluate --array=$(call pilot_array,$(EVAL_PILOT_REAL_SHARDS)) $(EVAL_SBATCH_ARGS) $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
@@ -179,14 +182,19 @@ evaluate-pilot:
 
 evaluate-bench: analyze-pilot
 	@mkdir -p "$(LOG_DIR)"
-	@test -d "$(ANALYSIS_DATA_DIR)" || { echo "Missing: $(ANALYSIS_DATA_DIR)" >&2; exit 2; }
+	@test -d "$(ARTIFACT_DIR)" || { echo "Missing: $(ARTIFACT_DIR)" >&2; exit 2; }
 	@$(require_bench_configs)
 	@find "$(BENCH_CONFIG_DIR)" -name '*.yaml' | sort | while read -r config; do \
 	  run_name="$$($(call config_run_name,$$config))"; \
-	  batch_dir="$$($(call latest_batch,*_$$run_name))"; \
+	  batch_dir="$$($(call latest_batch,*_$$run_name) 2>/dev/null || true)"; \
+	  if [[ -z "$$batch_dir" ]]; then echo "[evaluate-bench] skip $$config -> no batch found under $(ARTIFACT_DIR)"; continue; fi; \
+	  if echo "$$config" | grep -q '/image/'; then eval_args='$(EVAL_BENCH_IMAGE_ARGS)'; else eval_args='$(EVAL_BENCH_TABULAR_ARGS)'; fi; \
 	  echo "[evaluate-bench] submit $$config -> $$batch_dir"; \
-	  sbatch --job-name=htfm_evaluate $(EVAL_SBATCH_ARGS) $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh --batch-dir "$$batch_dir" $(EVAL_BENCH_ARGS); \
+	  sbatch --job-name=htfm_evaluate $(EVAL_SBATCH_ARGS) $(EVAL_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh --batch-dir "$$batch_dir" $$eval_args; \
 	done
+
+plotting-bench:
+	$(BASH) -lc '$(ACTIVATE); python "$(BENCH_PLOTTING)" --artifact-root "$(LEGACY_ARTIFACT_DIR)" --table-root benchmarks/tables --figure-root benchmarks/figures'
 
 check:
 	$(BASH) -lc '$(ACTIVATE); flake8 --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples'
@@ -215,6 +223,7 @@ help:
 	@printf "  %-14s %s\n" "bench"      "Generate and submit explicit benchmark configs via Slurm"
 	@printf "  %-14s %s\n" "evaluate-pilot" "Submit pilot evaluation only"
 	@printf "  %-14s %s\n" "evaluate-bench" "Submit benchmark evaluation only"
+	@printf "  %-14s %s\n" "plotting-bench" "Generate benchmark tables and figures from current eval artifacts"
 	@printf "  %-14s %s\n" "check"         "Run lint, tests, local smoke, and examples"
 	@printf "  %-14s %s\n" "send"          "Send the project tree to the remote benchmark host"
 	@printf "  %-14s %s\n" "supp"          "Build the supplementary code archive"

@@ -2,7 +2,7 @@ run:
   name: template_image_bench
   seed: 0
   dtype: float32
-  n_trial: 1
+  n_trial: 2
 
 sweep:
   datasets:
@@ -38,7 +38,6 @@ datasets:
       split: train
       image_size: 64
       max_samples: 50000
-      category_frequency: r
       seed: 0
     split:
       val_size: 0.1
@@ -52,7 +51,7 @@ datasets:
     params:
       split: train
       image_size: 64
-      imbalance_factor: 100
+      imbalance_factor: 20
       max_samples: 50000
       seed: 0
     split:
@@ -129,7 +128,7 @@ trains:
   standard:
     device: cuda
     batch_size: 8
-    n_epochs: 1024
+    n_epochs: 512
     lr: 0.0002
     num_workers: 0
     use_adamw: true
@@ -143,4 +142,4 @@ trains:
     ckpt_keep_last: 4
 
 save:
-  root_dir: benchmarks/data
+  root_dir: benchmarks/artifacts

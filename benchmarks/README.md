@@ -10,6 +10,8 @@ To setup the benchmark:
   make dataset
 ```
 
+Dataset caches live under `flowbench_data/`. Benchmark run outputs live under `benchmarks/artifacts/`.
+
 To launch the pilot:
 
 ```bash

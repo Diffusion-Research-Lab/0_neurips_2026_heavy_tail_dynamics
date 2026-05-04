@@ -33,10 +33,10 @@ DEFAULT_CONFIGS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--data-root",
+        "--cache-root",
         type=Path,
         default=None,
-        help="FlowBench data root. Defaults to $FLOWBENCH_DATA, then $WORK/flowbench_data.",
+        help="FlowBench dataset-cache root. Defaults to $FLOWBENCH_DATA, then $WORK/flowbench_data.",
     )
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing processed caches.")
     parser.add_argument(
@@ -110,9 +110,9 @@ def cache_path_from_yaml(root: Path, dataset_cfg: dict, dtype_value) -> Path:
     return Path(root) / "processed" / name / f"{name}_{key}.pt"
 
 
-def _resolve_data_root(data_root_arg) -> Path:
-    if data_root_arg is not None:
-        return Path(data_root_arg).expanduser()
+def _resolve_cache_root(cache_root_arg) -> Path:
+    if cache_root_arg is not None:
+        return Path(cache_root_arg).expanduser()
     flowbench_data = os.environ.get("FLOWBENCH_DATA")
     if flowbench_data:
         return Path(flowbench_data).expanduser()
@@ -140,7 +140,7 @@ def _real_dataset_variants_yaml(config_path: Path) -> list[tuple[dict, str]]:
     return variants
 
 
-def _collect_yaml_tasks(args, root: Path) -> list[tuple[Path, dict, str]]:
+def _collect_yaml_tasks(args) -> list[tuple[Path, dict, str]]:
     config_inputs = args.configs or [PROJECT_ROOT / path for path in DEFAULT_CONFIGS]
     configs = _expand_config_inputs(config_inputs)
     only_datasets = {name.strip() for name in args.only_dataset if name.strip()}
@@ -205,7 +205,7 @@ def _run_build(args, tasks: list, root: Path) -> int:
             f"vs benchmarks._real_data_cache={RUNTIME_CACHE_VERSION}"
         )
 
-    print(f"[dataset] processed real-data root: {root / 'processed'}")
+    print(f"[dataset] processed dataset-cache root: {root / 'processed'}")
     print(f"[dataset] variants: {len(tasks)}")
     for index, (config_path, dataset_cfg, dtype_str) in enumerate(tasks, start=1):
         dtype = parse_dtype(dtype_str)
@@ -236,8 +236,8 @@ def _run_build(args, tasks: list, root: Path) -> int:
 
 def main() -> int:
     args = parse_args()
-    root = _resolve_data_root(args.data_root)
-    tasks = _collect_yaml_tasks(args, root)
+    root = _resolve_cache_root(args.cache_root)
+    tasks = _collect_yaml_tasks(args)
     if args.check_only:
         return _check_only(tasks, root)
     return _run_build(args, tasks, root)

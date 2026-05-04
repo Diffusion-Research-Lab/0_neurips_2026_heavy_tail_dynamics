@@ -161,7 +161,7 @@ PY
   CONFIG_STEM="$(basename "${CONFIG_PATH}" .yaml)"
   if [[ "${SAVE_ROOT}" = /* ]]; then
     BATCH_DIR="${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
-  elif [[ "${SAVE_ROOT}" == "benchmarks/data" || "${SAVE_ROOT}" == "benchmarks/data/"* ]]; then
+  elif [[ "${SAVE_ROOT}" == "benchmarks/artifacts" || "${SAVE_ROOT}" == "benchmarks/artifacts/"* ]]; then
     BATCH_DIR="${PROJECT_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"
   elif [[ -n "${RUN_ROOT:-}" ]]; then
     BATCH_DIR="${RUN_ROOT}/${SAVE_ROOT}/${JOB_TAG}_${CONFIG_STEM}"

@@ -33,8 +33,19 @@ EVAL_METRIC_NAMES = [
     "MMD_RBF",
     "SLICED_WASSERSTEIN",
     "TAIL_COVERAGE_ERROR",
+    "TCE(90%)",
+    "TCE(95%)",
+    "TCE(99%)",
+    "TCE(99.9%)",
     "MSSLE",
 ]
+
+TAIL_COVERAGE_METRICS = {
+    "TCE(90%)": 0.10,
+    "TCE(95%)": 0.05,
+    "TCE(99%)": 0.01,
+    "TCE(99.9%)": 0.001,
+}
 
 MODEL_LABELS = {
     "gaussian_flow_linear": "GF-Linear",
@@ -53,7 +64,7 @@ def run_dirs(root: Path) -> list[Path]:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for one evaluation batch."""
     parser = argparse.ArgumentParser(description="Evaluate saved benchmark runs.")
-    parser.add_argument("--batch-dir", type=Path, required=True, help="Path to one saved benchmark batch directory.")
+    parser.add_argument("--batch-dir", type=Path, required=True, help="Path to one benchmark artifact batch directory.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -181,6 +192,16 @@ def compute_test_metrics(
 
     compute_one("SLICED_WASSERSTEIN", lambda: sliced_wasserstein(x_ref_cpu, x_gen_cpu))
     compute_one("TAIL_COVERAGE_ERROR", lambda: tail_coverage_error(x_ref_cpu, x_gen_cpu))
+    for metric_name, exceedance_prob in TAIL_COVERAGE_METRICS.items():
+        probs = torch.tensor([float(exceedance_prob)], dtype=x_ref_cpu.dtype, device=x_ref_cpu.device)
+        compute_one(
+            metric_name,
+            lambda probs=probs: tail_coverage_error(
+                x_ref_cpu,
+                x_gen_cpu,
+                probs=probs,
+            ),
+        )
     compute_one("MSSLE", lambda: mssle(x_ref_cpu, x_gen_cpu))
     return values, warnings
 
@@ -510,6 +531,8 @@ def main() -> int:
     artifact_batch_dir.mkdir(parents=True, exist_ok=True)
 
     runs = [run_dir for run_dir in run_dirs(batch_dir) if (run_dir / "checkpoint.pt").exists()]
+    if not runs:
+        raise FileNotFoundError(f"No completed runs with checkpoint.pt found under {batch_dir}")
     manifest_rows = []
     for run_index, run_dir in enumerate(runs, start=1):
         if (run_index - 1) % args.shard_count != args.shard_index:

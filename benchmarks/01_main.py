@@ -90,7 +90,12 @@ def build_dataset(dataset_cfg: dict[str, Any], dtype: torch.dtype, device: str |
     name = str(dataset_cfg.get("name", "")).strip()
     if not name:
         raise ValueError("dataset.name must be provided.")
-    kwargs = {**copy.deepcopy(dataset_cfg.get("params", {})), **copy.deepcopy(dataset_cfg.get("split", {})), "dtype": dtype, "device": device}
+    kwargs = {
+        **copy.deepcopy(dataset_cfg.get("params", {})),
+        **copy.deepcopy(dataset_cfg.get("split", {})),
+        "dtype": dtype,
+        "device": device,
+    }
     if kind == "synthetic":
         return fetch_synthetic_data(name, **kwargs)
     if kind == "real":
@@ -220,7 +225,9 @@ def _write_run_summary(
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def load_run_config(config_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+def load_run_config(
+    config_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Load one benchmark config and return its required sections."""
     config = load_yaml(config_path)
     return (

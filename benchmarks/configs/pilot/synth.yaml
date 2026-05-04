@@ -208,4 +208,4 @@ trains:
     ckpt_keep_last: 1
 
 save:
-  root_dir: benchmarks/data
+  root_dir: benchmarks/artifacts

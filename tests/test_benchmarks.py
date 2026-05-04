@@ -26,16 +26,80 @@ _PREFETCH_SCRIPT = _PROJECT_ROOT / "scripts" / "prefetch.datasets.py"
 _CONFIG_IMAGE_PILOT = _PROJECT_ROOT / "benchmarks" / "configs" / "pilot" / "image.yaml"
 _PILOT_ANALYSIS_SCRIPT = _PROJECT_ROOT / "benchmarks" / "03_pilot_analysis.py"
 
+_PILOT_FIXTURE_BATCHES = {
+    "synth": "449824_02_alphastable_pilot_evaluate",
+    "real": "449825_05_real_pilot_evaluate",
+    "image": "449826_08_image_pilot_evaluate",
+}
+_PILOT_FIXTURE_METRICS = ["FID", "MMD_RBF", "SLICED_WASSERSTEIN", "TAIL_COVERAGE_ERROR", "MSSLE"]
+
+
+def _first_model_preset_by_name(models: dict) -> dict[str, str]:
+    presets = {}
+    for preset_name in models:
+        for model_name in ["gaussian_flow_ot", "gaussian_flow_linear", "ddpm_v", "dlpm_eps", "tedm_origin"]:
+            if preset_name.startswith(model_name) and model_name not in presets:
+                presets[model_name] = preset_name
+    return presets
+
+
+def _write_fake_pilot_eval_artifacts(root: Path) -> None:
+    pilot_root = _PROJECT_ROOT / "benchmarks" / "configs" / "pilot"
+    dataset_rank = 0
+    for family, batch_name in _PILOT_FIXTURE_BATCHES.items():
+        config = load_yaml(pilot_root / f"{family}.yaml")
+        batch_dir = root / batch_name
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        model_presets = _first_model_preset_by_name(config["models"])
+        train_preset = config["sweep"]["trains"][0]
+        train_lr = float(config["trains"][train_preset]["lr"])
+        for dataset_preset in config["sweep"]["datasets"]:
+            for model_rank, model_name in enumerate(["gaussian_flow_ot", "gaussian_flow_linear", "ddpm_v", "dlpm_eps", "tedm_origin"]):
+                model_preset = model_presets[model_name]
+                run_dir = batch_dir / f"{dataset_rank:03d}__{dataset_preset}__network__{model_preset}__{train_preset}"
+                run_dir.mkdir(parents=True, exist_ok=True)
+                rows = []
+                for metric_rank, metric_name in enumerate(_PILOT_FIXTURE_METRICS):
+                    rows.append(
+                        {
+                            "source": "test_metrics",
+                            "metric_name": metric_name,
+                            "value": float(1 + dataset_rank + model_rank + metric_rank / 10.0),
+                            "checkpoint_epoch": 16,
+                            "dataset_preset": dataset_preset,
+                            "dataset_name": dataset_preset,
+                            "model_preset": model_preset,
+                            "model_name": model_name,
+                            "model_label": {
+                                "gaussian_flow_ot": "GF-OT",
+                                "gaussian_flow_linear": "GF-Linear",
+                                "ddpm_v": "DDPM-V",
+                                "dlpm_eps": "DLPM",
+                                "tedm_origin": "TEDM-Orig",
+                            }[model_name],
+                            "train_preset": train_preset,
+                            "train_lr": train_lr,
+                            "eval_repeat_idx": 0,
+                        }
+                    )
+                pd.DataFrame(rows).to_csv(run_dir / "scalars.csv.gz", index=False, compression="gzip")
+                (run_dir / "summary.yaml").write_text("source_run_dir: synthetic-test-fixture\n", encoding="utf-8")
+            dataset_rank += 1
+
 
 @pytest.fixture(scope="module")
 def generated_bench_outputs(tmp_path_factory):
     root = tmp_path_factory.mktemp("pilot_analysis")
+    artifact_root = root / "artifacts"
     bench_config_root = root / "bench"
     report_root = root / "reports"
+    _write_fake_pilot_eval_artifacts(artifact_root)
     subprocess.run(
         [
             sys.executable,
             str(_PILOT_ANALYSIS_SCRIPT),
+            "--artifact-root",
+            str(artifact_root),
             "--bench-config-root",
             str(bench_config_root),
             "--report-root",
@@ -104,7 +168,16 @@ def test_compute_test_metrics_keeps_other_metrics_when_one_fails(monkeypatch):
 
     assert values["FID"] != values["FID"]
     assert any("FID_failed: RuntimeError: fid boom" == warning for warning in warnings)
-    for metric_name in ["MMD_RBF", "SLICED_WASSERSTEIN", "TAIL_COVERAGE_ERROR", "MSSLE"]:
+    for metric_name in [
+        "MMD_RBF",
+        "SLICED_WASSERSTEIN",
+        "TAIL_COVERAGE_ERROR",
+        "TCE(90%)",
+        "TCE(95%)",
+        "TCE(99%)",
+        "TCE(99.9%)",
+        "MSSLE",
+    ]:
         assert torch.isfinite(torch.tensor(values[metric_name]))
 
 
@@ -144,7 +217,8 @@ def test_image_bench_imagenet_lt_and_cifar100_lt_cap_at_50000():
     config = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
     assert config["datasets"]["imagenet_lt"]["params"]["max_samples"] == 50000
     assert config["datasets"]["cifar100_lt"]["params"]["max_samples"] == 50000
-    assert config["datasets"]["cifar100_lt"]["params"]["imbalance_factor"] == 100
+    assert config["datasets"]["cifar100_lt"]["params"]["imbalance_factor"] == 20
+    assert "category_frequency" not in config["datasets"]["lvis"]["params"]
 
 
 def test_tabular_real_pilot_caps_real_dataset_to_256_samples():
@@ -204,17 +278,38 @@ def test_generated_bench_configs_use_template_budgets_but_selected_learning_rate
     synth_cfg = load_yaml(bench_root / "synth/alpha_stable_iso/gaussian_flow_ot.yaml")
     real_cfg = load_yaml(bench_root / "real/kddcup/gaussian_flow_linear.yaml")
     image_cfg = load_yaml(bench_root / "image/lvis/tedm_origin.yaml")
+    hrrr_cfg = load_yaml(bench_root / "image/hrrr/ddpm_v.yaml")
+    imagenet_cfg = load_yaml(bench_root / "image/imagenet_lt/dlpm_eps.yaml")
 
     synth_train = synth_cfg["trains"][synth_cfg["sweep"]["trains"][0]]
     real_train = real_cfg["trains"][real_cfg["sweep"]["trains"][0]]
     image_train = image_cfg["trains"][image_cfg["sweep"]["trains"][0]]
+    hrrr_train = hrrr_cfg["trains"][hrrr_cfg["sweep"]["trains"][0]]
+    imagenet_train = imagenet_cfg["trains"][imagenet_cfg["sweep"]["trains"][0]]
 
-    assert synth_train["n_epochs"] == 2048
-    assert real_train["n_epochs"] == 8
-    assert image_train["n_epochs"] == 1024
+    assert synth_train["n_epochs"] == 512
+    assert real_train["n_epochs"] == 512
+    assert image_train["n_epochs"] == 512
+    assert hrrr_train["n_epochs"] == 256
+    assert imagenet_train["n_epochs"] == 128
     assert synth_train["lr"] == synth_cfg["selection"]["selected_lr"]
     assert real_train["lr"] == real_cfg["selection"]["selected_lr"]
     assert image_train["lr"] == image_cfg["selection"]["selected_lr"]
+    assert hrrr_train["lr"] == hrrr_cfg["selection"]["selected_lr"]
+    assert imagenet_train["lr"] == imagenet_cfg["selection"]["selected_lr"]
+
+
+def test_bench_templates_use_expected_trial_counts_and_single_train_preset():
+    synth_cfg = load_yaml(Path("benchmarks/configs/templates/synth_bench.yaml"))
+    real_cfg = load_yaml(Path("benchmarks/configs/templates/real_bench.yaml"))
+    image_cfg = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
+
+    assert synth_cfg["run"]["n_trial"] == 5
+    assert real_cfg["run"]["n_trial"] == 2
+    assert image_cfg["run"]["n_trial"] == 2
+    assert synth_cfg["sweep"]["trains"] == ["standard"]
+    assert real_cfg["sweep"]["trains"] == ["standard"]
+    assert image_cfg["sweep"]["trains"] == ["standard"]
 
 
 def test_pilot_analysis_reports_exist_and_match_generated_configs(generated_bench_outputs):
@@ -539,7 +634,7 @@ def test_prefetch_check_only_exits_0_when_cache_valid(tmp_path):
         {
             "kind": "real",
             "name": "cifar100_lt",
-            "params": {"split": "train", "image_size": 64, "imbalance_factor": 100, "max_samples": 4096, "seed": 0},
+            "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4096, "seed": 0},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
         },
         torch.float32,
@@ -572,7 +667,7 @@ def test_prefetch_check_only_exits_2_when_cache_for_other_config(tmp_path):
     other_cfg = {
         "kind": "real",
         "name": "cifar100_lt",
-        "params": {"split": "train", "image_size": 64, "imbalance_factor": 100, "max_samples": 99999, "seed": 0},
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 99999, "seed": 0},
         "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
     }
     other_cache_path = real_data_cache.real_dataset_cache_path(other_cfg, torch.float32, data_root=tmp_path)
@@ -603,7 +698,7 @@ def test_prefetch_torch_free_cache_key_matches_runtime():
         {
             "kind": "real",
             "name": "cifar100_lt",
-            "params": {"split": "train", "image_size": 64, "imbalance_factor": 100, "max_samples": 256, "seed": 0},
+            "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 256, "seed": 0},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
         },
         {

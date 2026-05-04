@@ -46,7 +46,6 @@ datasets:
       split: train
       image_size: 64
       max_samples: 4096
-      category_frequency: r
       seed: 0
     split:
       val_size: 0.1
@@ -60,7 +59,7 @@ datasets:
     params:
       split: train
       image_size: 64
-      imbalance_factor: 100
+      imbalance_factor: 20
       max_samples: 4096
       seed: 0
     split:
@@ -200,4 +199,4 @@ trains:
     ckpt_keep_last: 1
 
 save:
-  root_dir: benchmarks/data
+  root_dir: benchmarks/artifacts

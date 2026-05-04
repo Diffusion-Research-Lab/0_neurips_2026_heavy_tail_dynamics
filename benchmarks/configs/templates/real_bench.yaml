@@ -2,7 +2,7 @@ run:
   name: template_real_bench
   seed: 0
   dtype: float64
-  n_trial: 1
+  n_trial: 2
 
 sweep:
   datasets:
@@ -16,7 +16,6 @@ sweep:
     - dlpm_eps
     - tedm_origin
   trains:
-    - standard_lr2e4
     - standard
 
 datasets:
@@ -76,26 +75,10 @@ models:
       sigma_max: 5.0
 
 trains:
-  standard_lr2e4:
-    device: cuda
-    batch_size: 1024
-    n_epochs: 8
-    lr: 0.0002
-    num_workers: 0
-    use_adamw: true
-    weight_decay: 0.000001
-    grad_clip_norm: 10.0
-    lr_schedule: cosine
-    warmup_steps: 10
-    cosine_eta_min_ratio: 0.05
-    freq_logging: 8
-    ckpt_freq_epochs: 8
-    ckpt_keep_last: 1
-
   standard:
     device: cuda
     batch_size: 1024
-    n_epochs: 8
+    n_epochs: 512
     lr: 0.0005
     num_workers: 0
     use_adamw: true
@@ -107,6 +90,5 @@ trains:
     freq_logging: 8
     ckpt_freq_epochs: 8
     ckpt_keep_last: 1
-
 save:
-  root_dir: benchmarks/data
+  root_dir: benchmarks/artifacts

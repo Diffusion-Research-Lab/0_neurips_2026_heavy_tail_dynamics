@@ -43,7 +43,7 @@ stage_project() {
       --exclude 'sandbox/*.sh' \
       --exclude 'sandbox/figures/' \
       --exclude '*_results*/' \
-      --exclude 'benchmarks/data/' \
+      --exclude 'benchmarks/artifacts/' \
       --exclude 'benchmarks/data_archive/' \
       --exclude 'examples/_figures/' \
       "${PROJECT_ROOT}/" "${target_dir}/"
