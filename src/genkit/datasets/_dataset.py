@@ -1,24 +1,119 @@
-"""Public dataset implementation."""
+"""Dataset registry and public loading helpers."""
 
+from dataclasses import dataclass, field
+import hashlib
+import os
 from pathlib import Path
-from typing import Any
+import time
+from typing import Any, Callable
+from urllib.request import urlretrieve
 import warnings
 
+import numpy as np
 import pandas as pd
+from sklearn.datasets import fetch_kddcup99, fetch_openml
+from sklearn.model_selection import train_test_split
 import torch
 
-from .._datasets import (
-    ALL_DATASETS,
-    DatasetPayload,
-    _resolve_dataset,
-    _standardize_split_arrays,
-    coerce_numeric_frame,
-    split_sample_indices,
-    to_tensor_triplet,
+from .._sampling import (
+    sample_checker,
+    sample_exponential,
+    sample_gaussian,
+    sample_scaled_isotropic_alpha_stable,
+    sample_spiral,
+    sample_student_t,
+    sample_unbalanced_highdim_alpha_stable_mixture,
+    sample_unbalanced_highdim_gaussian_mixture,
 )
 from ..utils import getpop
-from ._hrrr import prepare_hrrr_loader_kwargs
-from ._lvis import prepare_lvis_loader_kwargs
+from ._cifar100_lt import (
+    _cifar100_root,
+    _normalize_cifar100_split,
+    load_cifar100_lt_arrays,
+)
+from ._image_io import (
+    array_uint8_to_resized_tensor,
+    prepare_image_loader_kwargs,
+    read_rgb_resized,
+)
+from ._imagenet_lt import (
+    _imagenet_lt_record,
+    _normalize_imagenet_lt_split,
+    _parse_imagenet_lt_split_file,
+    _resolve_imagenet_lt_annotation,
+    _resolve_imagenet_lt_image_path,
+    _resolve_imagenet_root,
+    _select_imagenet_lt_records,
+)
+from ._lvis import (
+    _find_lvis_annotation,
+    _find_lvis_image_dirs,
+    _lvis_base_roots,
+    _lvis_candidate_images,
+    _lvis_category_ids_by_image,
+    _lvis_category_maps,
+    _lvis_record,
+    _lvis_search_roots,
+    _load_lvis_json,
+    _normalize_lvis_split,
+    _read_lvis_image,
+    _resolve_lvis_image_path,
+    _select_lvis_images,
+)
+
+
+@dataclass(frozen=True)
+class DatasetPayload:
+    """Container for loaded data plus optional per-sample metadata."""
+
+    data: pd.DataFrame | torch.Tensor | np.ndarray
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+DatasetLoader = Callable[..., pd.DataFrame | torch.Tensor | np.ndarray | DatasetPayload]
+DatasetSampler = Callable[..., torch.Tensor]
+SamplerKwargBuilders = dict[str, Callable[[dict[str, Any]], Any]]
+_IMAGE_CACHE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class DatasetEntry:
+    """Describe one dataset exposed through the public dataset API."""
+
+    name: str
+    dataset_type: str
+    description: str
+    tail_index_alpha: Any = None
+    split_mode: str = "random"
+    standardize_default: bool = True
+    dim: int | tuple[int, ...] | None = None
+    n_samples: int | None = None
+    loader: DatasetLoader | None = None
+    sampler: DatasetSampler | None = None
+    sampler_kwargs_builders: SamplerKwargBuilders = field(default_factory=dict)
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "tail_index_alpha": self.tail_index_alpha,
+            "description": self.description,
+            "split_mode": self.split_mode,
+            "dataset_type": self.dataset_type,
+            "dim": self.dim,
+            "n_samples": self.n_samples,
+        }
+
+
+def _copy_if_numpy(array: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+    if isinstance(array, np.ndarray):
+        return np.array(array, copy=True)
+    return array
+
+
+def _decode_byte_string(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8")
+    return value
 
 
 def _metadata_value(value: Any) -> Any:
@@ -31,6 +126,219 @@ def _metadata_value(value: Any) -> Any:
     if isinstance(value, (torch.device, torch.dtype)):
         return str(value)
     return value
+
+
+def _resolve_real_data_home() -> Path:
+    candidates: list[Path] = []
+    flowbench_data = os.getenv("FLOWBENCH_DATA")
+    if flowbench_data:
+        candidates.append(Path(flowbench_data).expanduser())
+    env_root = os.getenv("FLOWBENCH_DATA_HOME")
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    work_root = os.getenv("WORK")
+    if work_root:
+        candidates.append(Path(work_root).expanduser() / "flowbench_data")
+    home_root = os.getenv("HOME")
+    if home_root:
+        candidates.append(Path(home_root).expanduser() / ".cache" / "flowbench_data")
+    candidates.append(Path("/tmp") / "flowbench_data")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        return candidate
+
+    raise RuntimeError("Unable to create a real-dataset cache directory.")
+
+
+def _cache_remote_text_file(url: str, *, data_home: str | Path, filename: str) -> Path:
+    cache_dir = Path(data_home).expanduser()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / filename
+    if not cache_path.exists():
+        urlretrieve(url, cache_path)
+    return cache_path
+
+
+def _synthetic_entry(
+    name: str,
+    sampler: DatasetSampler,
+    *,
+    description: str,
+    tail_index_alpha: Any = None,
+    dim: int | None = None,
+    sampler_kwargs_builders: SamplerKwargBuilders | None = None,
+) -> DatasetEntry:
+    return DatasetEntry(
+        name=name,
+        dataset_type="synthetic",
+        description=description,
+        tail_index_alpha=tail_index_alpha,
+        split_mode="random",
+        dim=dim,
+        sampler=sampler,
+        sampler_kwargs_builders=sampler_kwargs_builders or {},
+    )
+
+
+def _real_entry(
+    name: str,
+    loader: DatasetLoader,
+    *,
+    description: str,
+    tail_index_alpha: Any = None,
+    split_mode: str = "random",
+    standardize_default: bool = True,
+    dim: int | tuple[int, ...] | None = None,
+    n_samples: int | None = None,
+) -> DatasetEntry:
+    return DatasetEntry(
+        name=name,
+        dataset_type="real",
+        description=description,
+        tail_index_alpha=tail_index_alpha,
+        split_mode=split_mode,
+        standardize_default=standardize_default,
+        dim=dim,
+        n_samples=n_samples,
+        loader=loader,
+    )
+
+
+def _alpha_stable_mixture_base_scale(kwargs: dict[str, Any]) -> float:
+    if "base_scale" in kwargs:
+        return float(getpop(kwargs, "base_scale"))
+    return float(getpop(kwargs, "base_std", 0.55))
+
+
+def _resolve_dataset(
+    target_data: str,
+    all_datasets: dict[str, DatasetEntry],
+    *,
+    dataset_type: str | None = None,
+) -> DatasetEntry:
+    key = target_data.lower()
+    if key not in all_datasets:
+        raise KeyError(f"Unknown dataset {target_data!r}. Available datasets: {sorted(all_datasets)}")
+    entry = all_datasets[key]
+    if dataset_type is not None and entry.dataset_type != dataset_type:
+        raise ValueError(f"Dataset {target_data!r} is {entry.dataset_type!r}, expected {dataset_type!r}.")
+    return entry
+
+
+def _standardize_split_arrays(
+    x_train: np.ndarray,
+    x_val: np.ndarray,
+    x_test: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mean = x_train.mean(axis=0, keepdims=True)
+    std = x_train.std(axis=0, keepdims=True)
+    std = np.where(std == 0, 1.0, std)
+    return (x_train - mean) / std, (x_val - mean) / std, (x_test - mean) / std
+
+
+def to_tensor_triplet(
+    x_train: np.ndarray | torch.Tensor,
+    x_val: np.ndarray | torch.Tensor,
+    x_test: np.ndarray | torch.Tensor,
+    *,
+    device: str | torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return (
+        torch.as_tensor(_copy_if_numpy(x_train), device=device, dtype=dtype),
+        torch.as_tensor(_copy_if_numpy(x_val), device=device, dtype=dtype),
+        torch.as_tensor(_copy_if_numpy(x_test), device=device, dtype=dtype),
+    )
+
+
+def coerce_numeric_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    numeric_frame = frame.copy().dropna(axis=0).reset_index(drop=True)
+    for column in numeric_frame.columns:
+        if pd.api.types.is_datetime64_any_dtype(numeric_frame[column]):
+            numeric_frame[column] = numeric_frame[column].astype("int64") // 10**9
+    non_numeric_columns = [
+        column for column in numeric_frame.columns if not pd.api.types.is_numeric_dtype(numeric_frame[column])
+    ]
+    if non_numeric_columns:
+        numeric_frame = pd.get_dummies(numeric_frame, columns=non_numeric_columns, drop_first=False)
+    numeric_frame = numeric_frame.replace([np.inf, -np.inf], np.nan).dropna(axis=0).reset_index(drop=True)
+    if numeric_frame.shape[1] == 0:
+        raise ValueError("No numeric columns remain after preprocessing.")
+    return numeric_frame.astype(float)
+
+
+def split_sample_indices(
+    n_rows: int,
+    *,
+    val_size: float,
+    test_size: float,
+    random_state: int,
+    split_mode: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not 0 <= val_size < 1:
+        raise ValueError("val_size must lie in [0, 1).")
+    if not 0 <= test_size < 1:
+        raise ValueError("test_size must lie in [0, 1).")
+    if val_size + test_size >= 1:
+        raise ValueError("val_size + test_size must be < 1.")
+    if n_rows < 3:
+        raise ValueError("The dataset must contain at least 3 rows.")
+    if split_mode not in {"random", "chronological"}:
+        raise ValueError("split_mode must be 'random' or 'chronological'.")
+
+    if split_mode == "random":
+        indices = np.arange(n_rows)
+        train_idx, test_idx = train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=random_state,
+            shuffle=True,
+        )
+        val_ratio = val_size / (1.0 - test_size)
+        train_idx, val_idx = train_test_split(
+            train_idx,
+            test_size=val_ratio,
+            random_state=random_state,
+            shuffle=True,
+        )
+        return train_idx, val_idx, test_idx
+
+    n_test = int(np.floor(test_size * n_rows))
+    n_val = int(np.floor(val_size * n_rows))
+    n_train = n_rows - n_val - n_test
+    if min(n_train, n_val, n_test) <= 0:
+        raise ValueError("The requested val/test proportions leave an empty split.")
+    return np.arange(0, n_train), np.arange(n_train, n_train + n_val), np.arange(n_train + n_val, n_rows)
+
+
+def split_frame(
+    frame: pd.DataFrame,
+    *,
+    val_size: float,
+    test_size: float,
+    random_state: int,
+    split_mode: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    train_idx, val_idx, test_idx = split_sample_indices(
+        len(frame),
+        val_size=val_size,
+        test_size=test_size,
+        random_state=random_state,
+        split_mode=split_mode,
+    )
+    return (
+        frame.iloc[train_idx].reset_index(drop=True).to_numpy(),
+        frame.iloc[val_idx].reset_index(drop=True).to_numpy(),
+        frame.iloc[test_idx].reset_index(drop=True).to_numpy(),
+    )
 
 
 def _split_frame_to_tensors(
@@ -56,11 +364,31 @@ def _split_frame_to_tensors(
     x_test = frame.iloc[test_idx].reset_index(drop=True).to_numpy()
     if standardize:
         x_train, x_val, x_test = _standardize_split_arrays(x_train, x_val, x_test)
-    return to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype), (
-        train_idx,
-        val_idx,
-        test_idx,
+    return to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype), (train_idx, val_idx, test_idx)
+
+
+def split_tensor_data(
+    data: torch.Tensor | np.ndarray,
+    *,
+    val_size: float,
+    test_size: float,
+    random_state: int,
+    split_mode: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    x = torch.as_tensor(_copy_if_numpy(data))
+    if x.ndim < 1:
+        raise ValueError(f"Expected at least one sample dimension, got shape {tuple(x.shape)}.")
+    train_idx, val_idx, test_idx = split_sample_indices(
+        int(x.shape[0]),
+        val_size=val_size,
+        test_size=test_size,
+        random_state=random_state,
+        split_mode=split_mode,
     )
+    train_idx = torch.as_tensor(train_idx, dtype=torch.long)
+    val_idx = torch.as_tensor(val_idx, dtype=torch.long)
+    test_idx = torch.as_tensor(test_idx, dtype=torch.long)
+    return x.index_select(0, train_idx), x.index_select(0, val_idx), x.index_select(0, test_idx)
 
 
 def _split_tensor_to_tensors(
@@ -82,7 +410,7 @@ def _split_tensor_to_tensors(
         split_mode=split_mode,
     )
 
-    def select(indices) -> torch.Tensor:
+    def select(indices: np.ndarray) -> torch.Tensor:
         return data.index_select(0, torch.as_tensor(indices, dtype=torch.long))
 
     x_train = select(train_idx).to(dtype=dtype)
@@ -95,33 +423,39 @@ def _split_tensor_to_tensors(
         x_train = (x_train - mean) / std
         x_val = (x_val - mean) / std
         x_test = (x_test - mean) / std
-    return (x_train.to(device=device, dtype=dtype), x_val.to(device=device, dtype=dtype), x_test.to(device=device, dtype=dtype)), (
-        train_idx,
-        val_idx,
-        test_idx,
+    tensors = (
+        x_train.to(device=device, dtype=dtype),
+        x_val.to(device=device, dtype=dtype),
+        x_test.to(device=device, dtype=dtype),
     )
+    return tensors, (train_idx, val_idx, test_idx)
 
 
-def _split_records(records: list[dict[str, Any]], indices) -> list[dict[str, Any]]:
+def _split_records(records: list[dict[str, Any]], indices: Any) -> list[dict[str, Any]]:
     return [records[int(index)] for index in indices]
 
 
 def _record_histograms(records: list[dict[str, Any]]) -> dict[str, dict[Any, int]]:
     category_histogram: dict[int, int] = {}
     frequency_histogram: dict[str, int] = {}
+    class_histogram: dict[int, int] = {}
     for record in records:
         for category_id in set(int(value) for value in record.get("category_ids", [])):
             category_histogram[category_id] = category_histogram.get(category_id, 0) + 1
         for frequency in set(str(value) for value in record.get("category_frequencies", []) if value):
             frequency_histogram[frequency] = frequency_histogram.get(frequency, 0) + 1
-    return {"category_histogram": category_histogram, "frequency_histogram": frequency_histogram}
-
-
-def _split_metadata(indices, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    split_meta: dict[str, Any] = {
-        "indices": [int(index) for index in indices],
-        "n_samples": int(len(indices)),
+        if "class_id" in record and record["class_id"] is not None:
+            class_id = int(record["class_id"])
+            class_histogram[class_id] = class_histogram.get(class_id, 0) + 1
+    return {
+        "category_histogram": category_histogram,
+        "frequency_histogram": frequency_histogram,
+        "class_histogram": class_histogram,
     }
+
+
+def _split_metadata(indices: Any, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    split_meta: dict[str, Any] = {"indices": [int(index) for index in indices], "n_samples": int(len(indices))}
     if records is not None:
         split_records = _split_records(records, indices)
         split_meta["records"] = split_records
@@ -131,7 +465,7 @@ def _split_metadata(indices, records: list[dict[str, Any]] | None = None) -> dic
 
 def _build_return_metadata(
     *,
-    entry,
+    entry: DatasetEntry,
     kind: str,
     target_data: str,
     params: dict[str, Any],
@@ -163,6 +497,642 @@ def _build_return_metadata(
             "test": _split_metadata(test_idx, records),
         },
     }
+
+
+def _strict_offline_text_file(path: Path, *, init_hint: str) -> Path:
+    if not path.is_file():
+        raise RuntimeError(
+            f"Required raw file not found: {path}. "
+            f"Compute nodes have no internet; pre-stage on the login node by running:\n  {init_hint}"
+        )
+    return path
+
+
+def _load_wildfires(**kwargs: Any) -> pd.DataFrame:
+    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "powerlaws")
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unexpected wildfire loader kwargs: {unexpected}.")
+    source = _strict_offline_text_file(
+        Path(data_home).expanduser() / "fires.txt",
+        init_hint="bash scripts/init.wildfires.sh",
+    )
+    frame = pd.read_csv(source, header=None, sep=r"\s+")
+    if frame.shape[1] == 1:
+        return pd.DataFrame({"acres_burned": frame.iloc[:, 0].astype(float)})
+    frame.columns = [f"x{i}" for i in range(frame.shape[1] - 1)] + ["acres_burned"]
+    return frame.astype(float)
+
+
+def _load_earthquakes(**kwargs: Any) -> pd.DataFrame:
+    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "powerlaws")
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unexpected earthquake loader kwargs: {unexpected}.")
+    source = _strict_offline_text_file(
+        Path(data_home).expanduser() / "quakes.txt",
+        init_hint="bash scripts/init.earthquakes.sh",
+    )
+    frame = pd.read_csv(source, header=None, sep=r"\s+")
+    return pd.DataFrame({"magnitude": frame.iloc[:, 0].astype(float)})
+
+
+def _load_kddcup(**kwargs: Any) -> pd.DataFrame:
+    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "scikit_learn")
+    Path(data_home).expanduser().mkdir(parents=True, exist_ok=True)
+    try:
+        bunch = fetch_kddcup99(
+            as_frame=True,
+            percent10=True,
+            data_home=str(data_home),
+            download_if_missing=False,
+            **kwargs,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"KDD Cup 99 raw data not found under {data_home} and compute nodes have no internet. "
+            "Pre-stage the dataset on a login node before submitting Slurm jobs:\n"
+            "  bash scripts/init.kddcup.sh\n"
+            f"Underlying error: {type(exc).__name__}: {exc}"
+        ) from exc
+    features = bunch.data.copy()
+    if not isinstance(features, pd.DataFrame):
+        features = pd.DataFrame(features)
+    for column in features.columns:
+        if pd.api.types.is_object_dtype(features[column]):
+            features[column] = features[column].map(_decode_byte_string)
+    numeric_features = features.select_dtypes(include=[np.number]).copy()
+    if numeric_features.shape[1] == 0:
+        raise ValueError("KDD Cup 99 loader produced no numeric feature columns.")
+    return numeric_features
+
+
+def _load_default_credit(**kwargs: Any) -> pd.DataFrame:
+    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "scikit_learn")
+    Path(data_home).expanduser().mkdir(parents=True, exist_ok=True)
+    try:
+        bunch = fetch_openml(
+            data_id=42477,
+            as_frame=True,
+            parser="pandas",
+            data_home=str(data_home),
+            **kwargs,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"Default-credit OpenML data not found under {data_home} and compute nodes have no internet. "
+            "Pre-stage the dataset on a login node before submitting Slurm jobs:\n"
+            "  bash scripts/init.default_credit.sh\n"
+            f"Underlying error: {type(exc).__name__}: {exc}"
+        ) from exc
+    frame = bunch.frame.copy()
+    if not isinstance(frame, pd.DataFrame):
+        frame = pd.DataFrame(frame)
+
+    target = None
+    target_names = bunch.target_names
+    if isinstance(target_names, str) and target_names in frame.columns:
+        target = frame.pop(target_names)
+    elif isinstance(target_names, list):
+        matching = [name for name in target_names if name in frame.columns]
+        if matching:
+            target = frame.pop(matching[0])
+    if target is None:
+        target = bunch.target.copy()
+
+    if "ID" in frame.columns:
+        frame = frame.drop(columns=["ID"])
+    for column in frame.columns:
+        if pd.api.types.is_numeric_dtype(frame[column]):
+            continue
+        coerced = pd.to_numeric(frame[column], errors="coerce")
+        if coerced.notna().sum() == frame[column].notna().sum():
+            frame[column] = coerced
+    if isinstance(target, pd.DataFrame) and target.shape[1] == 1:
+        target = target.iloc[:, 0]
+    if isinstance(target, pd.Series) and not pd.api.types.is_numeric_dtype(target):
+        coerced_target = pd.to_numeric(target, errors="coerce")
+        if coerced_target.notna().sum() == target.notna().sum():
+            target = coerced_target
+    return frame
+
+
+def _bool_kwarg(value: Any, *, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise TypeError(f"{name} must be a boolean.")
+
+
+def _default_image_cache_dir(dataset_name: str, data_home: Any, cache_dir: Any) -> Path:
+    if cache_dir is not None:
+        return Path(cache_dir).expanduser()
+    if data_home is not None:
+        return Path(data_home).expanduser() / ".flowbench_cache" / dataset_name
+    if os.getenv("FLOWBENCH_CACHE"):
+        return Path(os.environ["FLOWBENCH_CACHE"]).expanduser() / dataset_name
+    if os.getenv("WORK"):
+        return Path(os.environ["WORK"]).expanduser() / "flowbench_cache" / dataset_name
+    if os.getenv("XDG_CACHE_HOME"):
+        return Path(os.environ["XDG_CACHE_HOME"]).expanduser() / "flowbench" / dataset_name
+    return Path.home() / ".cache" / "flowbench" / dataset_name
+
+
+def _processed_image_cache_path(
+    dataset_name: str,
+    source_path: Path,
+    *,
+    options: dict[str, Any],
+    cache_dir: Any,
+    data_home: Any,
+) -> Path:
+    stat = source_path.stat()
+    key = {
+        "version": _IMAGE_CACHE_VERSION,
+        "dataset_name": dataset_name,
+        "source_path": str(source_path.resolve()),
+        "source_size": int(stat.st_size),
+        "source_mtime_ns": int(stat.st_mtime_ns),
+        **options,
+    }
+    digest = hashlib.sha256(repr(sorted(key.items())).encode("utf-8")).hexdigest()[:24]
+    return _default_image_cache_dir(dataset_name, data_home, cache_dir) / f"{dataset_name}_{digest}.pt"
+
+
+def _load_processed_image_cache(cache_path: Path) -> DatasetPayload | None:
+    try:
+        cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+        if not isinstance(cached, dict) or not isinstance(cached.get("data"), torch.Tensor):
+            return None
+        metadata = dict(cached.get("metadata", {}))
+        metadata["cache_hit"] = True
+        metadata["cache_path"] = str(cache_path)
+        return DatasetPayload(data=cached["data"].to(dtype=torch.float32), metadata=metadata)
+    except Exception as exc:
+        warnings.warn(f"Ignoring unreadable image cache at {cache_path}: {exc}", RuntimeWarning, stacklevel=2)
+        return None
+
+
+def _write_processed_image_cache(cache_path: Path, payload: DatasetPayload) -> None:
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        torch.save({"data": payload.data.cpu(), "metadata": payload.metadata}, tmp_path)
+        os.replace(tmp_path, cache_path)
+    except Exception as exc:
+        warnings.warn(f"Could not write image cache at {cache_path}: {exc}", RuntimeWarning, stacklevel=2)
+
+
+def _print_image_loader_progress(dataset_name: str, current: int, total: int, started_at: float) -> None:
+    elapsed = time.perf_counter() - started_at
+    print(
+        f"[dataset] image {dataset_name:12s} {current}/{total} elapsed={elapsed:.1f}s",
+        flush=True,
+    )
+
+
+def _load_lvis(**kwargs: Any) -> DatasetPayload:
+    split = _normalize_lvis_split(str(kwargs.pop("split", "train")))
+    image_size = int(kwargs.pop("image_size", 64))
+    max_samples_raw = kwargs.pop("max_samples", None)
+    max_samples = None if max_samples_raw is None else int(max_samples_raw)
+    category_frequency_raw = kwargs.pop("category_frequency", None)
+    category_frequency = None if category_frequency_raw is None else str(category_frequency_raw)
+    seed = int(kwargs.pop("seed", 0))
+    data_home = kwargs.pop("data_home", None)
+    cache = _bool_kwarg(kwargs.pop("cache", True), name="cache")
+    cache_dir = kwargs.pop("cache_dir", None)
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unexpected LVIS loader kwargs: {unexpected}.")
+    if image_size <= 0:
+        raise ValueError("image_size must be > 0.")
+    if max_samples is not None and max_samples <= 0:
+        raise ValueError("max_samples must be > 0 when provided.")
+
+    base_roots = _lvis_base_roots(data_home)
+    annotation_path, _ = _find_lvis_annotation(base_roots, split)
+    cache_path = _processed_image_cache_path(
+        "lvis",
+        annotation_path,
+        options={
+            "split": split,
+            "image_size": image_size,
+            "max_samples": max_samples,
+            "category_frequency": category_frequency,
+            "seed": seed,
+        },
+        cache_dir=cache_dir,
+        data_home=data_home,
+    ) if cache else None
+    if cache_path is not None and cache_path.is_file():
+        cached_payload = _load_processed_image_cache(cache_path)
+        if cached_payload is not None:
+            return cached_payload
+
+    data = _load_lvis_json(annotation_path)
+    images = _lvis_candidate_images(data, category_frequency=category_frequency, annotation_path=annotation_path)
+    images = _select_lvis_images(images, max_samples=max_samples, seed=seed)
+    if not images:
+        raise RuntimeError(
+            f"No LVIS images matched split={split!r} category_frequency={category_frequency!r} in {annotation_path}."
+        )
+
+    search_roots = _lvis_search_roots(base_roots, annotation_path=annotation_path)
+    image_dirs = _find_lvis_image_dirs(search_roots)
+    name_by_id, frequency_by_id = _lvis_category_maps(data)
+    category_ids_by_image = _lvis_category_ids_by_image(data)
+    tensors = []
+    records = []
+    started_at = time.perf_counter()
+    total_images = len(images)
+    print(
+        f"[dataset] image lvis         start total={total_images} split={split} image_size={image_size}",
+        flush=True,
+    )
+    for index, image in enumerate(images, start=1):
+        image_path = _resolve_lvis_image_path(
+            image,
+            split=split,
+            image_dirs=image_dirs,
+            search_roots=search_roots,
+        )
+        tensors.append(_read_lvis_image(image_path, image_size))
+        image_id = int(image["id"])
+        records.append(
+            _lvis_record(
+                image,
+                image_path,
+                category_ids_by_image.get(image_id, []),
+                name_by_id=name_by_id,
+                frequency_by_id=frequency_by_id,
+            )
+        )
+        if index == total_images or index == 1 or index % 1000 == 0:
+            _print_image_loader_progress("lvis", index, total_images, started_at)
+    metadata = {
+        "source_split": split,
+        "annotation_path": str(annotation_path),
+        "image_size": int(image_size),
+        "category_frequency_filter": category_frequency,
+        "n_selected_images": len(records),
+        "records": records,
+        "cache_hit": False,
+    }
+    if cache_path is not None:
+        metadata["cache_path"] = str(cache_path)
+    payload = DatasetPayload(data=torch.stack(tensors, dim=0).to(dtype=torch.float32), metadata=metadata)
+    if cache_path is not None:
+        _write_processed_image_cache(cache_path, payload)
+    return payload
+
+
+def _load_cifar100_lt(**kwargs: Any) -> DatasetPayload:
+    split = _normalize_cifar100_split(str(kwargs.pop("split", "train")))
+    image_size = int(kwargs.pop("image_size", 64))
+    imbalance_factor = float(kwargs.pop("imbalance_factor", 100))
+    max_samples_raw = kwargs.pop("max_samples", None)
+    max_samples = None if max_samples_raw is None else int(max_samples_raw)
+    seed = int(kwargs.pop("seed", 0))
+    data_home = kwargs.pop("data_home", None)
+    cache = _bool_kwarg(kwargs.pop("cache", True), name="cache")
+    cache_dir = kwargs.pop("cache_dir", None)
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unexpected CIFAR-100-LT loader kwargs: {unexpected}.")
+    if image_size <= 0:
+        raise ValueError("image_size must be > 0.")
+    if max_samples is not None and max_samples <= 0:
+        raise ValueError("max_samples must be > 0 when provided.")
+
+    root = _cifar100_root(data_home)
+    source_path = (root / "cifar-100-python") if (root / "cifar-100-python").is_dir() else root
+    cache_path = _processed_image_cache_path(
+        "cifar100_lt",
+        source_path,
+        options={
+            "split": split,
+            "image_size": image_size,
+            "imbalance_factor": float(imbalance_factor),
+            "max_samples": max_samples,
+            "seed": seed,
+        },
+        cache_dir=cache_dir,
+        data_home=data_home,
+    ) if cache else None
+    if cache_path is not None and cache_path.is_file():
+        cached_payload = _load_processed_image_cache(cache_path)
+        if cached_payload is not None:
+            return cached_payload
+
+    images, labels, indices, label_names, class_counts = load_cifar100_lt_arrays(
+        root=root,
+        split=split,
+        imbalance_factor=imbalance_factor,
+        max_samples=max_samples,
+        seed=seed,
+    )
+    if images.shape[0] == 0:
+        raise RuntimeError(
+            f"CIFAR-100-LT produced no samples for split={split!r} imbalance_factor={imbalance_factor}."
+        )
+
+    tensors = []
+    records = []
+    started_at = time.perf_counter()
+    total_images = int(images.shape[0])
+    print(
+        f"[dataset] image cifar100_lt  start total={total_images} split={split} image_size={image_size} "
+        f"imbalance_factor={imbalance_factor}",
+        flush=True,
+    )
+    histogram: dict[int, int] = {}
+    for index in range(total_images):
+        tensors.append(array_uint8_to_resized_tensor(images[index], image_size))
+        class_id = int(labels[index])
+        histogram[class_id] = histogram.get(class_id, 0) + 1
+        records.append(
+            {
+                "source_index": int(indices[index]),
+                "class_id": class_id,
+                "class_name": label_names[class_id] if class_id < len(label_names) else str(class_id),
+            }
+        )
+        if index + 1 == total_images or index == 0 or (index + 1) % 1000 == 0:
+            _print_image_loader_progress("cifar100_lt", index + 1, total_images, started_at)
+
+    metadata = {
+        "source_split": split,
+        "source_path": str(source_path),
+        "image_size": int(image_size),
+        "imbalance_factor": float(imbalance_factor),
+        "n_selected_images": total_images,
+        "labels": [int(value) for value in labels],
+        "selected_indices": [int(value) for value in indices],
+        "long_tail_class_counts": [int(count) for count in class_counts],
+        "class_histogram": histogram,
+        "label_names": list(label_names),
+        "records": records,
+        "cache_hit": False,
+    }
+    if cache_path is not None:
+        metadata["cache_path"] = str(cache_path)
+    payload = DatasetPayload(data=torch.stack(tensors, dim=0).to(dtype=torch.float32), metadata=metadata)
+    if cache_path is not None:
+        _write_processed_image_cache(cache_path, payload)
+    return payload
+
+
+def _load_imagenet_lt(**kwargs: Any) -> DatasetPayload:
+    split = _normalize_imagenet_lt_split(str(kwargs.pop("split", "train")))
+    image_size = int(kwargs.pop("image_size", 64))
+    max_samples_raw = kwargs.pop("max_samples", None)
+    max_samples = None if max_samples_raw is None else int(max_samples_raw)
+    seed = int(kwargs.pop("seed", 0))
+    data_home = kwargs.pop("data_home", None)
+    annotation_path_arg = kwargs.pop("annotation_path", None)
+    imagenet_root_arg = kwargs.pop("imagenet_root", None)
+    cache = _bool_kwarg(kwargs.pop("cache", True), name="cache")
+    cache_dir = kwargs.pop("cache_dir", None)
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unexpected ImageNet-LT loader kwargs: {unexpected}.")
+    if image_size <= 0:
+        raise ValueError("image_size must be > 0.")
+    if max_samples is not None and max_samples <= 0:
+        raise ValueError("max_samples must be > 0 when provided.")
+
+    annotation_path = _resolve_imagenet_lt_annotation(
+        data_home=data_home,
+        split=split,
+        annotation_path=annotation_path_arg,
+    )
+    imagenet_root = _resolve_imagenet_root(data_home=data_home, imagenet_root=imagenet_root_arg)
+    cache_path = _processed_image_cache_path(
+        "imagenet_lt",
+        annotation_path,
+        options={
+            "split": split,
+            "image_size": image_size,
+            "max_samples": max_samples,
+            "seed": seed,
+            "imagenet_root": str(imagenet_root.resolve()),
+        },
+        cache_dir=cache_dir,
+        data_home=data_home,
+    ) if cache else None
+    if cache_path is not None and cache_path.is_file():
+        cached_payload = _load_processed_image_cache(cache_path)
+        if cached_payload is not None:
+            return cached_payload
+
+    raw_records = _parse_imagenet_lt_split_file(annotation_path)
+    raw_records = _select_imagenet_lt_records(raw_records, max_samples=max_samples, seed=seed)
+    if not raw_records:
+        raise RuntimeError(
+            f"ImageNet-LT produced no records for split={split!r} in {annotation_path}."
+        )
+
+    tensors = []
+    records = []
+    histogram: dict[int, int] = {}
+    started_at = time.perf_counter()
+    total_records = len(raw_records)
+    print(
+        f"[dataset] image imagenet_lt  start total={total_records} split={split} "
+        f"image_size={image_size} root={imagenet_root}",
+        flush=True,
+    )
+    for index, raw_record in enumerate(raw_records, start=1):
+        image_path = _resolve_imagenet_lt_image_path(raw_record, imagenet_root)
+        tensors.append(read_rgb_resized(image_path, image_size))
+        record = _imagenet_lt_record(raw_record, image_path)
+        records.append(record)
+        class_id = int(record["class_id"])
+        histogram[class_id] = histogram.get(class_id, 0) + 1
+        if index == total_records or index == 1 or index % 1000 == 0:
+            _print_image_loader_progress("imagenet_lt", index, total_records, started_at)
+
+    metadata = {
+        "source_split": split,
+        "annotation_path": str(annotation_path),
+        "imagenet_root": str(imagenet_root),
+        "image_size": int(image_size),
+        "n_selected_images": total_records,
+        "labels": [int(record["class_id"]) for record in records],
+        "class_histogram": histogram,
+        "records": records,
+        "cache_hit": False,
+    }
+    if cache_path is not None:
+        metadata["cache_path"] = str(cache_path)
+    payload = DatasetPayload(data=torch.stack(tensors, dim=0).to(dtype=torch.float32), metadata=metadata)
+    if cache_path is not None:
+        _write_processed_image_cache(cache_path, payload)
+    return payload
+
+
+def _load_hrrr(**kwargs: Any) -> torch.Tensor:
+    filename = "hrrr_apcp_100x100.pt"
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unexpected HRRR loader kwargs: {unexpected}.")
+    work_root = os.getenv("WORK")
+    if not work_root:
+        raise RuntimeError(
+            "$WORK is not set. "
+            f"Expected the precomputed HRRR tensor at $WORK/hrrr_data/{filename}."
+        )
+    path = Path(work_root).expanduser() / "hrrr_data" / filename
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"HRRR tensor file not found at {path}. "
+            f"Expected the precomputed HRRR tensor at $WORK/hrrr_data/{filename}."
+        )
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(payload, dict):
+        if "frames" not in payload:
+            raise ValueError(
+                f"Unexpected HRRR payload keys in {path}: {sorted(payload)}. "
+                "Expected a tensor payload or a dict containing 'frames'."
+            )
+        payload = payload["frames"]
+    tensor = torch.as_tensor(payload, dtype=torch.float32)
+    if tensor.ndim != 4 or tuple(tensor.shape[1:]) != (1, 100, 100):
+        raise ValueError(
+            f"Unexpected HRRR tensor shape in {path}: {tuple(tensor.shape)}. Expected (N, 1, 100, 100)."
+        )
+    valid_samples = torch.isfinite(tensor).flatten(start_dim=1).all(dim=1)
+    return tensor[valid_samples].contiguous()
+
+
+ALL_DATASETS: dict[str, DatasetEntry] = {
+    "unbalanced_highdim_gaussian_mixture": _synthetic_entry(
+        "unbalanced_highdim_gaussian_mixture",
+        sample_unbalanced_highdim_gaussian_mixture,
+        description="Imbalanced high-dimensional Gaussian mixture synthetic dataset.",
+        sampler_kwargs_builders={
+            "dim": lambda kwargs: int(getpop(kwargs, "dim", 50)),
+            "n_modes": lambda kwargs: int(getpop(kwargs, "n_modes", 16)),
+            "rank": lambda kwargs: int(getpop(kwargs, "rank", 6)),
+            "imbalance_tau": lambda kwargs: float(getpop(kwargs, "imbalance_tau", 1.2)),
+            "mean_scale": lambda kwargs: float(getpop(kwargs, "mean_scale", 7.5)),
+            "base_std": lambda kwargs: float(getpop(kwargs, "base_std", 0.55)),
+            "anisotropy": lambda kwargs: float(getpop(kwargs, "anisotropy", 1.0)),
+            "structure_seed": lambda kwargs: int(getpop(kwargs, "structure_seed", 0)),
+        },
+    ),
+    "unbalanced_highdim_alpha_stable_mixture": _synthetic_entry(
+        "unbalanced_highdim_alpha_stable_mixture",
+        sample_unbalanced_highdim_alpha_stable_mixture,
+        description="Imbalanced high-dimensional mixture with alpha-stable local noise.",
+        tail_index_alpha="configurable",
+        sampler_kwargs_builders={
+            "dim": lambda kwargs: int(getpop(kwargs, "dim", 50)),
+            "alpha": lambda kwargs: float(getpop(kwargs, "alpha", 1.7)),
+            "n_modes": lambda kwargs: int(getpop(kwargs, "n_modes", 16)),
+            "rank": lambda kwargs: int(getpop(kwargs, "rank", 6)),
+            "imbalance_tau": lambda kwargs: float(getpop(kwargs, "imbalance_tau", 1.2)),
+            "mean_scale": lambda kwargs: float(getpop(kwargs, "mean_scale", 7.5)),
+            "base_scale": _alpha_stable_mixture_base_scale,
+            "anisotropy": lambda kwargs: float(getpop(kwargs, "anisotropy", 1.0)),
+            "structure_seed": lambda kwargs: int(getpop(kwargs, "structure_seed", 0)),
+        },
+    ),
+    "gaussian": _synthetic_entry(
+        "gaussian",
+        sample_gaussian,
+        description="Isotropic Gaussian synthetic dataset.",
+        tail_index_alpha=2.0,
+        sampler_kwargs_builders={"dim": lambda kwargs: int(getpop(kwargs, "dim", 1))},
+    ),
+    "checker": _synthetic_entry("checker", sample_checker, description="Checkerboard synthetic dataset.", dim=2),
+    "spiral": _synthetic_entry(
+        "spiral",
+        sample_spiral,
+        description="Noisy spiral synthetic dataset.",
+        dim=2,
+        sampler_kwargs_builders={
+            "spiral_turns": lambda kwargs: float(getpop(kwargs, "spiral_turns", 3.0)),
+            "spiral_radius": lambda kwargs: float(getpop(kwargs, "spiral_radius", 4.0)),
+            "spiral_noise": lambda kwargs: float(getpop(kwargs, "spiral_noise", 0.2)),
+        },
+    ),
+    "alpha_stable": _synthetic_entry(
+        "alpha_stable",
+        sample_scaled_isotropic_alpha_stable,
+        description="Isotropic alpha-stable synthetic dataset.",
+        tail_index_alpha="configurable",
+        sampler_kwargs_builders={
+            "dim": lambda kwargs: int(getpop(kwargs, "dim", 1)),
+            "alpha": lambda kwargs: float(getpop(kwargs, "alpha", 1.99)),
+        },
+    ),
+    "student": _synthetic_entry(
+        "student",
+        sample_student_t,
+        description="Student-t synthetic dataset.",
+        tail_index_alpha="configurable",
+        sampler_kwargs_builders={
+            "dim": lambda kwargs: int(getpop(kwargs, "dim", 1)),
+            "nu": lambda kwargs: float(getpop(kwargs, "nu", 10.0)),
+        },
+    ),
+    "exponential": _synthetic_entry(
+        "exponential",
+        sample_exponential,
+        description="Exponential synthetic dataset.",
+        sampler_kwargs_builders={
+            "dim": lambda kwargs: int(getpop(kwargs, "dim", 1)),
+            "rate": lambda kwargs: float(getpop(kwargs, "rate", 1.0)),
+        },
+    ),
+    "wildfires": _real_entry("wildfires", _load_wildfires, description="U.S. wildfire sizes in acres.", tail_index_alpha=(1.1, 1.8), dim=1),
+    "earthquakes": _real_entry("earthquakes", _load_earthquakes, description="Earthquake magnitude benchmark from the Clauset collection.", dim=1),
+    "kddcup": _real_entry("kddcup", _load_kddcup, description="KDD Cup 99 intrusion dataset with numeric feature columns only."),
+    "default_credit": _real_entry("default_credit", _load_default_credit, description="Default of Credit Card Clients dataset from OpenML."),
+    "lvis": _real_entry(
+        "lvis",
+        _load_lvis,
+        description="LVIS long-tailed object categories from local Jean Zay COCO/LVIS files; default image_size=64.",
+        standardize_default=False,
+        dim=(3, 64, 64),
+    ),
+    "cifar100_lt": _real_entry(
+        "cifar100_lt",
+        _load_cifar100_lt,
+        description="CIFAR-100 reshaped into a long-tailed subset using exponential class decay; default image_size=64.",
+        standardize_default=False,
+        dim=(3, 64, 64),
+    ),
+    "imagenet_lt": _real_entry(
+        "imagenet_lt",
+        _load_imagenet_lt,
+        description="ImageNet-LT split using shipped annotation files and a local ImageNet image tree; default image_size=64.",
+        standardize_default=False,
+        dim=(3, 64, 64),
+    ),
+    "hrrr": _real_entry(
+        "hrrr",
+        _load_hrrr,
+        description="HRRR accumulated precipitation fields on a 100x100 crop.",
+        standardize_default=False,
+        dim=(1, 100, 100),
+    ),
+}
+
+SYNTHETIC_DATASETS: dict[str, DatasetEntry] = {
+    name: entry for name, entry in ALL_DATASETS.items() if entry.dataset_type == "synthetic"
+}
+
+REAL_DATASETS: dict[str, DatasetEntry] = {
+    name: entry for name, entry in ALL_DATASETS.items() if entry.dataset_type == "real"
+}
 
 
 def fetch_synthetic_data(target_data: str, **kwargs: Any):
@@ -220,10 +1190,7 @@ def fetch_real_data(target_data: str, **kwargs: Any):
     n_samples = kwargs.pop("n_samples", None)
     if n_samples is not None:
         n_samples = int(n_samples)
-
-    entry_name = getattr(entry, "name", target_data)
-    kwargs, n_samples = prepare_lvis_loader_kwargs(entry_name, kwargs, n_samples)
-    kwargs, n_samples = prepare_hrrr_loader_kwargs(entry_name, kwargs, n_samples)
+    kwargs, n_samples = prepare_image_loader_kwargs(getattr(entry, "name", target_data), kwargs, n_samples)
 
     val_size = float(kwargs.pop("val_size", 0.15))
     test_size = float(kwargs.pop("test_size", 0.15))
@@ -262,45 +1229,31 @@ def fetch_real_data(target_data: str, **kwargs: Any):
             device=device,
             dtype=dtype,
         )
-        if not return_metadata:
-            return tensors
-        metadata = _build_return_metadata(
-            entry=entry,
-            kind="real",
-            target_data=target_data,
-            params=kwargs,
-            split_config={"val_size": val_size, "test_size": test_size, "random_state": random_state},
+    else:
+        data = torch.as_tensor(loaded)
+        records = payload_metadata.get("records")
+        if n_samples is not None:
+            if n_samples > data.shape[0]:
+                warnings.warn(
+                    f"n_samples={n_samples} exceeds available samples ({data.shape[0]}); returning all.",
+                    stacklevel=2,
+                )
+            rng = torch.Generator().manual_seed(random_state)
+            idx = torch.randperm(data.shape[0], generator=rng)[: min(n_samples, data.shape[0])]
+            data = data[idx]
+            if records is not None:
+                payload_metadata["records"] = _split_records(records, idx.tolist())
+        tensors, split_indices = _split_tensor_to_tensors(
+            data,
+            val_size=val_size,
+            test_size=test_size,
+            random_state=random_state,
+            split_mode=entry.split_mode,
             standardize=standardize,
             device=device,
             dtype=dtype,
-            split_indices=split_indices,
-            payload_metadata=payload_metadata,
         )
-        return (*tensors, metadata)
 
-    data = torch.as_tensor(loaded)
-    records = payload_metadata.get("records")
-    if n_samples is not None:
-        if n_samples > data.shape[0]:
-            warnings.warn(
-                f"n_samples={n_samples} exceeds available samples ({data.shape[0]}); returning all.",
-                stacklevel=2,
-            )
-        rng = torch.Generator().manual_seed(random_state)
-        idx = torch.randperm(data.shape[0], generator=rng)[: min(n_samples, data.shape[0])]
-        data = data[idx]
-        if records is not None:
-            payload_metadata["records"] = _split_records(records, idx.tolist())
-    tensors, split_indices = _split_tensor_to_tensors(
-        data,
-        val_size=val_size,
-        test_size=test_size,
-        random_state=random_state,
-        split_mode=entry.split_mode,
-        standardize=standardize,
-        device=device,
-        dtype=dtype,
-    )
     if not return_metadata:
         return tensors
     metadata = _build_return_metadata(

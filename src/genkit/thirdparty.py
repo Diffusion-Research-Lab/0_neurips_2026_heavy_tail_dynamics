@@ -64,6 +64,13 @@ def _install_package_stub(package_name: str, package_path: Path, saved_modules: 
     sys.modules[package_name] = stub
 
 
+def _install_module_stub(module_name: str, module: types.ModuleType, saved_modules: dict[str, object]) -> None:
+    """Install a temporary module stub and remember any previous module."""
+    if module_name not in saved_modules:
+        saved_modules[module_name] = sys.modules.get(module_name, None)
+    sys.modules[module_name] = module
+
+
 def _import_vendor(
     package_root: Optional[str],
     vendor_name: str,
@@ -112,6 +119,33 @@ def _import_tedm_vendor(package_root: Optional[str]):
     try:
         _install_package_stub("physicsnemo", package_dir, saved_modules)
         _install_package_stub("physicsnemo.diffusion", package_dir / "diffusion", saved_modules)
+        _install_package_stub("physicsnemo.core", package_dir / "core", saved_modules)
+        _install_package_stub("physicsnemo.domain_parallel", package_dir / "domain_parallel", saved_modules)
+
+        core_meta_stub = types.ModuleType("physicsnemo.core.meta")
+
+        class _ModelMetaData:
+            pass
+
+        core_meta_stub.ModelMetaData = _ModelMetaData
+        _install_module_stub("physicsnemo.core.meta", core_meta_stub, saved_modules)
+
+        core_module_stub = types.ModuleType("physicsnemo.core.module")
+
+        class _Module(torch.nn.Module):
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+
+        core_module_stub.Module = _Module
+        _install_module_stub("physicsnemo.core.module", core_module_stub, saved_modules)
+
+        shard_tensor_stub = types.ModuleType("physicsnemo.domain_parallel.shard_tensor")
+
+        def _scatter_tensor(tensor, *args, **kwargs):
+            return tensor
+
+        shard_tensor_stub.scatter_tensor = _scatter_tensor
+        _install_module_stub("physicsnemo.domain_parallel.shard_tensor", shard_tensor_stub, saved_modules)
 
         noise_path = _first_existing(
             package_dir / "diffusion" / "noise_schedulers" / "noise_schedulers.py",
