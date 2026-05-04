@@ -3,21 +3,22 @@
 import json
 import numpy as np
 import os
+import pickle
 from types import SimpleNamespace
-from datetime import datetime
 from sklearn.utils import Bunch
 import pandas as pd
 import pytest
 import torch
-from genkit._datasets import (
+from genkit.datasets._dataset import (
     DatasetPayload,
-    _load_default_credit, _load_earthquakes, _load_hrrr, _load_lvis, _load_wildfires,
-    _hrrr_cache_path,
+    _load_cifar100_lt, _load_default_credit, _load_earthquakes, _load_hrrr,
+    _load_imagenet_lt, _load_kddcup, _load_lvis, _load_wildfires,
     _resolve_real_data_home, _decode_byte_string, _standardize_split_arrays,
     _resolve_dataset, split_frame, split_tensor_data, _cache_remote_text_file,
     ALL_DATASETS,
 )
 from genkit.datasets import fetch_real_data, fetch_synthetic_data, get_dataset_metadata, list_datasets
+from benchmarks._real_data_cache import _loader_kwargs
 
 
 def _mock_default_credit_bunch():
@@ -79,7 +80,7 @@ def _write_lvis_fixture(root):
 
 
 def test_load_default_credit_drops_identifier_and_coerces_numeric(monkeypatch):
-    monkeypatch.setattr("genkit._datasets.fetch_openml", lambda **_: _mock_default_credit_bunch())
+    monkeypatch.setattr("genkit.datasets._dataset.fetch_openml", lambda **_: _mock_default_credit_bunch())
 
     frame = _load_default_credit()
 
@@ -90,7 +91,7 @@ def test_load_default_credit_drops_identifier_and_coerces_numeric(monkeypatch):
 
 
 def test_fetch_real_data_supports_default_credit(monkeypatch):
-    monkeypatch.setattr("genkit._datasets.fetch_openml", lambda **_: _mock_default_credit_bunch())
+    monkeypatch.setattr("genkit.datasets._dataset.fetch_openml", lambda **_: _mock_default_credit_bunch())
 
     x_train, x_val, x_test = fetch_real_data(
         "default_credit",
@@ -124,6 +125,8 @@ def test_default_credit_is_registered():
 def test_resolve_real_data_home_prefers_work(tmp_path, monkeypatch):
     work_root = tmp_path / "work"
     home_root = tmp_path / "home"
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
+    monkeypatch.delenv("FLOWBENCH_DATA_HOME", raising=False)
     monkeypatch.setenv("WORK", str(work_root))
     monkeypatch.setenv("HOME", str(home_root))
 
@@ -134,6 +137,8 @@ def test_resolve_real_data_home_prefers_work(tmp_path, monkeypatch):
 
 def test_resolve_real_data_home_uses_home_when_work_is_missing(tmp_path, monkeypatch):
     home_root = tmp_path / "home"
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
+    monkeypatch.delenv("FLOWBENCH_DATA_HOME", raising=False)
     monkeypatch.delenv("WORK", raising=False)
     monkeypatch.setenv("HOME", str(home_root))
 
@@ -146,7 +151,7 @@ def test_load_earthquakes_uses_cached_file(tmp_path, monkeypatch):
     data_home = tmp_path / "powerlaws"
     data_home.mkdir()
     (data_home / "quakes.txt").write_text("1.0\n2.5\n", encoding="utf-8")
-    monkeypatch.setattr("genkit._datasets.urlretrieve", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
+    monkeypatch.setattr("genkit.datasets._dataset.urlretrieve", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
 
     frame = _load_earthquakes(data_home=data_home)
 
@@ -157,337 +162,91 @@ def test_load_wildfires_uses_cached_file(tmp_path, monkeypatch):
     data_home = tmp_path / "powerlaws"
     data_home.mkdir()
     (data_home / "fires.txt").write_text("10\n20\n", encoding="utf-8")
-    monkeypatch.setattr("genkit._datasets.urlretrieve", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
+    monkeypatch.setattr("genkit.datasets._dataset.urlretrieve", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
 
     frame = _load_wildfires(data_home=data_home)
 
     assert list(frame["acres_burned"]) == [10.0, 20.0]
 
 
-def test_load_hrrr_saves_and_reuses_cache(tmp_path, monkeypatch):
-    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
+def test_load_hrrr_reads_fixed_work_file_and_drops_nonfinite_samples(tmp_path, monkeypatch):
+    hrrr_dir = tmp_path / "hrrr_data"
+    hrrr_dir.mkdir()
+    values = torch.arange(2 * 1 * 100 * 100, dtype=torch.float64).reshape(2, 1, 100, 100)
+    values[0, 0, 0, 0] = float("nan")
+    values[0, 0, 0, 1] = float("inf")
+    values[0, 0, 0, 2] = float("-inf")
+    torch.save(values, hrrr_dir / "hrrr_apcp_100x100.pt")
+    monkeypatch.setenv("WORK", str(tmp_path))
 
-    class _FakeVar:
-        def __init__(self, array):
-            self._array = array
+    loaded = _load_hrrr()
 
-        def squeeze(self, drop=True):
-            return self
+    assert loaded.shape == (1, 1, 100, 100)
+    assert loaded.dtype == torch.float32
+    assert torch.equal(loaded[0], values[1].to(torch.float32))
 
-        @property
-        def values(self):
-            return self._array
 
-    class _FakeDataset:
-        def __init__(self, array):
-            self.data_vars = {"apcp": _FakeVar(array)}
+def test_load_hrrr_accepts_saved_payload_dict(tmp_path, monkeypatch):
+    hrrr_dir = tmp_path / "hrrr_data"
+    hrrr_dir.mkdir()
+    values = torch.arange(3 * 1 * 100 * 100, dtype=torch.float64).reshape(3, 1, 100, 100)
+    torch.save({"timestamps": ["t0", "t1", "t2"], "frames": values}, hrrr_dir / "hrrr_apcp_100x100.pt")
+    monkeypatch.setenv("WORK", str(tmp_path))
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    _FAKE_IDX = "1:0:d=2014100100:APCP:surface:0-1 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
-
-    class _FakeResponse:
-        def __init__(self, text="", content=b""):
-            self.text = text
-            self.ok = True
-            self.status_code = 200
-            self._content = content
-
-        def raise_for_status(self):
-            pass
-
-        def iter_content(self, chunk_size=None):
-            yield self._content
-
-    class _FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def get(self, url, **kwargs):
-            if url.endswith(".idx"):
-                return _FakeResponse(text=_FAKE_IDX)
-            return _FakeResponse(content=b"")
-
-    subprocess_calls = []
-
-    def _fake_run(*args, **kwargs):
-        cmd = args[0]
-        subprocess_calls.append(cmd)
-        import subprocess as _sp
-        return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    _fake_session = _FakeSession()
-    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("genkit._datasets.requests.Session", _FakeSession)
-    monkeypatch.setattr("genkit._datasets._hrrr_session", lambda: _fake_session)
-    monkeypatch.setattr("genkit._datasets.subprocess.run", _fake_run)
-    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: _FakeDataset(values))
-
-    loaded = _load_hrrr(
-        data_home=tmp_path,
-        start="2014-10-01 00:00:00",
-        end="2014-10-01 02:00:00",
-    )
-    cache_paths = list(tmp_path.glob("hrrr_apcp_100x100_*.pt"))
+    loaded = _load_hrrr()
 
     assert loaded.shape == (3, 1, 100, 100)
     assert loaded.dtype == torch.float32
-    assert torch.equal(loaded[0, 0], torch.from_numpy(values))
-    assert len(cache_paths) == 1
-    assert len(subprocess_calls) == 3  # per sample: wgrib2 only
-
-    monkeypatch.setattr("genkit._datasets.subprocess.run", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
-    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: pytest.fail("cache should bypass decoding"))
-    cached = _load_hrrr(data_home=tmp_path, start="2014-10-01 00:00:00", end="2014-10-01 02:00:00")
-
-    assert torch.equal(cached, loaded)
+    assert torch.equal(loaded, values.to(torch.float32))
 
 
-def test_load_hrrr_resumes_from_partial_cache(tmp_path, monkeypatch):
-    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
+def test_load_hrrr_rejects_unknown_payload_dict(tmp_path, monkeypatch):
+    hrrr_dir = tmp_path / "hrrr_data"
+    hrrr_dir.mkdir()
+    torch.save({"timestamps": ["t0"]}, hrrr_dir / "hrrr_apcp_100x100.pt")
+    monkeypatch.setenv("WORK", str(tmp_path))
 
-    class _FakeVar:
-        def __init__(self, array):
-            self._array = array
+    with pytest.raises(ValueError, match="Expected a tensor payload or a dict containing 'frames'"):
+        _load_hrrr()
 
-        def squeeze(self, drop=True):
-            return self
 
-        @property
-        def values(self):
-            return self._array
+def test_load_hrrr_raises_when_fixed_file_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORK", str(tmp_path))
 
-    class _FakeDataset:
-        def __init__(self, array):
-            self.data_vars = {"apcp": _FakeVar(array)}
+    with pytest.raises(FileNotFoundError, match="hrrr_data/hrrr_apcp_100x100.pt"):
+        _load_hrrr()
 
-        def __enter__(self):
-            return self
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+def test_load_hrrr_rejects_loader_kwargs(tmp_path, monkeypatch):
+    hrrr_dir = tmp_path / "hrrr_data"
+    hrrr_dir.mkdir()
+    torch.save(torch.ones(1, 1, 100, 100), hrrr_dir / "hrrr_apcp_100x100.pt")
+    monkeypatch.setenv("WORK", str(tmp_path))
 
-    _FAKE_IDX = "1:0:d=2014100100:APCP:surface:0-1 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
+    with pytest.raises(TypeError, match="Unexpected HRRR loader kwargs: n_workers"):
+        _load_hrrr(n_workers=8)
 
-    class _FakeResponse:
-        def __init__(self, text="", content=b""):
-            self.text = text
-            self.ok = True
-            self.status_code = 200
-            self._content = content
 
-        def raise_for_status(self):
-            pass
-
-        def iter_content(self, chunk_size=None):
-            yield self._content
-
-    class _FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def get(self, url, **kwargs):
-            if url.endswith(".idx"):
-                return _FakeResponse(text=_FAKE_IDX)
-            return _FakeResponse(content=b"")
-
-    subprocess_calls = []
-
-    def _fake_run(*args, **kwargs):
-        cmd = args[0]
-        subprocess_calls.append(cmd)
-        import subprocess as _sp
-        return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    cache_root = tmp_path
-    cache_path = _hrrr_cache_path(
-        cache_root,
-        start=datetime(2014, 10, 1, 0),
-        end=datetime(2014, 10, 1, 2),
-        bbox=(-96.0, -91.5, 28.5, 32.0),
-        step_hours=1,
-        forecast_hours=(1,),
-    )
+def test_fetch_real_data_supports_hrrr_tensor_dataset(tmp_path, monkeypatch):
+    hrrr_dir = tmp_path / "hrrr_data"
+    hrrr_dir.mkdir()
     torch.save(
-        {
-            "timestamps": ["2014-10-01T00:00:00Z"],
-            "frames": torch.from_numpy(values).reshape(1, 1, 100, 100),
-        },
-        cache_path,
+        torch.arange(5 * 1 * 100 * 100, dtype=torch.float32).reshape(5, 1, 100, 100),
+        hrrr_dir / "hrrr_apcp_100x100.pt",
     )
-
-    _fake_session = _FakeSession()
-    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("genkit._datasets.requests.Session", _FakeSession)
-    monkeypatch.setattr("genkit._datasets._hrrr_session", lambda: _fake_session)
-    monkeypatch.setattr("genkit._datasets.subprocess.run", _fake_run)
-    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: _FakeDataset(values))
-
-    loaded = _load_hrrr(
-        data_home=cache_root,
-        start="2014-10-01 00:00:00",
-        end="2014-10-01 02:00:00",
-    )
-
-    assert loaded.shape == (3, 1, 100, 100)
-    assert len(subprocess_calls) == 2
-    assert cache_path.exists()
-
-
-def test_load_hrrr_returns_immediately_when_cache_has_requested_n_samples(tmp_path, monkeypatch):
-    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
-
-    cache_path = _hrrr_cache_path(
-        tmp_path,
-        start=datetime(2014, 10, 1, 0),
-        end=datetime(2014, 10, 1, 2),
-        bbox=(-96.0, -91.5, 28.5, 32.0),
-        step_hours=1,
-        forecast_hours=(1,),
-    )
-    torch.save(
-        {
-            "timestamps": ["2014-10-01T00:00:00Z", "2014-10-01T01:00:00Z"],
-            "frames": torch.from_numpy(np.stack([values, values + 1], axis=0)[:, np.newaxis]),
-        },
-        cache_path,
-    )
-
-    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("genkit._datasets.subprocess.run", lambda *args, **kwargs: pytest.fail("should not fetch more frames"))
-    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: pytest.fail("should not fetch more frames"))
-
-    loaded = _load_hrrr(
-        data_home=tmp_path,
-        start="2014-10-01 00:00:00",
-        end="2014-10-01 02:00:00",
-        n_samples=2,
-    )
-
-    assert loaded.shape == (2, 1, 100, 100)
-    assert torch.equal(loaded[0, 0], torch.from_numpy(values))
-    assert torch.equal(loaded[1, 0], torch.from_numpy(values + 1))
-    assert cache_path.exists()
-
-
-def test_load_hrrr_fetches_only_missing_target_samples(tmp_path, monkeypatch):
-    values = np.arange(10000, dtype=np.float32).reshape(100, 100)
-
-    class _FakeVar:
-        def __init__(self, array):
-            self._array = array
-
-        def squeeze(self, drop=True):
-            return self
-
-        @property
-        def values(self):
-            return self._array
-
-    class _FakeDataset:
-        def __init__(self, array):
-            self.data_vars = {"apcp": _FakeVar(array)}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    class _FakeResponse:
-        text = "1:0:d=2014100100:APCP:surface:0-1 hour acc fcst:\n2:9999:d=2014100100:TMP:2 m above ground:\n"
-        ok = True
-        status_code = 200
-
-        def raise_for_status(self):
-            pass
-
-        def iter_content(self, chunk_size=None):
-            yield b""
-
-    class _FakeSession:
-        def get(self, url, **kwargs):
-            return _FakeResponse()
-
-    cache_path = _hrrr_cache_path(
-        tmp_path,
-        start=datetime(2014, 10, 1, 0),
-        end=datetime(2014, 10, 1, 2),
-        bbox=(-96.0, -91.5, 28.5, 32.0),
-        step_hours=1,
-        forecast_hours=(1,),
-    )
-    torch.save(
-        {
-            "timestamps": ["2014-10-01T00:00:00Z"],
-            "frames": torch.from_numpy(values).reshape(1, 1, 100, 100),
-        },
-        cache_path,
-    )
-
-    subprocess_calls = []
-
-    def _fake_run(*args, **kwargs):
-        subprocess_calls.append(args[0])
-        import subprocess as _sp
-        return _sp.CompletedProcess(args[0], 0, stdout="", stderr="")
-
-    monkeypatch.setattr("genkit._datasets.shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("genkit._datasets._hrrr_session", lambda: _FakeSession())
-    monkeypatch.setattr("genkit._datasets.subprocess.run", _fake_run)
-    monkeypatch.setattr("genkit._datasets.xr.open_dataset", lambda *args, **kwargs: _FakeDataset(values + 1))
-
-    loaded = _load_hrrr(
-        data_home=tmp_path,
-        start="2014-10-01 00:00:00",
-        end="2014-10-01 02:00:00",
-        n_samples=2,
-        n_workers=8,
-    )
-
-    assert loaded.shape == (2, 1, 100, 100)
-    assert len(subprocess_calls) == 1
-
-
-def test_fetch_real_data_supports_hrrr_tensor_dataset(tmp_path):
-    def _fake_loader(**kwargs):
-        assert kwargs["data_home"] == tmp_path
-        return torch.arange(5 * 1 * 3 * 4, dtype=torch.float32).reshape(5, 1, 3, 4)
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        "genkit.datasets._dataset._resolve_dataset",
-        lambda target_data, all_datasets, dataset_type=None: SimpleNamespace(
-            loader=_fake_loader,
-            split_mode="random",
-            dataset_type="real",
-            standardize_default=False,
-        ),
-    )
+    monkeypatch.setenv("WORK", str(tmp_path))
 
     x_train, x_val, x_test = fetch_real_data(
         "hrrr",
-        data_home=tmp_path,
         val_size=0.2,
         test_size=0.2,
         random_state=0,
         dtype=torch.float64,
     )
-    monkeypatch.undo()
 
-    assert x_train.shape == (3, 1, 3, 4)
-    assert x_val.shape == (1, 1, 3, 4)
-    assert x_test.shape == (1, 1, 3, 4)
+    assert x_train.shape == (3, 1, 100, 100)
+    assert x_val.shape == (1, 1, 100, 100)
+    assert x_test.shape == (1, 1, 100, 100)
     assert x_train.dtype == torch.float64
     assert x_val.dtype == torch.float64
     assert x_test.dtype == torch.float64
@@ -528,6 +287,39 @@ def test_load_lvis_reads_local_fixture_and_filters_frequency(tmp_path):
     assert loaded.metadata["n_selected_images"] == 3
     assert [record["image_id"] for record in loaded.metadata["records"]] == [1, 3, 5]
     assert all(record["category_frequencies"] == ["r"] for record in loaded.metadata["records"])
+
+
+def test_load_lvis_reuses_processed_cache(tmp_path, monkeypatch):
+    import genkit.datasets._dataset as dataset_module
+
+    data_home = _write_lvis_fixture(tmp_path / "lvis")
+    cache_dir = tmp_path / "cache"
+
+    first = _load_lvis(
+        data_home=data_home,
+        cache_dir=cache_dir,
+        split="train",
+        image_size=8,
+        max_samples=3,
+        seed=0,
+    )
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("cache miss")
+
+    monkeypatch.setattr(dataset_module, "_read_lvis_image", fail_read)
+    second = _load_lvis(
+        data_home=data_home,
+        cache_dir=cache_dir,
+        split="train",
+        image_size=8,
+        max_samples=3,
+        seed=0,
+    )
+
+    assert second.metadata["cache_hit"] is True
+    assert second.metadata["cache_path"] == first.metadata["cache_path"]
+    assert torch.equal(second.data, first.data)
 
 
 def test_fetch_real_data_supports_lvis_tensor_dataset(tmp_path):
@@ -765,11 +557,22 @@ def test_decode_byte_string_passes_through_non_bytes():
 
 def test_resolve_real_data_home_flowbench_data_home_takes_precedence(tmp_path, monkeypatch):
     custom = tmp_path / "custom_root"
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
     monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(custom))
     monkeypatch.setenv("WORK", str(tmp_path / "work"))
     resolved = _resolve_real_data_home()
     assert resolved == custom
     assert custom.exists()
+
+
+def test_resolve_real_data_home_flowbench_data_takes_top_precedence(tmp_path, monkeypatch):
+    primary = tmp_path / "primary_root"
+    monkeypatch.setenv("FLOWBENCH_DATA", str(primary))
+    monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(tmp_path / "secondary"))
+    monkeypatch.setenv("WORK", str(tmp_path / "work"))
+    resolved = _resolve_real_data_home()
+    assert resolved == primary
+    assert primary.exists()
 
 
 def test_split_frame_chronological_preserves_temporal_order():
@@ -837,8 +640,530 @@ def test_cache_remote_text_file_cache_hit_skips_download(tmp_path, monkeypatch):
     cached = tmp_path / "data.txt"
     cached.write_text("1.0\n2.0\n")
     monkeypatch.setattr(
-        "genkit._datasets.urlretrieve",
+        "genkit.datasets._dataset.urlretrieve",
         lambda *a, **kw: pytest.fail("should not download when cached"),
     )
     result = _cache_remote_text_file("http://example.com/data.txt", data_home=tmp_path, filename="data.txt")
     assert result == cached
+
+
+# ---------------------------------------------------------------------------
+# CIFAR-100-LT
+# ---------------------------------------------------------------------------
+
+
+def _write_cifar100_fixture(root, *, samples_per_class=4, n_classes=6, image_hw=32, nested=True):
+    base = root / "cifar-100-python" if nested else root
+    base.mkdir(parents=True)
+    rng = np.random.default_rng(123)
+    n_train = samples_per_class * n_classes
+    train_data = rng.integers(0, 256, size=(n_train, 3 * image_hw * image_hw), dtype=np.uint8)
+    train_labels = np.repeat(np.arange(n_classes, dtype=np.int64), samples_per_class).tolist()
+    n_test = max(1, samples_per_class // 2) * n_classes
+    test_data = rng.integers(0, 256, size=(n_test, 3 * image_hw * image_hw), dtype=np.uint8)
+    test_labels = np.repeat(np.arange(n_classes, dtype=np.int64), max(1, samples_per_class // 2)).tolist()
+
+    train_payload = {
+        b"data": train_data,
+        b"fine_labels": train_labels,
+        b"coarse_labels": [0] * n_train,
+        b"batch_label": b"training batch 1 of 1",
+        b"filenames": [f"train_{i}.png".encode("utf-8") for i in range(n_train)],
+    }
+    test_payload = {
+        b"data": test_data,
+        b"fine_labels": test_labels,
+        b"coarse_labels": [0] * n_test,
+        b"batch_label": b"testing batch 1 of 1",
+        b"filenames": [f"test_{i}.png".encode("utf-8") for i in range(n_test)],
+    }
+    meta_payload = {
+        b"fine_label_names": [f"class_{c}".encode("utf-8") for c in range(n_classes)],
+        b"coarse_label_names": [b"super_0"],
+    }
+    with (base / "train").open("wb") as handle:
+        pickle.dump(train_payload, handle)
+    with (base / "test").open("wb") as handle:
+        pickle.dump(test_payload, handle)
+    with (base / "meta").open("wb") as handle:
+        pickle.dump(meta_payload, handle)
+    return root
+
+
+def test_load_cifar100_lt_reads_local_fixture_and_long_tails_classes(tmp_path):
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
+
+    loaded = _load_cifar100_lt(
+        data_home=root,
+        split="train",
+        image_size=8,
+        imbalance_factor=8,
+        cache=False,
+    )
+
+    assert isinstance(loaded, DatasetPayload)
+    assert loaded.data.dtype == torch.float32
+    assert loaded.data.shape[1:] == (3, 8, 8)
+    assert loaded.data.min().item() >= 0.0
+    assert loaded.data.max().item() <= 1.0
+    counts = loaded.metadata["long_tail_class_counts"]
+    assert counts == [8, 4, 2, 1]
+    assert loaded.data.shape[0] == sum(counts)
+    histogram = loaded.metadata["class_histogram"]
+    assert {int(k): int(v) for k, v in histogram.items()} == {0: 8, 1: 4, 2: 2, 3: 1}
+    assert loaded.metadata["label_names"] == ["class_0", "class_1", "class_2", "class_3"]
+
+
+def test_load_cifar100_lt_max_samples_caps_total(tmp_path):
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
+
+    loaded = _load_cifar100_lt(
+        data_home=root,
+        split="train",
+        image_size=8,
+        imbalance_factor=8,
+        max_samples=5,
+        cache=False,
+    )
+
+    assert loaded.data.shape[0] == 5
+    assert len(loaded.metadata["records"]) == 5
+
+
+def test_load_cifar100_lt_is_deterministic_under_seed(tmp_path):
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
+
+    first = _load_cifar100_lt(data_home=root, split="train", image_size=8, imbalance_factor=8, seed=7, cache=False)
+    second = _load_cifar100_lt(data_home=root, split="train", image_size=8, imbalance_factor=8, seed=7, cache=False)
+    third = _load_cifar100_lt(data_home=root, split="train", image_size=8, imbalance_factor=8, seed=11, cache=False)
+
+    assert first.metadata["selected_indices"] == second.metadata["selected_indices"]
+    assert first.metadata["selected_indices"] != third.metadata["selected_indices"]
+    assert torch.equal(first.data, second.data)
+
+
+def test_load_cifar100_lt_reuses_processed_cache(tmp_path, monkeypatch):
+    import genkit.datasets._dataset as dataset_module
+
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
+    cache_dir = tmp_path / "cache"
+
+    first = _load_cifar100_lt(
+        data_home=root,
+        cache_dir=cache_dir,
+        split="train",
+        image_size=8,
+        imbalance_factor=8,
+        seed=0,
+    )
+
+    monkeypatch.setattr(dataset_module, "load_cifar100_lt_arrays",
+                        lambda **kwargs: (_ for _ in ()).throw(AssertionError("cache miss")))
+    second = _load_cifar100_lt(
+        data_home=root,
+        cache_dir=cache_dir,
+        split="train",
+        image_size=8,
+        imbalance_factor=8,
+        seed=0,
+    )
+
+    assert second.metadata["cache_hit"] is True
+    assert second.metadata["cache_path"] == first.metadata["cache_path"]
+    assert torch.equal(second.data, first.data)
+
+
+def test_load_cifar100_lt_flat_layout_without_subdir(tmp_path):
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=4, n_classes=3, nested=False)
+
+    loaded = _load_cifar100_lt(
+        data_home=root,
+        split="test",
+        image_size=8,
+        imbalance_factor=4,
+        cache=False,
+    )
+
+    assert loaded.data.shape[0] == sum(loaded.metadata["long_tail_class_counts"])
+
+
+def test_cifar100_lt_raises_actionable_error_when_no_root_configured(monkeypatch):
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
+
+    with pytest.raises(RuntimeError, match="FLOWBENCH_DATA"):
+        _load_cifar100_lt(cache=False)
+
+
+def test_cifar100_lt_raises_when_root_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOWBENCH_DATA", str(tmp_path / "missing"))
+
+    with pytest.raises(RuntimeError, match="root does not exist"):
+        _load_cifar100_lt(cache=False)
+
+
+def test_cifar100_lt_raises_when_pickle_files_missing(tmp_path):
+    root = tmp_path / "cifar100_lt"
+    root.mkdir()
+
+    with pytest.raises(RuntimeError, match="not found under"):
+        _load_cifar100_lt(data_home=root, cache=False)
+
+
+def test_cifar100_lt_resolves_under_flowbench_data_env(tmp_path, monkeypatch):
+    flowbench_data = tmp_path / "flowbench_data"
+    cifar_root = flowbench_data / "raw" / "cifar100_lt"
+    _write_cifar100_fixture(cifar_root, samples_per_class=4, n_classes=3)
+    monkeypatch.setenv("FLOWBENCH_DATA", str(flowbench_data))
+
+    loaded = _load_cifar100_lt(split="train", image_size=8, imbalance_factor=4, cache=False)
+
+    assert loaded.data.shape[0] == sum(loaded.metadata["long_tail_class_counts"])
+    assert str(cifar_root) in loaded.metadata["source_path"]
+
+
+def test_cifar100_lt_is_registered():
+    assert "cifar100_lt" in list_datasets()
+    assert get_dataset_metadata("cifar100_lt") == {
+        "name": "cifar100_lt",
+        "tail_index_alpha": None,
+        "description": "CIFAR-100 reshaped into a long-tailed subset using exponential class decay; default image_size=64.",
+        "split_mode": "random",
+        "dataset_type": "real",
+        "dim": (3, 64, 64),
+        "n_samples": None,
+    }
+
+
+def test_fetch_real_data_supports_cifar100_lt(tmp_path):
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
+
+    x_train, x_val, x_test, metadata = fetch_real_data(
+        "cifar100_lt",
+        data_home=root,
+        split="train",
+        image_size=8,
+        imbalance_factor=8,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=0,
+        standardize=False,
+        return_metadata=True,
+    )
+
+    total = x_train.shape[0] + x_val.shape[0] + x_test.shape[0]
+    assert total == sum([8, 4, 2, 1])
+    assert x_train.dtype == torch.float32
+    assert x_train.shape[1:] == (3, 8, 8)
+    assert metadata["loader"]["imbalance_factor"] == 8.0
+    assert metadata["loader"]["image_size"] == 8
+    assert metadata["request"]["name"] == "cifar100_lt"
+
+
+def test_fetch_real_data_passes_cifar100_lt_n_samples_as_max_samples(tmp_path):
+    root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
+
+    x_train, x_val, x_test = fetch_real_data(
+        "cifar100_lt",
+        data_home=root,
+        split="train",
+        image_size=8,
+        imbalance_factor=8,
+        n_samples=4,
+        val_size=0.25,
+        test_size=0.25,
+        random_state=0,
+        standardize=False,
+    )
+
+    assert x_train.shape[0] + x_val.shape[0] + x_test.shape[0] == 4
+
+
+def test_loader_kwargs_for_cifar100_lt_sets_data_home_and_cache_dir(tmp_path):
+    cfg = {"name": "cifar100_lt", "params": {"split": "train"}, "split": {}}
+    kwargs = _loader_kwargs(cfg, tmp_path)
+    assert kwargs["data_home"] == str(tmp_path / "raw" / "cifar100_lt")
+    assert kwargs["cache_dir"] == str(tmp_path / "processed" / "_image_loader" / "cifar100_lt")
+
+
+# ---------------------------------------------------------------------------
+# ImageNet-LT
+# ---------------------------------------------------------------------------
+
+
+def _write_imagenet_lt_fixture(root, *, with_imagenet_subdir=True):
+    image_mod = pytest.importorskip("PIL.Image")
+    annotations_dir = root / "annotations"
+    annotations_dir.mkdir(parents=True)
+    if with_imagenet_subdir:
+        image_root = root / "imagenet"
+    else:
+        image_root = root / "images"
+    image_root.mkdir(parents=True)
+
+    records = [
+        ("train/n00000001/img1.JPEG", 0, (255, 0, 0)),
+        ("train/n00000001/img2.JPEG", 0, (220, 0, 0)),
+        ("train/n00000001/img3.JPEG", 0, (190, 0, 0)),
+        ("train/n00000002/img4.JPEG", 1, (0, 255, 0)),
+        ("train/n00000002/img5.JPEG", 1, (0, 220, 0)),
+        ("train/n00000003/img6.JPEG", 2, (0, 0, 255)),
+    ]
+    lines = []
+    for relative_path, class_id, color in records:
+        path = image_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image_mod.new("RGB", (12, 14), color=color).save(path)
+        lines.append(f"{relative_path} {class_id}")
+    (annotations_dir / "ImageNet_LT_train.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return root, image_root
+
+
+def test_load_imagenet_lt_reads_local_fixture(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+
+    loaded = _load_imagenet_lt(
+        data_home=root,
+        imagenet_root=image_root,
+        split="train",
+        image_size=8,
+        cache=False,
+    )
+
+    assert isinstance(loaded, DatasetPayload)
+    assert loaded.data.shape == (6, 3, 8, 8)
+    assert loaded.data.dtype == torch.float32
+    assert loaded.data.min().item() >= 0.0
+    assert loaded.data.max().item() <= 1.0
+    assert loaded.metadata["source_split"] == "train"
+    assert loaded.metadata["n_selected_images"] == 6
+    assert loaded.metadata["class_histogram"] == {0: 3, 1: 2, 2: 1}
+    assert [record["wnid"] for record in loaded.metadata["records"]] == [
+        "n00000001", "n00000001", "n00000001", "n00000002", "n00000002", "n00000003",
+    ]
+
+
+def test_load_imagenet_lt_max_samples_is_deterministic(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+
+    first = _load_imagenet_lt(
+        data_home=root, imagenet_root=image_root, split="train",
+        image_size=8, max_samples=3, seed=5, cache=False,
+    )
+    second = _load_imagenet_lt(
+        data_home=root, imagenet_root=image_root, split="train",
+        image_size=8, max_samples=3, seed=5, cache=False,
+    )
+    other = _load_imagenet_lt(
+        data_home=root, imagenet_root=image_root, split="train",
+        image_size=8, max_samples=3, seed=99, cache=False,
+    )
+
+    assert first.metadata["n_selected_images"] == 3
+    assert [r["relative_path"] for r in first.metadata["records"]] == [r["relative_path"] for r in second.metadata["records"]]
+    assert torch.equal(first.data, second.data)
+    assert [r["relative_path"] for r in first.metadata["records"]] != [r["relative_path"] for r in other.metadata["records"]]
+
+
+def test_load_imagenet_lt_reuses_processed_cache(tmp_path, monkeypatch):
+    import genkit.datasets._dataset as dataset_module
+
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+    cache_dir = tmp_path / "cache"
+
+    first = _load_imagenet_lt(
+        data_home=root, imagenet_root=image_root, cache_dir=cache_dir,
+        split="train", image_size=8, max_samples=3, seed=0,
+    )
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("cache miss")
+
+    monkeypatch.setattr(dataset_module, "read_rgb_resized", fail_read)
+    second = _load_imagenet_lt(
+        data_home=root, imagenet_root=image_root, cache_dir=cache_dir,
+        split="train", image_size=8, max_samples=3, seed=0,
+    )
+
+    assert second.metadata["cache_hit"] is True
+    assert second.metadata["cache_path"] == first.metadata["cache_path"]
+    assert torch.equal(second.data, first.data)
+
+
+def test_load_imagenet_lt_uses_explicit_annotation_path(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+    elsewhere = tmp_path / "elsewhere" / "annot.txt"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text((root / "annotations" / "ImageNet_LT_train.txt").read_text(), encoding="utf-8")
+
+    loaded = _load_imagenet_lt(
+        annotation_path=elsewhere,
+        imagenet_root=image_root,
+        split="train",
+        image_size=8,
+        cache=False,
+    )
+    assert loaded.metadata["annotation_path"] == str(elsewhere)
+    assert loaded.data.shape[0] == 6
+
+
+def test_imagenet_lt_raises_when_data_home_missing(monkeypatch):
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
+
+    with pytest.raises(RuntimeError, match="FLOWBENCH_DATA"):
+        _load_imagenet_lt(cache=False)
+
+
+def test_imagenet_lt_raises_when_annotation_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOWBENCH_DATA", str(tmp_path))
+    raw_root = tmp_path / "raw" / "imagenet_lt" / "annotations"
+    raw_root.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="annotation file not found"):
+        _load_imagenet_lt(cache=False)
+
+
+def test_imagenet_lt_raises_when_image_missing(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+    (image_root / "train" / "n00000001" / "img1.JPEG").unlink()
+
+    with pytest.raises(RuntimeError, match="image not found"):
+        _load_imagenet_lt(
+            data_home=root, imagenet_root=image_root,
+            split="train", image_size=8, cache=False,
+        )
+
+
+def test_imagenet_lt_resolves_imagenet_root_via_data_home_subdir(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt", with_imagenet_subdir=True)
+
+    loaded = _load_imagenet_lt(
+        data_home=root,
+        split="train",
+        image_size=8,
+        cache=False,
+    )
+    assert loaded.metadata["imagenet_root"] == str(image_root)
+    assert loaded.data.shape[0] == 6
+
+
+def test_imagenet_lt_is_registered():
+    assert "imagenet_lt" in list_datasets()
+    assert get_dataset_metadata("imagenet_lt") == {
+        "name": "imagenet_lt",
+        "tail_index_alpha": None,
+        "description": "ImageNet-LT split using shipped annotation files and a local ImageNet image tree; default image_size=64.",
+        "split_mode": "random",
+        "dataset_type": "real",
+        "dim": (3, 64, 64),
+        "n_samples": None,
+    }
+
+
+def test_fetch_real_data_supports_imagenet_lt(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+
+    x_train, x_val, x_test, metadata = fetch_real_data(
+        "imagenet_lt",
+        data_home=root,
+        imagenet_root=image_root,
+        split="train",
+        image_size=8,
+        max_samples=4,
+        val_size=0.25,
+        test_size=0.25,
+        random_state=0,
+        standardize=False,
+        return_metadata=True,
+    )
+    assert x_train.shape == (2, 3, 8, 8)
+    assert x_val.shape == (1, 3, 8, 8)
+    assert x_test.shape == (1, 3, 8, 8)
+    assert metadata["request"]["name"] == "imagenet_lt"
+    assert metadata["loader"]["n_selected_images"] == 4
+
+
+def test_fetch_real_data_passes_imagenet_lt_n_samples_as_max_samples(tmp_path):
+    root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
+
+    x_train, x_val, x_test = fetch_real_data(
+        "imagenet_lt",
+        data_home=root,
+        imagenet_root=image_root,
+        split="train",
+        image_size=8,
+        n_samples=3,
+        val_size=0.25,
+        test_size=0.25,
+        random_state=0,
+        standardize=False,
+    )
+    assert x_train.shape[0] + x_val.shape[0] + x_test.shape[0] == 3
+
+
+def test_loader_kwargs_for_imagenet_lt_sets_defaults(tmp_path):
+    cfg = {"name": "imagenet_lt", "params": {"split": "train"}, "split": {}}
+    kwargs = _loader_kwargs(cfg, tmp_path)
+    assert kwargs["data_home"] == str(tmp_path / "raw" / "imagenet_lt")
+    assert kwargs["imagenet_root"] == "/lustre/fswork/dataset/imagenet"
+    assert kwargs["cache_dir"] == str(tmp_path / "processed" / "_image_loader" / "imagenet_lt")
+
+
+# ---------------------------------------------------------------------------
+# Offline-strict guards (compute-node safety)
+# ---------------------------------------------------------------------------
+
+
+def test_kddcup_loader_passes_download_if_missing_false(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return Bunch(data=pd.DataFrame({"feature_a": [1.0, 2.0, 3.0, 4.0]}))
+
+    monkeypatch.setattr("genkit.datasets._dataset.fetch_kddcup99", fake_fetch)
+    frame = _load_kddcup(data_home=tmp_path)
+
+    assert captured["download_if_missing"] is False
+    assert captured["percent10"] is True
+    assert captured["data_home"] == str(tmp_path)
+    assert list(frame.columns) == ["feature_a"]
+
+
+def test_kddcup_loader_raises_clear_offline_error_when_data_missing(tmp_path, monkeypatch):
+    def fake_fetch(**kwargs):
+        raise OSError("Data not found and download_if_missing=False")
+
+    monkeypatch.setattr("genkit.datasets._dataset.fetch_kddcup99", fake_fetch)
+
+    with pytest.raises(RuntimeError, match=r"init\.kddcup\.sh"):
+        _load_kddcup(data_home=tmp_path)
+
+
+def test_default_credit_loader_raises_clear_offline_error(tmp_path, monkeypatch):
+    def fake_fetch(**kwargs):
+        raise OSError("Network is unreachable")
+
+    monkeypatch.setattr("genkit.datasets._dataset.fetch_openml", fake_fetch)
+
+    with pytest.raises(RuntimeError, match=r"init\.default_credit\.sh"):
+        _load_default_credit(data_home=tmp_path)
+
+
+def test_earthquakes_loader_raises_clear_offline_error_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "genkit.datasets._dataset.urlretrieve",
+        lambda *a, **kw: pytest.fail("loader must not call urlretrieve on compute nodes"),
+    )
+
+    with pytest.raises(RuntimeError, match=r"init\.earthquakes\.sh"):
+        _load_earthquakes(data_home=tmp_path / "powerlaws")
+
+
+def test_wildfires_loader_raises_clear_offline_error_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "genkit.datasets._dataset.urlretrieve",
+        lambda *a, **kw: pytest.fail("loader must not call urlretrieve on compute nodes"),
+    )
+
+    with pytest.raises(RuntimeError, match=r"init\.wildfires\.sh"):
+        _load_wildfires(data_home=tmp_path / "powerlaws")
