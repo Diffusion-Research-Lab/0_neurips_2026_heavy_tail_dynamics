@@ -1,41 +1,26 @@
 ## Benchmark Quickstart
 
-### 1) Setup
-
-From the repo root, locally:
+To setup the benchmark:
 
 ```bash
-bash scripts/setup.sh --venv-dir .venv
+  make send
+  ssh jz
+  cd $WORK/src/flowbench/
+  make setup
+  make dataset
 ```
 
-Or on Jean Zay:
+To launch the pilot:
 
 ```bash
-make setup
+  make pilot
+  make evaluate-pilot
+  make analyze-pilot
 ```
 
-### 2) Run
-
-Local smoke test:
+To launch the benchmark:
 
 ```bash
-bash scripts/run.local.sh --blank
-```
-
-Local full config sweep:
-
-```bash
-bash scripts/run.local.sh --run
-```
-
-Jean Zay benchmark run:
-
-```bash
-make run
-```
-
-Launch sharded evaluation for one fetched or remote batch:
-
-```bash
-make evaluate
+  make bench
+  make evaluate-bench
 ```

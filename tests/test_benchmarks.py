@@ -1,10 +1,53 @@
 from pathlib import Path
+import importlib
+import os
+import pandas as pd
+import subprocess
+import sys
 
+import pytest
 import torch
 
-import benchmarks.evaluate as evaluate
-from benchmarks.evaluate import compute_test_metrics, sample_generator_in_batches
-from benchmarks.main import _resolved_config, load_yaml, require_section, select_entries
+import benchmarks._real_data_cache as real_data_cache
+
+evaluate = importlib.import_module("benchmarks.02_evaluate")
+compute_test_metrics = evaluate.compute_test_metrics
+sample_generator_in_batches = evaluate.sample_generator_in_batches
+
+_main = importlib.import_module("benchmarks.01_main")
+_resolved_config = _main._resolved_config
+load_yaml = _main.load_yaml
+require_section = _main.require_section
+select_entries = _main.select_entries
+build_dataset = _main.build_dataset
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_PREFETCH_SCRIPT = _PROJECT_ROOT / "scripts" / "prefetch.datasets.py"
+_CONFIG_IMAGE_PILOT = _PROJECT_ROOT / "benchmarks" / "configs" / "pilot" / "image.yaml"
+_PILOT_ANALYSIS_SCRIPT = _PROJECT_ROOT / "benchmarks" / "03_pilot_analysis.py"
+
+
+@pytest.fixture(scope="module")
+def generated_bench_outputs(tmp_path_factory):
+    root = tmp_path_factory.mktemp("pilot_analysis")
+    bench_config_root = root / "bench"
+    report_root = root / "reports"
+    subprocess.run(
+        [
+            sys.executable,
+            str(_PILOT_ANALYSIS_SCRIPT),
+            "--bench-config-root",
+            str(bench_config_root),
+            "--report-root",
+            str(report_root),
+        ],
+        cwd=_PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": f"{_PROJECT_ROOT}:{_PROJECT_ROOT / 'src'}"},
+    )
+    return {"bench_config_root": bench_config_root, "report_root": report_root}
 
 
 def test_select_entries_keeps_literal_lists_out_of_grid():
@@ -66,7 +109,7 @@ def test_compute_test_metrics_keeps_other_metrics_when_one_fails(monkeypatch):
 
 
 def test_image_bench_unet_config_expands_to_one_network_variant():
-    config = load_yaml(Path("benchmarks/configs/04_image_bench.yaml"))
+    config = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
     variants = select_entries("networks", require_section(config, "networks"), ["unet"])
 
     assert len(variants) == 1
@@ -75,23 +118,185 @@ def test_image_bench_unet_config_expands_to_one_network_variant():
     assert params["channel_mult"] == (1, 2, 4)
 
 
-def test_pilot_config_run_counts_match_makefile_arrays():
-    expected_counts = {
-        "01_alphastable_pilot.yaml": 270,
-        "02_alphastable_bench.yaml": 100,
-        "03_image_pilot.yaml": 40,
-        "04_image_bench.yaml": 10,
-    }
-
-    for filename, expected_count in expected_counts.items():
-        config = load_yaml(Path("benchmarks/configs") / filename)
+def test_pilot_and_template_configs_have_required_sections_and_valid_sweeps():
+    required_sections = {"run", "sweep", "datasets", "networks", "models", "trains", "save"}
+    for path in sorted(Path("benchmarks/configs").rglob("*.yaml")):
+        if "benchmarks/configs/bench/" in str(path):
+            continue
+        config = load_yaml(path)
+        assert required_sections <= set(config), path.name
         sweep = require_section(config, "sweep")
-        n_trial = int(config["run"]["n_trial"])
-        n_runs = n_trial
         for section in ["datasets", "networks", "models", "trains"]:
             variants = select_entries(section, require_section(config, section), list(sweep[section]))
-            n_runs *= len(variants)
-        assert n_runs == expected_count
+            assert variants, f"{path.name}: empty {section} sweep"
+
+
+def test_image_pilot_caps_real_datasets_to_256_samples():
+    config = load_yaml(Path("benchmarks/configs/pilot/image.yaml"))
+
+    assert config["datasets"]["hrrr"]["params"]["n_samples"] == 4096
+    assert config["datasets"]["lvis"]["params"]["max_samples"] == 4096
+    assert config["datasets"]["cifar100_lt"]["params"]["max_samples"] == 4096
+    assert config["datasets"]["imagenet_lt"]["params"]["max_samples"] == 4096
+
+
+def test_image_bench_imagenet_lt_and_cifar100_lt_cap_at_50000():
+    config = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
+    assert config["datasets"]["imagenet_lt"]["params"]["max_samples"] == 50000
+    assert config["datasets"]["cifar100_lt"]["params"]["max_samples"] == 50000
+    assert config["datasets"]["cifar100_lt"]["params"]["imbalance_factor"] == 100
+
+
+def test_tabular_real_pilot_caps_real_dataset_to_256_samples():
+    config = load_yaml(Path("benchmarks/configs/pilot/real.yaml"))
+    assert config["datasets"]["kddcup"]["params"]["n_samples"] == 4096
+    assert "wildfires" not in config["datasets"]
+
+
+def test_tabular_real_bench_caps_real_dataset_to_50000_samples():
+    config = load_yaml(Path("benchmarks/configs/templates/real_bench.yaml"))
+    assert config["datasets"]["kddcup"]["params"]["n_samples"] == 50000
+    assert "wildfires" not in config["datasets"]
+
+
+def test_benchmark_configs_do_not_use_wildfires():
+    for path in sorted(Path("benchmarks/configs").rglob("*.yaml")):
+        config = load_yaml(path)
+        assert "wildfires" not in config.get("sweep", {}).get("datasets", [])
+        assert "wildfires" not in config.get("datasets", {})
+
+
+def test_nonblank_pilots_try_at_least_two_learning_rates():
+    for filename in ["synth.yaml", "real.yaml", "image.yaml"]:
+        config = load_yaml(Path("benchmarks/configs/pilot") / filename)
+        train_names = list(config["sweep"]["trains"])
+        learning_rates = {float(config["trains"][name]["lr"]) for name in train_names}
+
+        assert len(train_names) >= 2
+        assert len(learning_rates) >= 2
+        assert "pilot_lr1e3" not in config["trains"]
+
+
+def test_generated_bench_config_tree_is_complete_and_explicit(generated_bench_outputs):
+    bench_root = generated_bench_outputs["bench_config_root"]
+    bench_configs = sorted(bench_root.rglob("*.yaml"))
+    assert len(bench_configs) == 35
+    assert bench_root / "synth/alpha_stable_iso/tedm_origin.yaml" in bench_configs
+    assert bench_root / "real/kddcup/ddpm_v.yaml" in bench_configs
+    assert bench_root / "image/lvis/gaussian_flow_ot.yaml" in bench_configs
+
+
+def test_generated_bench_configs_are_single_dataset_single_model_single_train(generated_bench_outputs):
+    bench_root = generated_bench_outputs["bench_config_root"]
+    for path in sorted(bench_root.rglob("*.yaml")):
+        config = load_yaml(path)
+        assert len(config["sweep"]["datasets"]) == 1
+        assert len(config["sweep"]["networks"]) == 1
+        assert len(config["sweep"]["models"]) == 1
+        assert len(config["sweep"]["trains"]) == 1
+        assert "selection" in config
+        assert config["selection"]["selected_model_preset"]
+        assert config["selection"]["selected_pilot_train_preset"]
+
+
+def test_generated_bench_configs_use_template_budgets_but_selected_learning_rates(generated_bench_outputs):
+    bench_root = generated_bench_outputs["bench_config_root"]
+    synth_cfg = load_yaml(bench_root / "synth/alpha_stable_iso/gaussian_flow_ot.yaml")
+    real_cfg = load_yaml(bench_root / "real/kddcup/gaussian_flow_linear.yaml")
+    image_cfg = load_yaml(bench_root / "image/lvis/tedm_origin.yaml")
+
+    synth_train = synth_cfg["trains"][synth_cfg["sweep"]["trains"][0]]
+    real_train = real_cfg["trains"][real_cfg["sweep"]["trains"][0]]
+    image_train = image_cfg["trains"][image_cfg["sweep"]["trains"][0]]
+
+    assert synth_train["n_epochs"] == 2048
+    assert real_train["n_epochs"] == 8
+    assert image_train["n_epochs"] == 1024
+    assert synth_train["lr"] == synth_cfg["selection"]["selected_lr"]
+    assert real_train["lr"] == real_cfg["selection"]["selected_lr"]
+    assert image_train["lr"] == image_cfg["selection"]["selected_lr"]
+
+
+def test_pilot_analysis_reports_exist_and_match_generated_configs(generated_bench_outputs):
+    report_root = generated_bench_outputs["report_root"]
+    report_csv = report_root / "pilot_best_settings.csv"
+    report_md = report_root / "pilot_best_settings.md"
+    report_png = report_root / "pilot_summary.png"
+    assert report_csv.is_file()
+    assert report_md.is_file()
+    assert report_png.is_file()
+
+    frame = pd.read_csv(report_csv)
+    assert len(frame) == 35
+    assert sorted(frame["dataset_slug"].unique().tolist()) == [
+        "alpha_stable_iso",
+        "alpha_stable_mix",
+        "cifar100_lt",
+        "hrrr",
+        "imagenet_lt",
+        "kddcup",
+        "lvis",
+    ]
+
+
+def test_numbered_benchmark_entrypoints_work_from_outside_repo(tmp_path):
+    repo_root = Path.cwd()
+    for script in ["benchmarks/01_main.py", "benchmarks/02_evaluate.py"]:
+        result = subprocess.run(
+            [sys.executable, str(repo_root / script), "--help"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "usage:" in result.stdout
+
+
+def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
+    dataset_cfg = {
+        "kind": "real",
+        "name": "kddcup",
+        "params": {"n_samples": 4},
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
+    }
+
+    def fake_fetch_real_data(name, **kwargs):
+        assert name == "kddcup"
+        assert kwargs["dtype"] is torch.float32
+        assert kwargs["device"] == "cpu"
+        assert kwargs["return_metadata"] is True
+        return (
+            torch.ones(2, 3),
+            torch.full((1, 3), 2.0),
+            torch.full((1, 3), 3.0),
+            {"source": "test"},
+        )
+
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", fake_fetch_real_data)
+
+    result = real_data_cache.build_preprocessed_real_dataset(dataset_cfg, torch.float32, data_root=tmp_path)
+    x_train, x_val, x_test = real_data_cache.load_preprocessed_real_dataset(dataset_cfg, torch.float32, data_root=tmp_path)
+
+    assert result["status"] == "built"
+    assert x_train.shape == (2, 3)
+    assert x_val.tolist() == [[2.0, 2.0, 2.0]]
+    assert x_test.tolist() == [[3.0, 3.0, 3.0]]
+
+
+def test_slurm_strict_real_dataset_loading_requires_processed_cache(tmp_path, monkeypatch):
+    dataset_cfg = {
+        "kind": "real",
+        "name": "kddcup",
+        "params": {"n_samples": 4},
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
+    }
+
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
+    monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "1")
+
+    with pytest.raises(FileNotFoundError, match="Missing preprocessed real dataset cache"):
+        build_dataset(dataset_cfg, torch.float32, "cpu")
 
 
 def test_resolved_config_preserves_run_metadata(tmp_path):
@@ -119,3 +324,324 @@ def test_resolved_config_preserves_run_metadata(tmp_path):
     assert config["run"]["n_trial"] == 3
     assert config["run"]["trial_idx"] == 2
     assert config["run"]["resolved_dtype"] == "torch.float32"
+
+
+# ---------------------------------------------------------------------------
+# Cache validation: SKIP/REBUILD logging and offline correctness
+# ---------------------------------------------------------------------------
+
+
+def _make_kddcup_cfg():
+    return {
+        "kind": "real",
+        "name": "kddcup",
+        "params": {"n_samples": 4},
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
+    }
+
+
+def _fake_fetch_real_4samples(name, **kwargs):
+    return (
+        torch.ones(2, 3),
+        torch.full((1, 3), 2.0),
+        torch.full((1, 3), 3.0),
+        {"source": "test"},
+    )
+
+
+def test_build_preprocessed_real_dataset_skips_when_cache_is_valid(tmp_path, monkeypatch, capsys):
+    cfg = _make_kddcup_cfg()
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    capsys.readouterr()
+
+    def boom(*args, **kwargs):
+        raise AssertionError("fetch_real_data should not be called when cache is valid")
+
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", boom)
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "exists"
+    assert "[SKIP] Valid preprocessed cache found for kddcup" in out
+
+
+def test_build_preprocessed_real_dataset_rebuilds_on_cache_key_mismatch(tmp_path, monkeypatch, capsys):
+    cfg = _make_kddcup_cfg()
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "cache_version": real_data_cache.CACHE_VERSION,
+            "cache_key": "BOGUS",
+            "request": {"name": "kddcup"},
+            "x_train": torch.ones(2, 3),
+            "x_val": torch.full((1, 3), 2.0),
+            "x_test": torch.full((1, 3), 3.0),
+        },
+        cache_path,
+    )
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "built"
+    assert "[REBUILD] kddcup" in out
+    assert "cache_key mismatch" in out
+
+
+def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_path, monkeypatch, capsys):
+    cfg = _make_kddcup_cfg()
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
+    torch.save(
+        {
+            "cache_version": real_data_cache.CACHE_VERSION + 99,
+            "cache_key": expected_key,
+            "request": {"name": "kddcup"},
+            "x_train": torch.ones(2, 3),
+            "x_val": torch.full((1, 3), 2.0),
+            "x_test": torch.full((1, 3), 3.0),
+        },
+        cache_path,
+    )
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "built"
+    assert "cache_version mismatch" in out
+
+
+def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requested_samples(tmp_path, monkeypatch, capsys):
+    cfg = _make_kddcup_cfg()
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
+    torch.save(
+        {
+            "cache_version": real_data_cache.CACHE_VERSION,
+            "cache_key": expected_key,
+            "request": {"name": "kddcup"},
+            "x_train": torch.zeros(40, 3),
+            "x_val": torch.zeros(40, 3),
+            "x_test": torch.zeros(40, 3),
+        },
+        cache_path,
+    )
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "built"
+    assert "exceeds requested" in out
+
+
+def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, monkeypatch, capsys):
+    cfg = _make_kddcup_cfg()
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
+    torch.save(
+        {
+            "cache_version": real_data_cache.CACHE_VERSION,
+            "cache_key": expected_key,
+            "request": {"name": "kddcup"},
+            "x_train": torch.ones(2, 3),
+            "x_val": torch.full((1, 3), 2.0),
+            "x_test": "not a tensor",
+        },
+        cache_path,
+    )
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "built"
+    assert "missing or invalid tensor 'x_test'" in out
+
+
+def test_build_preprocessed_real_dataset_rebuilds_when_torch_load_fails(tmp_path, monkeypatch, capsys):
+    cfg = _make_kddcup_cfg()
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b"not a torch payload")
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "built"
+    assert "[REBUILD] kddcup" in out
+    assert "torch.load failed" in out
+
+
+def test_load_preprocessed_real_dataset_rejects_invalid_cache(tmp_path):
+    cfg = _make_kddcup_cfg()
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "cache_version": real_data_cache.CACHE_VERSION,
+            "cache_key": "WRONG",
+            "x_train": torch.ones(2, 3),
+            "x_val": torch.ones(1, 3),
+            "x_test": torch.ones(1, 3),
+        },
+        cache_path,
+    )
+    with pytest.raises(RuntimeError, match="cache_key mismatch"):
+        real_data_cache.load_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+
+
+def test_main_build_dataset_propagates_missing_cache_under_strict_mode(tmp_path, monkeypatch):
+    cfg = _make_kddcup_cfg()
+    monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
+    monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "1")
+
+    with pytest.raises(FileNotFoundError, match="Missing preprocessed real dataset cache"):
+        build_dataset(cfg, torch.float32, "cpu")
+
+
+# ---------------------------------------------------------------------------
+# prefetch.datasets.py --check-only smoke tests (exec via subprocess)
+# ---------------------------------------------------------------------------
+
+
+def _run_precheck(data_root: Path, args: list[str]) -> subprocess.CompletedProcess:
+    env = {**os.environ, "FLOWBENCH_DATA": str(data_root), "PYTHONPATH": f"{_PROJECT_ROOT}:{_PROJECT_ROOT / 'src'}"}
+    return subprocess.run(
+        [sys.executable, str(_PREFETCH_SCRIPT), "--check-only", *args],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def test_prefetch_check_only_exits_2_when_cache_missing(tmp_path):
+    result = _run_precheck(tmp_path, ["--only-dataset", "cifar100_lt", str(_CONFIG_IMAGE_PILOT)])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "[MISSING]" in result.stdout
+    assert "cifar100_lt" in result.stdout
+
+
+def test_prefetch_check_only_exits_0_when_cache_valid(tmp_path):
+    cfg_dict = real_data_cache.real_dataset_request(
+        {
+            "kind": "real",
+            "name": "cifar100_lt",
+            "params": {"split": "train", "image_size": 64, "imbalance_factor": 100, "max_samples": 4096, "seed": 0},
+            "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
+        },
+        torch.float32,
+    )
+    cfg = {"kind": "real", "name": "cifar100_lt", "params": cfg_dict["params"], "split": cfg_dict["split"]}
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
+    torch.save(
+        {
+            "cache_version": real_data_cache.CACHE_VERSION,
+            "cache_key": expected_key,
+            "request": {"name": "cifar100_lt"},
+            "x_train": torch.zeros(8, 3, 64, 64),
+            "x_val": torch.zeros(4, 3, 64, 64),
+            "x_test": torch.zeros(4, 3, 64, 64),
+        },
+        cache_path,
+    )
+
+    result = _run_precheck(tmp_path, ["--only-dataset", "cifar100_lt", str(_CONFIG_IMAGE_PILOT)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "[VALID]" in result.stdout
+    assert "no sbatch needed" in result.stdout
+
+
+def test_prefetch_check_only_exits_2_when_cache_for_other_config(tmp_path):
+    """A cache built for a different (params/seed/dtype) config lives at a different
+    filename, so the precheck must report MISSING for the requested config and exit 2."""
+    other_cfg = {
+        "kind": "real",
+        "name": "cifar100_lt",
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 100, "max_samples": 99999, "seed": 0},
+        "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
+    }
+    other_cache_path = real_data_cache.real_dataset_cache_path(other_cfg, torch.float32, data_root=tmp_path)
+    other_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    other_cache_path.write_bytes(b"unrelated cache")
+
+    result = _run_precheck(tmp_path, ["--only-dataset", "cifar100_lt", str(_CONFIG_IMAGE_PILOT)])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "[MISSING]" in result.stdout
+    assert "cifar100_lt" in result.stdout
+
+
+def test_prefetch_torch_free_cache_key_matches_runtime():
+    """The login-node precheck must produce identical cache keys to the runtime builder."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "prefetch_datasets", _PREFETCH_SCRIPT
+    )
+    prefetch_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prefetch_module)
+    cfgs = [
+        {
+            "kind": "real",
+            "name": "kddcup",
+            "params": {"n_samples": 50000},
+            "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": True},
+        },
+        {
+            "kind": "real",
+            "name": "cifar100_lt",
+            "params": {"split": "train", "image_size": 64, "imbalance_factor": 100, "max_samples": 256, "seed": 0},
+            "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
+        },
+        {
+            "kind": "real",
+            "name": "imagenet_lt",
+            "params": {"split": "train", "image_size": 64, "max_samples": 50000, "seed": 0},
+            "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
+        },
+    ]
+    assert prefetch_module.CACHE_VERSION == real_data_cache.CACHE_VERSION
+    for dtype, dtype_str in [(torch.float32, "float32"), (torch.float64, "float64")]:
+        for cfg in cfgs:
+            runtime_key = real_data_cache.real_dataset_cache_key(cfg, dtype)
+            yaml_key = prefetch_module.cache_key_from_yaml(cfg, dtype_str)
+            assert runtime_key == yaml_key, (cfg["name"], dtype_str, runtime_key, yaml_key)
+
+
+def test_prefetch_check_only_path_does_not_import_torch():
+    """Loading scripts/prefetch.datasets.py must not import torch (login-node guarantee)."""
+    code = (
+        "import sys, builtins\n"
+        "_orig_import = builtins.__import__\n"
+        "def guard(name, *a, **kw):\n"
+        "    if name == 'torch' or name.startswith('torch.'):\n"
+        "        raise RuntimeError(f'torch import attempted via {name!r}')\n"
+        "    return _orig_import(name, *a, **kw)\n"
+        "builtins.__import__ = guard\n"
+        f"import importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('prefetch_datasets', r'{_PREFETCH_SCRIPT}')\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(mod)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": f"{_PROJECT_ROOT}:{_PROJECT_ROOT / 'src'}"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

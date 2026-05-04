@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-#SBATCH --job-name=htfm_eval
-#SBATCH --output=htfm_eval_%j.out
-#SBATCH --error=htfm_eval_%j.err
+#SBATCH --job-name=htfm_evaluate
+#SBATCH --output=htfm_evaluate_%j.out
+#SBATCH --error=htfm_evaluate_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=20:00:00
+#SBATCH --time=02:00:00
 #SBATCH --partition=gpu_p13
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --account=jcx@v100
@@ -16,6 +16,7 @@ set -euo pipefail
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
+BENCH_EVAL_REL="benchmarks/02_evaluate.py"
 PYTHON_BIN=""
 CLI_BATCH_DIR=""
 CLI_SHARD_COUNT=""
@@ -32,6 +33,7 @@ CLI_MAX_MMD_SAMPLES=""
 CLI_MAX_INSPECT_DIM=""
 CLI_INSPECT_IMAGE_DATA=0
 CLI_OVERWRITE=0
+CLI_FAIL_ON_ERROR=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -95,6 +97,10 @@ while [[ $# -gt 0 ]]; do
       CLI_OVERWRITE=1
       shift
       ;;
+    --fail-on-error)
+      CLI_FAIL_ON_ERROR=1
+      shift
+      ;;
     *)
       echo "[eval-slurm] Unknown argument: $1" >&2
       exit 1
@@ -112,12 +118,18 @@ else
 fi
 
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
+BENCH_EVAL="${PROJECT_ROOT}/${BENCH_EVAL_REL}"
 BATCH_DIR="${CLI_BATCH_DIR:-${BATCH_DIR:-}}"
 case "${BATCH_DIR}" in
   "" ) echo "[eval-slurm] --batch-dir is required." >&2; exit 1 ;;
   /*) ;;
   *) BATCH_DIR="${PROJECT_ROOT}/${BATCH_DIR}" ;;
 esac
+
+if [[ ! -f "${BENCH_EVAL}" ]]; then
+  echo "[eval-slurm] Missing benchmark evaluator: ${BENCH_EVAL}" >&2
+  exit 1
+fi
 
 if ! command -v module >/dev/null 2>&1; then
   echo "[eval-slurm] 'module' command is required on Jean Zay." >&2
@@ -140,7 +152,8 @@ fi
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
 PYTHON_BIN="$(command -v python)"
-export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+export FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA="${FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA:-1}"
 
 CPUS="${SLURM_CPUS_PER_TASK:-1}"
 export OMP_NUM_THREADS="${CPUS}"
@@ -177,11 +190,12 @@ echo "MAX_MMD_DIM:      ${MAX_MMD_DIM}"
 echo "MAX_MMD_SAMPLES:  ${MAX_MMD_SAMPLES}"
 echo "MAX_INSPECT_DIM:  ${MAX_INSPECT_DIM}"
 echo "INSPECT_IMAGES:   ${CLI_INSPECT_IMAGE_DATA}"
+echo "REQUIRE_REAL_PRE: ${FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA}"
 echo "=============================================================================="
 
 srun nvidia-smi || true
 CMD=(
-  "${PYTHON_BIN}" -m benchmarks.evaluate
+  "${PYTHON_BIN}" "${BENCH_EVAL}"
   --batch-dir "${BATCH_DIR}"
   --device "${DEVICE}"
   --shard-count "${SHARD_COUNT}"
@@ -199,6 +213,10 @@ CMD=(
 
 if [[ "${CLI_OVERWRITE}" -eq 1 ]]; then
   CMD+=(--overwrite)
+fi
+
+if [[ "${CLI_FAIL_ON_ERROR}" -eq 1 || "${FAIL_ON_ERROR:-0}" == "1" ]]; then
+  CMD+=(--fail-on-error)
 fi
 
 if [[ "${CLI_INSPECT_IMAGE_DATA}" -eq 1 ]]; then

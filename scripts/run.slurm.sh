@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-#SBATCH --job-name=htfm
-#SBATCH --output=htfm_%j.out
-#SBATCH --error=htfm_%j.err
+#SBATCH --job-name=htfm_run
+#SBATCH --output=htfm_run_%j.out
+#SBATCH --error=htfm_run_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -14,21 +14,16 @@
 
 set -euo pipefail
 
-# Usage:
-#   sbatch scripts/run.slurm.sh
-#   sbatch --array=0-15 scripts/run.slurm.sh
-#
-# Defaults to benchmarks/configs/04_image_bench.yaml.
-# With a Slurm array, each task runs one shard of the same config.
-
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
+BENCH_MAIN_REL="benchmarks/01_main.py"
 PYTHON_BIN=""
 CLI_CONFIG_PATH=""
 CLI_BATCH_DIR=""
 CLI_SHARD_COUNT=""
 CLI_SHARD_INDEX=""
 CLI_SKIP_EXISTING=0
+CLI_FAIL_ON_ERROR=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,6 +47,10 @@ while [[ $# -gt 0 ]]; do
       CLI_SKIP_EXISTING=1
       shift
       ;;
+    --fail-on-error)
+      CLI_FAIL_ON_ERROR=1
+      shift
+      ;;
     *)
       echo "[slurm] Unknown argument: $1" >&2
       exit 1
@@ -69,7 +68,8 @@ else
   exit 1
 fi
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
-CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/04_image_bench.yaml}}"
+BENCH_MAIN="${PROJECT_ROOT}/${BENCH_MAIN_REL}"
+CONFIG_PATH="${CLI_CONFIG_PATH:-${CONFIG_PATH:-${PROJECT_ROOT}/benchmarks/configs/pilot/image.yaml}}"
 BATCH_DIR="${CLI_BATCH_DIR:-${BATCH_DIR:-}}"
 
 case "${CONFIG_PATH}" in
@@ -106,7 +106,7 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     echo "[slurm] Missing virtual environment." >&2
     echo "[slurm] Expected: ${PROJECT_ROOT}/.venv-genkit (or ${PROJECT_ROOT}/.venv)" >&2
     echo "[slurm] Run setup first on login node:" >&2
-    echo "  bash scripts/setup.sh --env-name genkit --use-jz-module" >&2
+    echo "  make setup" >&2
     exit 1
   fi
 fi
@@ -114,7 +114,8 @@ fi
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
 PYTHON_BIN="$(command -v python)"
-export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+export FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA="${FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA:-1}"
 
 if [[ -z "${PYTHON_BIN}" ]]; then
   echo "[slurm] python command not found after venv activation." >&2
@@ -123,6 +124,11 @@ fi
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[slurm] Missing config file: ${CONFIG_PATH}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${BENCH_MAIN}" ]]; then
+  echo "[slurm] Missing benchmark entrypoint: ${BENCH_MAIN}" >&2
   exit 1
 fi
 
@@ -184,11 +190,12 @@ echo "BATCH_DIR:     ${BATCH_DIR:-<auto>}"
 echo "CPUs:          ${CPUS}"
 echo "CUDA devices:  ${CUDA_VISIBLE_DEVICES:-<none>}"
 echo "SKIP_EXISTING: ${SKIP_EXISTING}"
+echo "REQUIRE_PREPROCESSED_REAL_DATA: ${FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA}"
 echo "=============================================================================="
 
 srun nvidia-smi || true
 CMD=(
-  "${PYTHON_BIN}" -m benchmarks.main
+  "${PYTHON_BIN}" "${BENCH_MAIN}"
   --config "${CONFIG_PATH}"
   --shard-count "${SHARD_COUNT}"
   --shard-index "${SHARD_INDEX}"
@@ -200,6 +207,10 @@ fi
 
 if [[ "${CLI_SKIP_EXISTING}" -eq 1 || "${SKIP_EXISTING}" == "1" ]]; then
   CMD+=(--skip-existing)
+fi
+
+if [[ "${CLI_FAIL_ON_ERROR}" -eq 1 || "${FAIL_ON_ERROR:-0}" == "1" ]]; then
+  CMD+=(--fail-on-error)
 fi
 
 srun "${CMD[@]}"

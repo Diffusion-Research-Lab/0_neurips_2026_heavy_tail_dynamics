@@ -6,19 +6,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-}"
 REMOTE_HOST="jz"
 REMOTE_BASE="/lustre/fswork/projects/rech/jcx/uor49lv/src"
-REMOTE_PROJECT_PATH="${REMOTE_BASE}/flowbench"
-LOCAL_ANALYSIS_DIR="${PROJECT_ROOT}/benchmarks/data"
 ZIP_NAME="code.zip"
-SSH_CONTROL_PATH="/tmp/flowbench-ssh-%r@%h:%p"
-SSH_OPTS=(-o ControlMaster=auto -o ControlPersist=10m -o ControlPath="${SSH_CONTROL_PATH}")
 
-usage() { echo "Usage: $(basename "$0") [send|fetch|supp]" >&2; }
+usage() { echo "Usage: $(basename "$0") [send|supp]" >&2; }
 die()   { echo "Error: $*" >&2; exit 1; }
-
-ssh_up()   { ssh "${SSH_OPTS[@]}" -fN "${REMOTE_HOST}"; }
-ssh_down() { ssh -o ControlPath="${SSH_CONTROL_PATH}" -O exit "${REMOTE_HOST}" >/dev/null 2>&1 || true; }
-rsh()      { ssh "${SSH_OPTS[@]}" "${REMOTE_HOST}" "$@"; }
-rrsync()   { rsync -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=${SSH_CONTROL_PATH}" "$@"; }
 
 stage_project() {
     local target_dir="$1"
@@ -31,6 +22,7 @@ stage_project() {
 
     rsync -a \
       --exclude '.git/' \
+      --exclude '.claude/' \
       --exclude '.github/' \
       --exclude '.gitignore' \
       --exclude '.pytest_cache/' \
@@ -66,37 +58,15 @@ stage_project() {
 
 send_code() {
     local work_dir="/tmp/flowbench"
-    echo "Send → ${REMOTE_HOST}:${REMOTE_BASE}/flowbench"
+    echo "Send -> ${REMOTE_HOST}:${REMOTE_BASE}/flowbench"
     stage_project "${work_dir}"
     rsync -avh --info=stats2,progress2 "${work_dir}" "${REMOTE_HOST}:${REMOTE_BASE}/"
     rm -rf "${work_dir}"
 }
 
-fetch_results() {
-    echo "Fetch *_results* → ${LOCAL_ANALYSIS_DIR}"
-    mkdir -p "${LOCAL_ANALYSIS_DIR}"
-    trap 'ssh_down' RETURN
-    ssh_up
-
-    mapfile -t result_dirs < <(
-        rsh "find '${REMOTE_PROJECT_PATH}' -mindepth 1 -maxdepth 1 -type d -name '*_results*' 2>/dev/null" || true
-    )
-
-    if [[ ${#result_dirs[@]} -eq 0 ]]; then
-        echo "No *_results* directories found under ${REMOTE_PROJECT_PATH}"
-        return 0
-    fi
-
-    for dir in "${result_dirs[@]}"; do
-        [[ -n "${dir}" ]] || continue
-        echo "Fetching $(basename "${dir}")/"
-        rrsync -var --progress "${REMOTE_HOST}:${dir}/" "${LOCAL_ANALYSIS_DIR}/$(basename "${dir}")/"
-    done
-}
-
 build_supp_zip() {
     local supp_dir="/tmp/anonymous_code_supp"
-    echo "Build supplementary package → ${PROJECT_ROOT}/${ZIP_NAME}"
+    echo "Build supplementary package -> ${PROJECT_ROOT}/${ZIP_NAME}"
     stage_project "${supp_dir}"
     (
         cd "${supp_dir}"
@@ -109,9 +79,31 @@ build_supp_zip() {
 
 This archive contains code and benchmark scripts for anonymous peer review.
 EOF
+        python - <<'PY'
+import json
+from pathlib import Path
+
+for path in Path(".").rglob("*.ipynb"):
+    try:
+        notebook = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    changed = False
+    for cell in notebook.get("cells", []):
+        if cell.get("cell_type") != "code":
+            continue
+        if cell.get("outputs"):
+            cell["outputs"] = []
+            changed = True
+        if cell.get("execution_count") is not None:
+            cell["execution_count"] = None
+            changed = True
+    if changed:
+        path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+PY
         leaked="$(
             grep -R -n -E \
-              'Hamza|Cherkaoui|hcherkaoui|uor49lv|github.com/hcherkaoui|flowbench|Heavy-Tail Flow Matching' \
+              'Hamza|Cherkaoui|hcherkaoui|uor49lv|github.com/hcherkaoui|Heavy-Tail Flow Matching' \
               --binary-files=without-match \
               --exclude-dir=.git \
               . || true
@@ -129,7 +121,6 @@ EOF
 
 case "${MODE}" in
     send)  send_code ;;
-    fetch) fetch_results ;;
     supp)  build_supp_zip ;;
     *)     usage; exit 2 ;;
 esac
