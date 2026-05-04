@@ -1,0 +1,112 @@
+run:
+  name: template_real_bench
+  seed: 0
+  dtype: float64
+  n_trial: 1
+
+sweep:
+  datasets:
+    - kddcup
+  networks:
+    - mlp
+  models:
+    - gaussian_flow_ot
+    - gaussian_flow_linear
+    - ddpm_v
+    - dlpm_eps
+    - tedm_origin
+  trains:
+    - standard_lr2e4
+    - standard
+
+datasets:
+  kddcup:
+    kind: real
+    name: kddcup
+    params:
+      n_samples: 50000
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: true
+
+networks:
+  mlp:
+    name: mlp
+    params:
+      width: 256
+      depth: 5
+      time_dim: 128
+      dropout: 0.0
+      use_norm: true
+
+models:
+  gaussian_flow_ot:
+    name: gaussian_flow_ot
+    params:
+      n_steps: 512
+      sigma_min: 0.001
+      sigma_max: 5.0
+
+  gaussian_flow_linear:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 512
+      sigma_max: 5.0
+
+  ddpm_v:
+    name: ddpm_v
+    params:
+      n_steps: 512
+      sigma_max: 5.0
+
+  dlpm_eps:
+    name: dlpm_eps
+    params:
+      n_steps: 512
+      alpha: 1.7
+
+  tedm_origin:
+    name: tedm_origin
+    params:
+      n_steps: 18
+      nu: 2.1
+      sigma_min: 0.005
+      sigma_max: 5.0
+
+trains:
+  standard_lr2e4:
+    device: cuda
+    batch_size: 1024
+    n_epochs: 8
+    lr: 0.0002
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 10
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 8
+    ckpt_freq_epochs: 8
+    ckpt_keep_last: 1
+
+  standard:
+    device: cuda
+    batch_size: 1024
+    n_epochs: 8
+    lr: 0.0005
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 10
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 8
+    ckpt_freq_epochs: 8
+    ckpt_keep_last: 1
+
+save:
+  root_dir: benchmarks/data

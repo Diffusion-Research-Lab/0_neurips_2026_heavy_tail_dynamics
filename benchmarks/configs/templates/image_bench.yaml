@@ -1,5 +1,5 @@
 run:
-  name: 04_image_bench
+  name: template_image_bench
   seed: 0
   dtype: float32
   n_trial: 1
@@ -8,6 +8,8 @@ sweep:
   datasets:
     - hrrr
     - lvis
+    - cifar100_lt
+    - imagenet_lt
   networks:
     - unet
   models:
@@ -23,8 +25,6 @@ datasets:
   hrrr:
     kind: real
     name: hrrr
-    params:
-      n_workers: 16
     split:
       val_size: 0.1
       test_size: 0.1
@@ -37,8 +37,37 @@ datasets:
     params:
       split: train
       image_size: 64
-      max_samples: 10000
+      max_samples: 50000
       category_frequency: r
+      seed: 0
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
+  cifar100_lt:
+    kind: real
+    name: cifar100_lt
+    params:
+      split: train
+      image_size: 64
+      imbalance_factor: 100
+      max_samples: 50000
+      seed: 0
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
+  imagenet_lt:
+    kind: real
+    name: imagenet_lt
+    params:
+      split: train
+      image_size: 64
+      max_samples: 50000
       seed: 0
     split:
       val_size: 0.1

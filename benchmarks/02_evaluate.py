@@ -2,16 +2,30 @@
 
 import argparse
 import copy
+import importlib
 from pathlib import Path
+import sys
 import traceback
 from typing import Any
-import numpy as np
-import pandas as pd
-import torch
-import yaml
-from benchmarks.main import build_dataset, build_model, build_network, setup_logging
-from genkit.inspect import estimate_init_error, estimate_training_loss_error, model_est_jacobian_spectral_curve
-from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein, tail_coverage_error
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+import numpy as np                                                                                               # noqa
+import pandas as pd                                                                                              # noqa
+import torch                                                                                                     # noqa
+import yaml                                                                                                      # noqa
+from genkit.inspect import estimate_init_error, estimate_training_loss_error, model_est_jacobian_spectral_curve  # noqa
+from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein, tail_coverage_error                          # noqa
+
+
+_main = importlib.import_module("benchmarks.01_main")
+build_dataset = _main.build_dataset
+build_model = _main.build_model
+build_network = _main.build_network
+setup_logging = _main.setup_logging
 
 
 EVAL_METRIC_NAMES = [
@@ -34,6 +48,44 @@ MODEL_LABELS = {
 def run_dirs(root: Path) -> list[Path]:
     """Return benchmark run directories sorted by numeric prefix."""
     return sorted(path for path in root.iterdir() if path.is_dir() and path.name[:3].isdigit())
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for one evaluation batch."""
+    parser = argparse.ArgumentParser(description="Evaluate saved benchmark runs.")
+    parser.add_argument("--batch-dir", type=Path, required=True, help="Path to one saved benchmark batch directory.")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--n-eval-samples", type=int, default=10000)
+    parser.add_argument("--n-eval-repeats", type=int, default=10)
+    parser.add_argument("--inspect-samples", type=int, default=2048)
+    parser.add_argument("--probe-size", type=int, default=256)
+    parser.add_argument("--sample-batch-size", type=int, default=256)
+    parser.add_argument("--max-fid-dim", type=int, default=2048)
+    parser.add_argument("--max-mmd-dim", type=int, default=2048)
+    parser.add_argument("--max-mmd-samples", type=int, default=2048)
+    parser.add_argument("--max-inspect-dim", type=int, default=1024)
+    parser.add_argument("--inspect-image-data", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--fail-on-error", action="store_true", help="Exit nonzero if any evaluated run fails.")
+    return parser.parse_args()
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    """Validate evaluation CLI arguments."""
+    if args.shard_count < 1:
+        raise ValueError("--shard-count must be >= 1.")
+    if not 0 <= args.shard_index < args.shard_count:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
+    if args.n_eval_repeats < 1:
+        raise ValueError("--n-eval-repeats must be >= 1.")
+    if args.n_eval_samples < 2:
+        raise ValueError("--n-eval-samples must be >= 2.")
+    if args.max_mmd_samples < 2:
+        raise ValueError("--max-mmd-samples must be >= 2.")
+    if args.sample_batch_size < 1:
+        raise ValueError("--sample-batch-size must be >= 1.")
 
 
 def available_checkpoint_epochs(run_dir: Path) -> list[int]:
@@ -413,39 +465,38 @@ def evaluate_one_run(
     }
 
 
-if __name__ == "__main__":
+def write_manifest_summary(
+    artifact_batch_dir: Path,
+    *,
+    manifest_rows: list[dict[str, Any]],
+    args: argparse.Namespace,
+    source_batch_dir: Path,
+) -> None:
+    """Persist one evaluation manifest and shard summary."""
+    manifest_name = "manifest_eval.csv" if args.shard_count == 1 else f"manifest_eval_shard_{args.shard_index:03d}.csv"
+    summary_name = "summary_eval.txt" if args.shard_count == 1 else f"summary_eval_shard_{args.shard_index:03d}.txt"
+    pd.DataFrame(manifest_rows).to_csv(artifact_batch_dir / manifest_name, index=False)
+    n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
+    n_done = sum(row.get("status") == "ok" for row in manifest_rows)
+    n_skipped = sum(row.get("status") == "skipped" for row in manifest_rows)
+    with (artifact_batch_dir / summary_name).open("w", encoding="utf-8") as handle:
+        handle.write(f"n_runs: {len(manifest_rows)}\n")
+        handle.write(f"n_done: {n_done}\n")
+        handle.write(f"n_skipped: {n_skipped}\n")
+        handle.write(f"n_failed: {n_failed}\n")
+        handle.write(f"source_batch_dir: {source_batch_dir.resolve()}\n")
+        handle.write(f"artifact_batch_dir: {artifact_batch_dir.resolve()}\n")
+        handle.write(f"device: {args.device}\n")
+        handle.write(f"shard_index: {args.shard_index}\n")
+        handle.write(f"shard_count: {args.shard_count}\n")
+    if args.fail_on_error and n_failed:
+        raise SystemExit(1)
+
+
+def main() -> int:
     setup_logging()
-
-    parser = argparse.ArgumentParser(description="Evaluate saved benchmark runs.")
-    parser.add_argument("--batch-dir", type=Path, required=True, help="Path to one saved benchmark batch directory.")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--shard-count", type=int, default=1)
-    parser.add_argument("--shard-index", type=int, default=0)
-    parser.add_argument("--n-eval-samples", type=int, default=10000)
-    parser.add_argument("--n-eval-repeats", type=int, default=10)
-    parser.add_argument("--inspect-samples", type=int, default=2048)
-    parser.add_argument("--probe-size", type=int, default=256)
-    parser.add_argument("--sample-batch-size", type=int, default=256)
-    parser.add_argument("--max-fid-dim", type=int, default=2048)
-    parser.add_argument("--max-mmd-dim", type=int, default=2048)
-    parser.add_argument("--max-mmd-samples", type=int, default=2048)
-    parser.add_argument("--max-inspect-dim", type=int, default=1024)
-    parser.add_argument("--inspect-image-data", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-
-    if args.shard_count < 1:
-        raise ValueError("--shard-count must be >= 1.")
-    if not 0 <= args.shard_index < args.shard_count:
-        raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
-    if args.n_eval_repeats < 1:
-        raise ValueError("--n-eval-repeats must be >= 1.")
-    if args.n_eval_samples < 2:
-        raise ValueError("--n-eval-samples must be >= 2.")
-    if args.max_mmd_samples < 2:
-        raise ValueError("--max-mmd-samples must be >= 2.")
-    if args.sample_batch_size < 1:
-        raise ValueError("--sample-batch-size must be >= 1.")
+    args = parse_args()
+    validate_args(args)
 
     batch_dir = args.batch_dir.expanduser()
     if not batch_dir.exists():
@@ -453,8 +504,8 @@ if __name__ == "__main__":
 
     artifact_batch_dir = (
         batch_dir
-        if batch_dir.name.endswith("_preprocessed")
-        else batch_dir.with_name(f"{batch_dir.name}_preprocessed")
+        if batch_dir.name.endswith("_evaluate")
+        else batch_dir.with_name(f"{batch_dir.name}_evaluate")
     )
     artifact_batch_dir.mkdir(parents=True, exist_ok=True)
 
@@ -490,21 +541,15 @@ if __name__ == "__main__":
                 "traceback": traceback.format_exc(),
             }
         manifest_rows.append(row)
-
-    manifest_name = "manifest_eval.csv" if args.shard_count == 1 else f"manifest_eval_shard_{args.shard_index:03d}.csv"
-    summary_name = "summary_eval.txt" if args.shard_count == 1 else f"summary_eval_shard_{args.shard_index:03d}.txt"
-    pd.DataFrame(manifest_rows).to_csv(artifact_batch_dir / manifest_name, index=False)
-    n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
-    n_done = sum(row.get("status") == "ok" for row in manifest_rows)
-    n_skipped = sum(row.get("status") == "skipped" for row in manifest_rows)
-    with (artifact_batch_dir / summary_name).open("w", encoding="utf-8") as handle:
-        handle.write(f"n_runs: {len(manifest_rows)}\n")
-        handle.write(f"n_done: {n_done}\n")
-        handle.write(f"n_skipped: {n_skipped}\n")
-        handle.write(f"n_failed: {n_failed}\n")
-        handle.write(f"source_batch_dir: {batch_dir.resolve()}\n")
-        handle.write(f"artifact_batch_dir: {artifact_batch_dir.resolve()}\n")
-        handle.write(f"device: {args.device}\n")
-        handle.write(f"shard_index: {args.shard_index}\n")
-        handle.write(f"shard_count: {args.shard_count}\n")
+    write_manifest_summary(
+        artifact_batch_dir,
+        manifest_rows=manifest_rows,
+        args=args,
+        source_batch_dir=batch_dir,
+    )
     print("done")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

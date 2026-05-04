@@ -1,15 +1,17 @@
 run:
-  name: 03_image_pilot
+  name: pilot_image
   seed: 0
   dtype: float32
-  n_trial: 1
+  n_trial: 3
 
 sweep:
   datasets:
     - hrrr
     - lvis
+    - cifar100_lt
+    - imagenet_lt
   networks:
-    - unet_pilot
+    - unet
   models:
     - gaussian_flow_ot_s1
     - gaussian_flow_ot_s2
@@ -30,7 +32,7 @@ datasets:
     kind: real
     name: hrrr
     params:
-      n_workers: 16
+      n_samples: 4096
     split:
       val_size: 0.1
       test_size: 0.1
@@ -43,7 +45,7 @@ datasets:
     params:
       split: train
       image_size: 64
-      max_samples: 10000
+      max_samples: 4096
       category_frequency: r
       seed: 0
     split:
@@ -52,8 +54,37 @@ datasets:
       random_state: 0
       standardize: false
 
+  cifar100_lt:
+    kind: real
+    name: cifar100_lt
+    params:
+      split: train
+      image_size: 64
+      imbalance_factor: 100
+      max_samples: 4096
+      seed: 0
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
+  imagenet_lt:
+    kind: real
+    name: imagenet_lt
+    params:
+      split: train
+      image_size: 64
+      max_samples: 4096
+      seed: 0
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: false
+
 networks:
-  unet_pilot:
+  unet:
     name: unet
     params:
       model_channels: 32
@@ -139,33 +170,33 @@ trains:
   pilot_lr1e4:
     device: cuda
     batch_size: 8
-    n_epochs: 4
+    n_epochs: 16
     lr: 0.0001
     num_workers: 0
     use_adamw: true
     weight_decay: 0.0001
     grad_clip_norm: 5.0
     lr_schedule: cosine
-    warmup_steps: 50
+    warmup_steps: 10
     cosine_eta_min_ratio: 0.05
     freq_logging: 1
-    ckpt_freq_epochs: 4
+    ckpt_freq_epochs: 1
     ckpt_keep_last: 1
 
   pilot_lr2e4:
     device: cuda
     batch_size: 8
-    n_epochs: 4
+    n_epochs: 16
     lr: 0.0002
     num_workers: 0
     use_adamw: true
     weight_decay: 0.0001
     grad_clip_norm: 5.0
     lr_schedule: cosine
-    warmup_steps: 50
+    warmup_steps: 10
     cosine_eta_min_ratio: 0.05
     freq_logging: 1
-    ckpt_freq_epochs: 4
+    ckpt_freq_epochs: 1
     ckpt_keep_last: 1
 
 save:

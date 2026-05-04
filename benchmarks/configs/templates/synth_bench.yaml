@@ -1,5 +1,5 @@
 run:
-  name: 02_alphastable_bench
+  name: template_synth_bench
   seed: 0
   dtype: float64
   n_trial: 10
@@ -24,7 +24,7 @@ datasets:
     kind: synthetic
     name: alpha_stable
     params:
-      n_samples: 100000
+      n_samples: 50000
       alpha: 1.7
       dim: 100
     split:
@@ -37,7 +37,7 @@ datasets:
     kind: synthetic
     name: unbalanced_highdim_alpha_stable_mixture
     params:
-      n_samples: 100000
+      n_samples: 50000
       alpha: 1.7
       dim: 100
       n_modes: 16

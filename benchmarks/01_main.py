@@ -3,25 +3,36 @@
 
 import argparse
 import copy
-from datetime import datetime
 import itertools
 import json
 import logging
 from pathlib import Path
+import sys
 import traceback
 from typing import Any
-import pandas as pd
-import torch
-import yaml
-from genkit.datasets import fetch_real_data, fetch_synthetic_data, list_datasets
-from genkit.diffusion import DDPMV, DLPMEps
-from genkit.flow import GaussianFlowLinear, GaussianFlowOT
-from genkit.nn import MLPModel, UNetModel
-from genkit.thirdparty import TEDMOrigin
-from genkit.training import train
-from genkit.visitor import CoreMetricsVisitor
-from labkit.config import parse_dtype
-from labkit.utils import set_seed
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+import pandas as pd  # noqa
+import torch  # noqa
+import yaml  # noqa
+from benchmarks.utils import load_yaml, make_batch_dir, require_section, select_entries  # noqa
+from benchmarks._real_data_cache import (  # noqa
+    load_preprocessed_real_dataset,
+    require_preprocessed_real_data,
+)
+from genkit.datasets import fetch_real_data, fetch_synthetic_data, list_datasets  # noqa
+from genkit.diffusion import DDPMV, DLPMEps  # noqa
+from genkit.flow import GaussianFlowLinear, GaussianFlowOT  # noqa
+from genkit.nn import MLPModel, UNetModel  # noqa
+from genkit.thirdparty import TEDMOrigin  # noqa
+from genkit.training import train  # noqa
+from genkit.visitor import CoreMetricsVisitor  # noqa
+from labkit.config import parse_dtype  # noqa
+from labkit.utils import set_seed  # noqa
 
 
 MODEL_REGISTRY = {
@@ -38,21 +49,24 @@ def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
-    """Load one YAML config file."""
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
-    if not isinstance(data, dict):
-        raise ValueError(f"Config at {path} must decode to a mapping.")
-    return data
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for one benchmark sweep execution."""
+    parser = argparse.ArgumentParser(description="Run benchmark sweeps from one YAML config.")
+    parser.add_argument("--config", type=Path, required=True, help="Path to one YAML config file.")
+    parser.add_argument("--batch-dir", type=Path, default=None, help="Optional existing/shared batch directory.")
+    parser.add_argument("--shard-count", type=int, default=1, help="Split the combination grid into this many shards.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to execute.")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip runs whose final checkpoint already exists.")
+    parser.add_argument("--fail-on-error", action="store_true", help="Exit nonzero if any run in this shard fails.")
+    return parser.parse_args()
 
 
-def require_section(config: dict[str, Any], name: str) -> dict[str, Any]:
-    """Return one required config section."""
-    value = config.get(name)
-    if not isinstance(value, dict):
-        raise ValueError(f"Config section '{name}' must be a mapping.")
-    return value
+def validate_args(args: argparse.Namespace) -> None:
+    """Validate shard-related CLI arguments."""
+    if args.shard_count < 1:
+        raise ValueError("--shard-count must be >= 1.")
+    if not 0 <= args.shard_index < args.shard_count:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
 
 
 def to_serializable(value: Any) -> Any:
@@ -70,91 +84,6 @@ def to_serializable(value: Any) -> Any:
     return value
 
 
-def _slug(value: Any) -> str:
-    """Convert one config value to a short path-safe slug."""
-    return str(value).strip().replace("/", "-").replace(" ", "_").replace(".", "p")
-
-
-def _grid_items(prefix: str, value: Any) -> list[tuple[str, Any]]:
-    """Flatten one nested mapping into dotted leaf paths."""
-    if isinstance(value, dict) and set(value) == {"literal"}:
-        literal = copy.deepcopy(value["literal"])
-        if isinstance(literal, list):
-            literal = tuple(literal)
-        return [(prefix, literal)]
-    if not isinstance(value, dict):
-        return [(prefix, value)]
-    items: list[tuple[str, Any]] = []
-    for key, child in value.items():
-        items.extend(_grid_items(f"{prefix}.{key}" if prefix else str(key), child))
-    return items
-
-
-def _assign_path(target: dict[str, Any], dotted_key: str, value: Any) -> None:
-    """Assign one value inside a nested mapping using a dotted path."""
-    parts = dotted_key.split(".")
-    cursor = target
-    for part in parts[:-1]:
-        cursor = cursor.setdefault(part, {})
-    cursor[parts[-1]] = value
-
-
-def _expand_entry_grid(entry_name: str, entry_cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Expand one named preset over all list-valued leaves."""
-    static_cfg: dict[str, Any] = {}
-    varying_items: list[tuple[str, list[Any]]] = []
-    for key, value in _grid_items("", copy.deepcopy(entry_cfg)):
-        if isinstance(value, list):
-            if not value:
-                raise ValueError(f"Entry {entry_name!r} has an empty grid at {key!r}.")
-            varying_items.append((key, value))
-        else:
-            _assign_path(static_cfg, key, value)
-
-    if not varying_items:
-        return [{"entry_name": entry_name, "config": static_cfg, "variant_name": entry_name, "variant_params": {}}]
-
-    variants = []
-    keys = [key for key, _ in varying_items]
-    for combo in itertools.product(*(choices for _, choices in varying_items)):
-        variant_cfg = copy.deepcopy(static_cfg)
-        variant_params = dict(zip(keys, combo, strict=True))
-        for key, value in variant_params.items():
-            _assign_path(variant_cfg, key, value)
-        suffix = "__".join(f"{key.split('.')[-1]}-{_slug(value)}" for key, value in variant_params.items())
-        variants.append(
-            {
-                "entry_name": entry_name,
-                "config": variant_cfg,
-                "variant_name": f"{entry_name}__{suffix}",
-                "variant_params": variant_params,
-            }
-        )
-    return variants
-
-
-def select_entries(section_name: str, registry: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
-    """Select and expand named presets for one registry section."""
-    variants = []
-    for name in names:
-        if name not in registry:
-            raise KeyError(f"Unknown {section_name} entry {name!r}. Available: {sorted(registry)}")
-        entry_cfg = registry[name]
-        if not isinstance(entry_cfg, dict):
-            raise ValueError(f"{section_name}.{name} must be a mapping.")
-        variants.extend(_expand_entry_grid(name, entry_cfg))
-    return variants
-
-
-def make_batch_dir(run_cfg: dict[str, Any], save_cfg: dict[str, Any]) -> Path:
-    """Create the parent output directory for one config sweep."""
-    root = Path(save_cfg.get("root_dir", "runs")).expanduser()
-    name = str(run_cfg.get("name", "run")).strip() or "run"
-    batch_dir = root / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{name}"
-    batch_dir.mkdir(parents=True, exist_ok=False)
-    return batch_dir
-
-
 def build_dataset(dataset_cfg: dict[str, Any], dtype: torch.dtype, device: str | torch.device):
     """Load one dataset split triplet from config."""
     kind = str(dataset_cfg.get("kind", "synthetic")).lower()
@@ -165,6 +94,12 @@ def build_dataset(dataset_cfg: dict[str, Any], dtype: torch.dtype, device: str |
     if kind == "synthetic":
         return fetch_synthetic_data(name, **kwargs)
     if kind == "real":
+        if require_preprocessed_real_data():
+            return load_preprocessed_real_dataset(dataset_cfg, dtype=dtype, device=device)
+        try:
+            return load_preprocessed_real_dataset(dataset_cfg, dtype=dtype, device=device)
+        except FileNotFoundError:
+            pass
         return fetch_real_data(name, **kwargs)
     raise ValueError(f"Unknown dataset.kind={kind!r}. Use 'synthetic' or 'real'.")
 
@@ -285,6 +220,60 @@ def _write_run_summary(
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def load_run_config(config_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Load one benchmark config and return its required sections."""
+    config = load_yaml(config_path)
+    return (
+        require_section(config, "run"),
+        require_section(config, "sweep"),
+        require_section(config, "datasets"),
+        require_section(config, "networks"),
+        require_section(config, "models"),
+        require_section(config, "trains"),
+        require_section(config, "save"),
+    )
+
+
+def resolve_variants(
+    sweep_cfg: dict[str, Any],
+    datasets_cfg: dict[str, Any],
+    networks_cfg: dict[str, Any],
+    models_cfg: dict[str, Any],
+    trains_cfg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve selected sweep entries into expanded variants."""
+    return (
+        select_entries("datasets", datasets_cfg, list(sweep_cfg.get("datasets", []))),
+        select_entries("networks", networks_cfg, list(sweep_cfg.get("networks", []))),
+        select_entries("models", models_cfg, list(sweep_cfg.get("models", []))),
+        select_entries("trains", trains_cfg, list(sweep_cfg.get("trains", []))),
+    )
+
+
+def write_manifest_summary(
+    batch_dir: Path,
+    *,
+    manifest_rows: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> None:
+    """Persist one shard manifest and summary."""
+    manifest_name = "manifest.csv" if args.shard_count == 1 else f"manifest_shard_{args.shard_index:03d}.csv"
+    summary_name = "summary.txt" if args.shard_count == 1 else f"summary_shard_{args.shard_index:03d}.txt"
+    pd.DataFrame(manifest_rows).to_csv(batch_dir / manifest_name, index=False)
+    n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
+    n_skipped = sum(row.get("status") == "skipped" for row in manifest_rows)
+    with (batch_dir / summary_name).open("w", encoding="utf-8") as handle:
+        handle.write(f"n_runs: {len(manifest_rows)}\n")
+        handle.write(f"n_skipped: {n_skipped}\n")
+        handle.write(f"n_failed: {n_failed}\n")
+        handle.write(f"config: {args.config.resolve()}\n")
+        handle.write(f"batch_dir: {batch_dir.resolve()}\n")
+        handle.write(f"shard_index: {args.shard_index}\n")
+        handle.write(f"shard_count: {args.shard_count}\n")
+    if args.fail_on_error and n_failed:
+        raise SystemExit(1)
+
+
 def run_one(
     config_path: Path,
     batch_dir: Path,
@@ -353,6 +342,14 @@ def run_one(
         with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
             yaml.safe_dump(requested_config, handle, sort_keys=False)
 
+        logging.info(f"[{combo_index:03d}] run_dir: {run_dir}")
+        logging.info(
+            f"[{combo_index:03d}] dataset={dataset_variant['variant_name']} "
+            f"network={network_variant['variant_name']} "
+            f"model={model_variant['variant_name']} "
+            f"train={train_variant['variant_name']}"
+        )
+
         set_seed(int(run_cfg.get("seed", 0)) + combo_index - 1)
         device = str(train_cfg.get("device", "cpu"))
         x_train, x_val, x_test = build_dataset(dataset_cfg, dtype=dtype, device="cpu")
@@ -364,14 +361,6 @@ def run_one(
         train_kwargs.pop("preset_name", None)
         train_kwargs["device"] = device
         train_kwargs["ckpt_dir"] = str(ckpt_dir)
-
-        logging.info(f"[{combo_index:03d}] run_dir: {run_dir}")
-        logging.info(
-            f"[{combo_index:03d}] dataset={dataset_variant['variant_name']} "
-            f"network={network_variant['variant_name']} "
-            f"model={model_variant['variant_name']} "
-            f"train={train_variant['variant_name']}"
-        )
 
         _, diagnostics = train(generative_model=generative_model, target_data=x_train, visitors=[CoreMetricsVisitor()], **train_kwargs)
         resolved_config = _resolved_config(
@@ -449,38 +438,22 @@ def run_one(
         }
 
 
-if __name__ == "__main__":
-
+def main() -> int:
     setup_logging()
+    args = parse_args()
+    validate_args(args)
 
-    parser = argparse.ArgumentParser(description="Run benchmark sweeps from one YAML config.")
-    parser.add_argument("--config", type=Path, required=True, help="Path to one YAML config file.")
-    parser.add_argument("--batch-dir", type=Path, default=None, help="Optional existing/shared batch directory.")
-    parser.add_argument("--shard-count", type=int, default=1, help="Split the combination grid into this many shards.")
-    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to execute.")
-    parser.add_argument("--skip-existing", action="store_true", help="Skip runs whose final checkpoint already exists.")
-    args = parser.parse_args()
-
-    if args.shard_count < 1:
-        raise ValueError("--shard-count must be >= 1.")
-    if not 0 <= args.shard_index < args.shard_count:
-        raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count.")
-
-    config = load_yaml(args.config)
-    run_cfg = require_section(config, "run")
-    sweep_cfg = require_section(config, "sweep")
-    datasets_cfg = require_section(config, "datasets")
-    networks_cfg = require_section(config, "networks")
-    models_cfg = require_section(config, "models")
-    trains_cfg = require_section(config, "trains")
-    save_cfg = require_section(config, "save")
+    run_cfg, sweep_cfg, datasets_cfg, networks_cfg, models_cfg, trains_cfg, save_cfg = load_run_config(args.config)
 
     dtype = parse_dtype(str(run_cfg.get("dtype", "float64")))
     torch.set_default_dtype(dtype)
-    dataset_variants = select_entries("datasets", datasets_cfg, list(sweep_cfg.get("datasets", [])))
-    network_variants = select_entries("networks", networks_cfg, list(sweep_cfg.get("networks", [])))
-    model_variants = select_entries("models", models_cfg, list(sweep_cfg.get("models", [])))
-    train_variants = select_entries("trains", trains_cfg, list(sweep_cfg.get("trains", [])))
+    dataset_variants, network_variants, model_variants, train_variants = resolve_variants(
+        sweep_cfg,
+        datasets_cfg,
+        networks_cfg,
+        models_cfg,
+        trains_cfg,
+    )
     n_trial = int(run_cfg.get("n_trial", 1))
 
     if not all([dataset_variants, network_variants, model_variants, train_variants]):
@@ -525,18 +498,10 @@ if __name__ == "__main__":
                 skip_existing=args.skip_existing,
             )
         )
-
-    manifest_name = "manifest.csv" if args.shard_count == 1 else f"manifest_shard_{args.shard_index:03d}.csv"
-    summary_name = "summary.txt" if args.shard_count == 1 else f"summary_shard_{args.shard_index:03d}.txt"
-    pd.DataFrame(manifest_rows).to_csv(batch_dir / manifest_name, index=False)
-    n_failed = sum(row.get("status") == "failed" for row in manifest_rows)
-    n_skipped = sum(row.get("status") == "skipped" for row in manifest_rows)
-    with (batch_dir / summary_name).open("w", encoding="utf-8") as handle:
-        handle.write(f"n_runs: {len(manifest_rows)}\n")
-        handle.write(f"n_skipped: {n_skipped}\n")
-        handle.write(f"n_failed: {n_failed}\n")
-        handle.write(f"config: {args.config.resolve()}\n")
-        handle.write(f"batch_dir: {batch_dir.resolve()}\n")
-        handle.write(f"shard_index: {args.shard_index}\n")
-        handle.write(f"shard_count: {args.shard_count}\n")
+    write_manifest_summary(batch_dir, manifest_rows=manifest_rows, args=args)
     print("done")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

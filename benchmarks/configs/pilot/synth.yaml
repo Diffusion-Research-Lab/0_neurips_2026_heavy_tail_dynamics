@@ -1,5 +1,5 @@
 run:
-  name: 01_alphastable_pilot
+  name: pilot_synth
   seed: 0
   dtype: float64
   n_trial: 3
@@ -29,14 +29,13 @@ sweep:
   trains:
     - pilot_lr2e4
     - pilot_lr5e4
-    - pilot_lr1e3
 
 datasets:
   alpha_stable_target:
     kind: synthetic
     name: alpha_stable
     params:
-      n_samples: 100000
+      n_samples: 4096
       alpha: 1.7
       dim: 100
     split:
@@ -49,7 +48,7 @@ datasets:
     kind: synthetic
     name: unbalanced_highdim_alpha_stable_mixture
     params:
-      n_samples: 100000
+      n_samples: 4096
       alpha: 1.7
       dim: 100
       n_modes: 16
@@ -186,10 +185,10 @@ trains:
     weight_decay: 0.000001
     grad_clip_norm: 10.0
     lr_schedule: cosine
-    warmup_steps: 20
+    warmup_steps: 10
     cosine_eta_min_ratio: 0.05
-    freq_logging: 4
-    ckpt_freq_epochs: 16
+    freq_logging: 8
+    ckpt_freq_epochs: 4
     ckpt_keep_last: 1
 
   pilot_lr5e4:
@@ -202,26 +201,10 @@ trains:
     weight_decay: 0.000001
     grad_clip_norm: 10.0
     lr_schedule: cosine
-    warmup_steps: 20
+    warmup_steps: 10
     cosine_eta_min_ratio: 0.05
-    freq_logging: 4
-    ckpt_freq_epochs: 16
-    ckpt_keep_last: 1
-
-  pilot_lr1e3:
-    device: cuda
-    batch_size: 1024
-    n_epochs: 16
-    lr: 0.001
-    num_workers: 0
-    use_adamw: true
-    weight_decay: 0.000001
-    grad_clip_norm: 10.0
-    lr_schedule: cosine
-    warmup_steps: 20
-    cosine_eta_min_ratio: 0.05
-    freq_logging: 4
-    ckpt_freq_epochs: 16
+    freq_logging: 8
+    ckpt_freq_epochs: 4
     ckpt_keep_last: 1
 
 save:
