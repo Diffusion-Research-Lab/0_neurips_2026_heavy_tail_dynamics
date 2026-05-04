@@ -11,10 +11,13 @@ _results/
 *_results/
 logs/
 sandbox/figures/
+benchmarks/artifacts/
 benchmarks/data/
 benchmarks/data_archive/
 benchmarks/configs/bench/
+benchmarks/figures/
 benchmarks/reports/
+benchmarks/tables/
 src/genkit/_vendor/physicsnemo/
 src/genkit/_vendor/DLPM/dlpm/configs/2d_sas.yml
 sandbox/report/
