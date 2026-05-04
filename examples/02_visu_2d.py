@@ -106,9 +106,11 @@ if __name__ == "__main__":
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--blank", action="store_false", help="CI helper.")
-    parser.add_argument("--data", type=str, default='spiral', help="Data distribution.")
+    parser.add_argument("--blank", action="store_true", default=False, help="CI helper.")
+    parser.add_argument("--data", type=str, default='checker', help="Data distribution.")
     args = parser.parse_args()
+
+    n_samples = 50_000 if not args.blank else 100
 
     light_tailed_data = ["balanced_bimodal_gaussian",
                          "unbalanced_bimodal_gaussian",
@@ -133,12 +135,12 @@ if __name__ == "__main__":
                   ]
 
     exp_kwargs = dict(extra_data_kwargs=dict(),
-                      n_steps=300,
+                      n_steps=128,
                       batch_size=1024,
-                      n_epochs=250,
-                      lr=1e-3,
-                      width=64,
-                      depth=3,
+                      n_epochs=256,
+                      lr=1e-4,
+                      width=128,
+                      depth=4,
                       extra_gen_kwargs=dict(),
                       device="cuda" if torch.cuda.is_available() else "cpu",
                       fdtype=torch.float32,
@@ -148,13 +150,13 @@ if __name__ == "__main__":
     print("2D sample visualization"
           f" | dataset={args.data}"
           f" | device={exp_kwargs['device']}"
-          f" | n_samples={10_000 if args.blank else 100}"
+          f" | n_samples={n_samples}"
           f" | n_steps={exp_kwargs['n_steps']}"
           f" | batch_size={exp_kwargs['batch_size']}"
           f" | n_epochs={exp_kwargs['n_epochs']}"
           )
 
-    results = run_models(models, target_data_type=args.data, n_samples=10_000 if args.blank else 100, exp_kwargs=exp_kwargs)
+    results = run_models(models, target_data_type=args.data, n_samples=n_samples, exp_kwargs=exp_kwargs)
 
     for i, (name, (x_gen, x_ref)) in enumerate(results.items()):
         save_scatter_plot(x=x_gen, x_ref=x_ref, output_path=figures_dir / f"{args.data}_{name}_2d_scatter.pdf", fontsize=10, alpha=0.6)

@@ -8,7 +8,6 @@
 ![maintenance-status](https://img.shields.io/badge/maintenance-active-brightgreen.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-
 ```bash
 ███████ ██       ██████  ██     ██       ██████  ███████ ███    ██  ██████ ██   ██
 ██      ██      ██    ██ ██     ██       ██   ██ ██      ████   ██ ██      ██   ██
@@ -17,39 +16,14 @@
 ██      ███████  ██████   ███ ███        ██████  ███████ ██   ████  ██████ ██   ██
 ```
 
-
 FlowBench provides:
 - heavy-tailed samplers and generative baselines for flow-matching and diffusion models,
 - lightweight training, inspection, and evaluation utilities to compare learned generative dynamics,
 - benchmark loaders and sweep tooling for reproducible experiments on synthetic and real datasets.
 
-For a private Codecov badge, replace `YOUR_PRIVATE_CODECOV_BADGE_TOKEN` with the private badge token from the Codecov repo settings.
+### Benchmark
 
-### Install
-
-```bash
-make setup-local
-```
-
-### Quickstart
-
-Run the local checks:
-
-```bash
-make check
-```
-
-Run benchmarks locally:
-
-```bash
-make run-local
-```
-
-Submit the benchmark on Jean Zay after a setup:
-
-```bash
-make setup-jz && make run-jz
-```
+To reproduce the NeurIPS 2026 paper results, see `benchmarks/README.md`.
 
 ### Minimal Example
 
@@ -59,16 +33,17 @@ from genkit.flow import GaussianFlowLinear
 from genkit.nn import MLPModel
 from genkit.training import train
 
+dim = 2
 x_train, _, _ = fetch_synthetic_data(
     target_data="balanced_bimodal_gaussian",
-    dim=10,
-    n_samples=20_000,
+    dim=dim,
+    n_samples=10_000,
 )
 
-net = MLPModel(dim=10, width=32, depth=3, time_dim=16)
-generator = GaussianFlowLinear(net=net, dim=10, n_steps=128)
+net = MLPModel(dim=dim, width=64, depth=4, time_dim=32)
+generator = GaussianFlowLinear(net=net, dim=dim, n_steps=128)
 
-generator, stats = train(
+generator, _stats_ = train(
     generator,
     target_data=x_train,
     n_epochs=128,
@@ -79,5 +54,5 @@ generator, stats = train(
 )
 
 x_gen = generator.sample(n_samples=2048)
-print(x_gen.shape, list(stats))
+print(x_gen.shape)
 ```
