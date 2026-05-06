@@ -8,9 +8,11 @@ BENCH_EVAL      ?= benchmarks/02_evaluate.py
 BENCH_UTILS     ?= benchmarks/utils.py
 PILOT_ANALYSIS  ?= benchmarks/03_pilot_analysis.py
 BENCH_PLOTTING  ?= benchmarks/04_plotting_bench.py
+BENCH_PLOTTING_DUMMY ?= benchmarks/05_plotting_bench_dummy.py
 ARTIFACT_DIR      ?= benchmarks/artifacts
 LEGACY_ARTIFACT_DIR ?= benchmarks/data
 TABLE_DIR       ?= benchmarks/tables
+TABLE_DUMMY_DIR ?= benchmarks/tables_dummy
 FIGURE_DIR      ?= benchmarks/figures
 PILOT_CONFIG_DIR ?= benchmarks/configs/pilot
 BENCH_TEMPLATE_DIR ?= benchmarks/configs/templates
@@ -63,7 +65,7 @@ PREFETCH_CONFIG_INPUTS = $(PILOT_CONFIG_DIR) $(BENCH_TEMPLATE_DIR) $(BENCH_CONFI
 
 .DEFAULT_GOAL := help
 
-.PHONY: setup dataset dataset-tabular dataset-tabular-init dataset-hrrr dataset-lvis dataset-cifar100-lt dataset-cifar100-lt-init dataset-imagenet-lt dataset-imagenet-lt-init pilot analyze-pilot bench bench-synth bench-real bench-image evaluate-pilot evaluate-bench evaluate-bench-synth evaluate-bench-real evaluate-bench-image plotting-bench check send supp help
+.PHONY: setup dataset dataset-tabular dataset-tabular-init dataset-hrrr dataset-lvis dataset-cifar100-lt dataset-cifar100-lt-init dataset-imagenet-lt dataset-imagenet-lt-init pilot analyze-pilot bench bench-synth bench-real bench-image evaluate-pilot evaluate-bench evaluate-bench-synth evaluate-bench-real evaluate-bench-image plotting-bench plotting-bench-dummy check send supp help
 
 setup:
 	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
@@ -289,6 +291,9 @@ evaluate-bench-image:
 plotting-bench:
 	$(BASH) -lc '$(ACTIVATE); python "$(BENCH_PLOTTING)" --artifact-root "$(LEGACY_ARTIFACT_DIR)" --table-root "$(TABLE_DIR)" --figure-root "$(FIGURE_DIR)"'
 
+plotting-bench-dummy:
+	$(BASH) -lc '$(ACTIVATE); python "$(BENCH_PLOTTING_DUMMY)" --artifact-root "$(LEGACY_ARTIFACT_DIR)" --table-root "$(TABLE_DUMMY_DIR)"'
+
 check:
 	$(BASH) -lc '$(ACTIVATE); flake8 --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples'
 	$(BASH) -lc '$(ACTIVATE); pytest -v'
@@ -323,6 +328,7 @@ help:
 	@printf "  %-14s %s\n" "evaluate-bench-real" "Submit real benchmark evaluation only"
 	@printf "  %-14s %s\n" "evaluate-bench-image" "Submit image benchmark evaluation only"
 	@printf "  %-14s %s\n" "plotting-bench" "Generate benchmark tables and figures from current eval artifacts"
+	@printf "  %-14s %s\n" "plotting-bench-dummy" "Generate dummy benchmark tables from current eval artifacts"
 	@printf "  %-14s %s\n" "check"         "Run lint, tests, local smoke, and examples"
 	@printf "  %-14s %s\n" "send"          "Send code and configs only to the remote benchmark host"
 	@printf "  %-14s %s\n" "supp"          "Build the supplementary code archive"

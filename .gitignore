@@ -18,6 +18,7 @@ benchmarks/configs/bench/
 benchmarks/figures/
 benchmarks/reports/
 benchmarks/tables/
+benchmarks/tables_dummy/
 src/genkit/_vendor/physicsnemo/
 src/genkit/_vendor/DLPM/dlpm/configs/2d_sas.yml
 sandbox/report/
