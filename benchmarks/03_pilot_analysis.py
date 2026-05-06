@@ -30,13 +30,11 @@ CONFIG_ROOT = PROJECT_ROOT / "benchmarks" / "configs"
 REPORT_ROOT = PROJECT_ROOT / "benchmarks" / "reports"
 BENCH_CONFIG_ROOT = CONFIG_ROOT / "bench"
 
-PERF_METRICS = ["FID", "MMD_RBF", "SLICED_WASSERSTEIN", "TAIL_COVERAGE_ERROR", "MSSLE"]
+PILOT_SELECTION_METRICS = ["INNER_LOSS_VAL", "INNER_LOSS_TRAIN", "INNER_LOSS_TEST"]
 METRIC_LABELS = {
-    "FID": "FID",
-    "MMD_RBF": "MMD RBF",
-    "SLICED_WASSERSTEIN": "Sliced Wasserstein",
-    "TAIL_COVERAGE_ERROR": "Tail coverage error",
-    "MSSLE": "MSSLE",
+    "INNER_LOSS_VAL": "Validation inner loss",
+    "INNER_LOSS_TRAIN": "Training inner loss",
+    "INNER_LOSS_TEST": "Test inner loss",
 }
 MODEL_ORDER = ["gaussian_flow_ot", "gaussian_flow_linear", "ddpm_v", "dlpm_eps", "tedm_origin"]
 MODEL_LABELS = {
@@ -59,30 +57,23 @@ FAMILY_SPECS = {
     "synth": {
         "pilot_config": CONFIG_ROOT / "pilot" / "synth.yaml",
         "bench_template": CONFIG_ROOT / "templates" / "synth_bench.yaml",
-        "batch_pattern": "*_pilot_evaluate",
-        "match": "alphastable",
+        "batch_pattern": "*_evaluate",
+        "match_terms": ("synth", "alphastable"),
     },
     "real": {
         "pilot_config": CONFIG_ROOT / "pilot" / "real.yaml",
         "bench_template": CONFIG_ROOT / "templates" / "real_bench.yaml",
-        "batch_pattern": "*_pilot_evaluate",
-        "match": "real",
+        "batch_pattern": "*_evaluate",
+        "match_terms": ("real",),
     },
     "image": {
         "pilot_config": CONFIG_ROOT / "pilot" / "image.yaml",
         "bench_template": CONFIG_ROOT / "templates" / "image_bench.yaml",
-        "batch_pattern": "*_pilot_evaluate",
-        "match": "image",
+        "batch_pattern": "*_evaluate",
+        "match_terms": ("image",),
     },
 }
-DATASET_TRAIN_OVERRIDES = {
-    "hrrr": {
-        "n_epochs": 256,
-    },
-    "imagenet_lt": {
-        "n_epochs": 128,
-    },
-}
+DATASET_TRAIN_OVERRIDES = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,7 +90,7 @@ def discover_family_batch(artifact_root: Path, family: str) -> Path:
     spec = FAMILY_SPECS[family]
     candidates = [
         path for path in artifact_root.glob(spec["batch_pattern"])
-        if path.is_dir() and spec["match"] in path.name.lower()
+        if path.is_dir() and any(term in path.name.lower() for term in spec["match_terms"])
     ]
     if not candidates:
         raise FileNotFoundError(f"No evaluated pilot batch found for family={family!r} under {artifact_root}.")
@@ -123,7 +114,7 @@ def maybe_float(value: Any) -> float:
 
 def infer_bench_name(batch_dir: Path) -> str:
     name = batch_dir.name.lower()
-    if "alphastable" in name:
+    if "synth" in name or "alphastable" in name:
         return "synth"
     if "real" in name:
         return "real"
@@ -194,7 +185,7 @@ def load_artifact_run(artifact_run_dir: Path) -> pd.DataFrame | None:
 
     summary = safe_read_yaml(artifact_run_dir / "summary.yaml") or {}
     frame = pd.read_csv(scalars_path)
-    frame = frame[frame["source"].eq("test_metrics")].copy()
+    frame = frame[frame["source"].isin(["pilot_selection", "test_metrics"])].copy()
     if frame.empty:
         return None
 
@@ -268,37 +259,28 @@ def rank_settings(setting_summary: pd.DataFrame) -> tuple[pd.DataFrame, dict[tup
     for (bench_name, dataset_name, model_name), group in setting_summary.groupby(["bench_name", "dataset_name", "model_name"], dropna=False):
         meta = group[meta_cols].drop_duplicates(subset=["setting_key"]).reset_index(drop=True)
         score_matrix = group.pivot_table(index="setting_key", columns="metric_name", values="mean", aggfunc="first")
-        available_metrics = [metric for metric in PERF_METRICS if metric in score_matrix.columns and score_matrix[metric].notna().any()]
+        available_metrics = [metric for metric in PILOT_SELECTION_METRICS if metric in score_matrix.columns and score_matrix[metric].notna().any()]
         if not available_metrics:
             continue
-        score_matrix = score_matrix[available_metrics]
-
-        rank_matrix = score_matrix.rank(axis=0, method="min", ascending=True)
+        selection_metric = available_metrics[0]
         ranked = meta.merge(
             pd.DataFrame(
                 {
                     "setting_key": score_matrix.index,
-                    "avg_rank": rank_matrix.mean(axis=1).values,
-                    "n_metric_wins": (rank_matrix == 1).sum(axis=1).values,
-                    "n_metrics": score_matrix.notna().sum(axis=1).values,
-                    "win_labels": [
-                        ", ".join(METRIC_LABELS.get(metric_name, metric_name) for metric_name in available_metrics if rank_matrix.loc[key, metric_name] == 1)
-                        for key in score_matrix.index
-                    ],
+                    "selection_metric": selection_metric,
+                    "selection_score": score_matrix[selection_metric].values,
                 }
             ),
             on="setting_key",
             how="inner",
         )
-        ranked = ranked.sort_values(["avg_rank", "setting_label"], kind="stable").reset_index(drop=True)
+        ranked = ranked.sort_values(["selection_score", "setting_label"], kind="stable").reset_index(drop=True)
 
         best = ranked.iloc[0]
         runner_up = ranked.iloc[1] if len(ranked) > 1 else None
-        reason = f"best average rank ({best['avg_rank']:.2f}) across {len(available_metrics)} metrics"
-        if best["win_labels"]:
-            reason += f"; wins: {best['win_labels']}"
+        reason = f"lowest {METRIC_LABELS.get(selection_metric, selection_metric).lower()} ({best['selection_score']:.6g})"
         if runner_up is not None:
-            reason += f"; next best avg rank={runner_up['avg_rank']:.2f}"
+            reason += f"; next best={runner_up['selection_score']:.6g}"
 
         recommendations.append(
             {
@@ -312,10 +294,8 @@ def rank_settings(setting_summary: pd.DataFrame) -> tuple[pd.DataFrame, dict[tup
                 "selected_pilot_train_preset": best["train_preset"],
                 "selected_lr": best["train_lr"],
                 "keep_setting": best["setting_label"],
-                "avg_rank": best["avg_rank"],
-                "n_metric_wins": int(best["n_metric_wins"]),
-                "n_metrics": int(best["n_metrics"]),
-                "available_metrics": ", ".join(METRIC_LABELS[m] for m in available_metrics),
+                "selection_metric": selection_metric,
+                "selection_score": float(best["selection_score"]),
                 "why": reason,
                 "artifact_batch_dir": group["artifact_batch_dir"].iloc[0] if "artifact_batch_dir" in group.columns else None,
             }
@@ -337,12 +317,12 @@ def render_markdown_table(frame: pd.DataFrame) -> str:
         "selected_model_preset",
         "selected_pilot_train_preset",
         "selected_lr",
-        "avg_rank",
-        "n_metric_wins",
+        "selection_metric",
+        "selection_score",
     ]
     display = frame[columns].copy()
     display["selected_lr"] = display["selected_lr"].map(lambda value: f"{value:.4g}")
-    display["avg_rank"] = display["avg_rank"].map(lambda value: f"{value:.2f}")
+    display["selection_score"] = display["selection_score"].map(lambda value: f"{value:.6g}")
     header = "| " + " | ".join(columns) + " |"
     separator = "| " + " | ".join(["---"] * len(columns)) + " |"
     rows = ["| " + " | ".join(str(row[col]) for col in columns) + " |" for _, row in display.iterrows()]
@@ -358,14 +338,14 @@ def plot_summary(frame: pd.DataFrame, output_path: Path) -> None:
         family_frame = frame[frame["bench_name"].eq(family)].copy()
         datasets = sorted(family_frame["dataset_slug"].unique().tolist())
         models = [model for model in MODEL_ORDER if model in family_frame["model_name"].unique()]
-        rank_matrix = np.full((len(datasets), len(models)), np.nan)
+        score_matrix = np.full((len(datasets), len(models)), np.nan)
 
         for row in family_frame.itertuples(index=False):
             y_idx = datasets.index(row.dataset_slug)
             x_idx = models.index(row.model_name)
-            rank_matrix[y_idx, x_idx] = row.avg_rank
+            score_matrix[y_idx, x_idx] = row.selection_score
 
-        image = ax.imshow(rank_matrix, aspect="auto", cmap="viridis_r")
+        image = ax.imshow(score_matrix, aspect="auto", cmap="viridis_r")
         ax.set_xticks(range(len(models)), [MODEL_LABELS.get(model, model) for model in models], rotation=20, ha="right")
         ax.set_yticks(range(len(datasets)), datasets)
         ax.set_title(f"{family} pilot winners")
@@ -376,7 +356,13 @@ def plot_summary(frame: pd.DataFrame, output_path: Path) -> None:
             annotation = f"{row.selected_model_preset}\n{row.selected_pilot_train_preset}"
             ax.text(x_idx, y_idx, annotation, ha="center", va="center", fontsize=8, color="black")
 
-        fig.colorbar(image, ax=ax, fraction=0.025, pad=0.01, label="Average rank")
+        fig.colorbar(
+            image,
+            ax=ax,
+            fraction=0.025,
+            pad=0.01,
+            label="Selected validation inner loss",
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200)
@@ -424,10 +410,8 @@ def build_bench_config(row: pd.Series) -> dict[str, Any]:
             "selected_model_preset": model_preset,
             "selected_pilot_train_preset": train_preset,
             "selected_lr": train_lr,
-            "selection_metric": "average_rank",
-            "avg_rank": float(row["avg_rank"]),
-            "n_metric_wins": int(row["n_metric_wins"]),
-            "available_metrics": str(row["available_metrics"]),
+            "selection_metric": str(row["selection_metric"]),
+            "selection_score": float(row["selection_score"]),
             "source_artifact_batch_dir": str(row["artifact_batch_dir"]),
         },
         "sweep": {

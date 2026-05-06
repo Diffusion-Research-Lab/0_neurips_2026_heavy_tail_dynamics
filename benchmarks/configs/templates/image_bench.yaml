@@ -2,7 +2,7 @@ run:
   name: template_image_bench
   seed: 0
   dtype: float32
-  n_trial: 2
+  n_trial: 1
 
 sweep:
   datasets:
@@ -128,7 +128,7 @@ trains:
   standard:
     device: cuda
     batch_size: 8
-    n_epochs: 512
+    n_epochs: 128
     lr: 0.0002
     num_workers: 0
     use_adamw: true

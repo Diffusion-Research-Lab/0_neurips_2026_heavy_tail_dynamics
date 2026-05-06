@@ -40,6 +40,12 @@ EVAL_METRIC_NAMES = [
     "MSSLE",
 ]
 
+PILOT_SELECTION_METRIC_TEMPLATES = {
+    "train": "INNER_LOSS_TRAIN",
+    "val": "INNER_LOSS_VAL",
+    "test": "INNER_LOSS_TEST",
+}
+
 TAIL_COVERAGE_METRICS = {
     "TCE(90%)": 0.10,
     "TCE(95%)": 0.05,
@@ -78,6 +84,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-mmd-samples", type=int, default=2048)
     parser.add_argument("--max-inspect-dim", type=int, default=1024)
     parser.add_argument("--inspect-image-data", action="store_true")
+    parser.add_argument("--selection-only", action="store_true", help="Only evaluate the model's own loss on one split.")
+    parser.add_argument("--selection-split", choices=sorted(PILOT_SELECTION_METRIC_TEMPLATES), default="val")
+    parser.add_argument("--selection-repeats", type=int, default=8)
+    parser.add_argument("--selection-batch-size", type=int, default=64)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--fail-on-error", action="store_true", help="Exit nonzero if any evaluated run fails.")
     return parser.parse_args()
@@ -97,6 +107,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-mmd-samples must be >= 2.")
     if args.sample_batch_size < 1:
         raise ValueError("--sample-batch-size must be >= 1.")
+    if args.selection_repeats < 1:
+        raise ValueError("--selection-repeats must be >= 1.")
+    if args.selection_batch_size < 1:
+        raise ValueError("--selection-batch-size must be >= 1.")
 
 
 def available_checkpoint_epochs(run_dir: Path) -> list[int]:
@@ -158,6 +172,42 @@ def sample_generator_in_batches(generator: Any, n_samples: int, batch_size: int)
             chunks.append(generator.sample(n_samples=n_batch).detach().cpu())
         remaining -= n_batch
     return torch.cat(chunks, dim=0)
+
+
+def estimate_split_inner_loss(
+    generator: Any,
+    x_split_cpu: torch.Tensor,
+    *,
+    device: str,
+    n_repeats: int,
+    batch_size: int,
+) -> list[float]:
+    """Estimate the model's own objective on one fixed split."""
+    if len(x_split_cpu) == 0:
+        return []
+
+    losses: list[float] = []
+    dtype = x_split_cpu.dtype
+    pin = str(device).startswith("cuda")
+    was_training = generator._net.training
+    generator._net.eval()
+    try:
+        with torch.no_grad():
+            for _ in range(int(n_repeats)):
+                weighted_sum = 0.0
+                weight_count = 0
+                for start in range(0, len(x_split_cpu), int(batch_size)):
+                    x = x_split_cpu[start: start + int(batch_size)].to(device=device, dtype=dtype, non_blocking=pin)
+                    loss = generator.loss(x)
+                    if loss.ndim != 0:
+                        raise ValueError(f"generative_model.loss must return a scalar, got shape {tuple(loss.shape)}")
+                    n_batch = int(x.shape[0])
+                    weighted_sum += float(loss.detach().cpu()) * n_batch
+                    weight_count += n_batch
+                losses.append(weighted_sum / max(weight_count, 1))
+    finally:
+        generator._net.train(was_training)
+    return losses
 
 
 def compute_test_metrics(
@@ -258,6 +308,10 @@ def evaluate_one_run(
     max_mmd_samples: int,
     max_inspect_dim: int,
     inspect_image_data: bool,
+    selection_only: bool,
+    selection_split: str,
+    selection_repeats: int,
+    selection_batch_size: int,
     overwrite: bool,
 ) -> dict[str, Any]:
     """Evaluate one saved benchmark run and write per-run artifacts."""
@@ -288,12 +342,12 @@ def evaluate_one_run(
     model_cfg_template["params"]["fdtype"] = dtype
     model_cfg_template["params"]["device"] = device
 
-    x_train, _, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
+    x_train, x_val, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
     image_like = x_test.ndim > 2
     feature_dim = int(x_test[:1].reshape(1, -1).shape[1])
     final_epoch = int(config["train"]["n_epochs"])
     checkpoint_epochs = sorted(set(available_checkpoint_epochs(run_dir) + [final_epoch]))
-    train_stats = pd.read_csv(run_dir / "train_stats.csv")
+    train_stats = pd.read_csv(run_dir / "train_stats.csv") if (run_dir / "train_stats.csv").exists() else pd.DataFrame()
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     scalar_rows: list[dict[str, Any]] = []
@@ -303,6 +357,13 @@ def evaluate_one_run(
     def warn_once(warning: str) -> None:
         if warning not in warnings:
             warnings.append(warning)
+
+    selection_tensors = {
+        "train": x_train,
+        "val": x_val,
+        "test": x_test,
+    }
+    selection_metric_name = PILOT_SELECTION_METRIC_TEMPLATES[selection_split]
 
     for requested_epoch in checkpoint_epochs:
         if requested_epoch == final_epoch:
@@ -332,6 +393,9 @@ def evaluate_one_run(
             "train_preset": config["train"]["preset_name"],
         }
 
+        if selection_only and checkpoint_epoch != final_epoch:
+            continue
+
         epoch_stats = train_stats
         if "epoch" in train_stats.columns:
             epoch_stats = train_stats[train_stats["epoch"] <= checkpoint_epoch]
@@ -349,6 +413,27 @@ def evaluate_one_run(
                         "epoch": int(row["epoch"]),
                     }
                 )
+
+        if selection_only:
+            split_losses = estimate_split_inner_loss(
+                generator,
+                selection_tensors[selection_split].detach().cpu(),
+                device=device,
+                n_repeats=selection_repeats,
+                batch_size=selection_batch_size,
+            )
+            for eval_repeat_idx, metric_value in enumerate(split_losses):
+                scalar_rows.append(
+                    {
+                        **base_row,
+                        "source": "pilot_selection",
+                        "metric_name": selection_metric_name,
+                        "value": float(metric_value),
+                        "eval_repeat_idx": eval_repeat_idx,
+                        "epoch": np.nan,
+                    }
+                )
+            continue
 
         x_ref = x_test[: min(int(n_eval_samples), len(x_test))]
         x_ref_cpu = x_ref.detach().cpu()
@@ -465,12 +550,17 @@ def evaluate_one_run(
         "sample_batch_size": int(sample_batch_size),
         "feature_dim": feature_dim,
         "image_like": bool(image_like),
+        "selection_only": bool(selection_only),
+        "selection_split": selection_split,
+        "selection_metric_name": selection_metric_name if selection_only else None,
+        "selection_repeats": int(selection_repeats),
+        "selection_batch_size": int(selection_batch_size),
         "max_fid_dim": int(max_fid_dim),
         "max_mmd_dim": int(max_mmd_dim),
         "max_mmd_samples": int(max_mmd_samples),
         "max_inspect_dim": int(max_inspect_dim),
         "inspect_image_data": bool(inspect_image_data),
-        "metric_names": EVAL_METRIC_NAMES,
+        "metric_names": [selection_metric_name] if selection_only else EVAL_METRIC_NAMES,
         "n_scalar_rows": len(scalar_rows),
         "scalars_path": str(scalars_path),
         "jacobian_path": str(jacobian_path) if jacobian_payload is not None else None,
@@ -552,6 +642,10 @@ def main() -> int:
                 max_mmd_samples=args.max_mmd_samples,
                 max_inspect_dim=args.max_inspect_dim,
                 inspect_image_data=args.inspect_image_data,
+                selection_only=args.selection_only,
+                selection_split=args.selection_split,
+                selection_repeats=args.selection_repeats,
+                selection_batch_size=args.selection_batch_size,
                 overwrite=args.overwrite,
             )
         except Exception as exc:

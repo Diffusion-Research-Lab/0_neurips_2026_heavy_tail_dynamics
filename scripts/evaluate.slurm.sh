@@ -31,6 +31,10 @@ CLI_MAX_FID_DIM=""
 CLI_MAX_MMD_DIM=""
 CLI_MAX_MMD_SAMPLES=""
 CLI_MAX_INSPECT_DIM=""
+CLI_SELECTION_ONLY=0
+CLI_SELECTION_SPLIT=""
+CLI_SELECTION_REPEATS=""
+CLI_SELECTION_BATCH_SIZE=""
 CLI_INSPECT_IMAGE_DATA=0
 CLI_OVERWRITE=0
 CLI_FAIL_ON_ERROR=0
@@ -87,6 +91,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-inspect-dim)
       CLI_MAX_INSPECT_DIM="$2"
+      shift 2
+      ;;
+    --selection-only)
+      CLI_SELECTION_ONLY=1
+      shift
+      ;;
+    --selection-split)
+      CLI_SELECTION_SPLIT="$2"
+      shift 2
+      ;;
+    --selection-repeats)
+      CLI_SELECTION_REPEATS="$2"
+      shift 2
+      ;;
+    --selection-batch-size)
+      CLI_SELECTION_BATCH_SIZE="$2"
       shift 2
       ;;
     --inspect-image-data)
@@ -173,6 +193,9 @@ MAX_FID_DIM="${CLI_MAX_FID_DIM:-${MAX_FID_DIM:-2048}}"
 MAX_MMD_DIM="${CLI_MAX_MMD_DIM:-${MAX_MMD_DIM:-2048}}"
 MAX_MMD_SAMPLES="${CLI_MAX_MMD_SAMPLES:-${MAX_MMD_SAMPLES:-2048}}"
 MAX_INSPECT_DIM="${CLI_MAX_INSPECT_DIM:-${MAX_INSPECT_DIM:-1024}}"
+SELECTION_SPLIT="${CLI_SELECTION_SPLIT:-${SELECTION_SPLIT:-val}}"
+SELECTION_REPEATS="${CLI_SELECTION_REPEATS:-${SELECTION_REPEATS:-8}}"
+SELECTION_BATCH_SIZE="${CLI_SELECTION_BATCH_SIZE:-${SELECTION_BATCH_SIZE:-64}}"
 
 echo "=============================================================================="
 echo "Heavy Tail Flow Benchmark Evaluator (GPU / Slurm)"
@@ -185,6 +208,10 @@ echo "N_EVAL_REPEATS:   ${N_EVAL_REPEATS}"
 echo "INSPECT_SAMPLES:  ${INSPECT_SAMPLES}"
 echo "PROBE_SIZE:       ${PROBE_SIZE}"
 echo "SAMPLE_BATCH:     ${SAMPLE_BATCH_SIZE}"
+echo "SELECTION_ONLY:   ${CLI_SELECTION_ONLY}"
+echo "SELECTION_SPLIT:  ${SELECTION_SPLIT}"
+echo "SELECTION_REP:    ${SELECTION_REPEATS}"
+echo "SELECTION_BATCH:  ${SELECTION_BATCH_SIZE}"
 echo "MAX_FID_DIM:      ${MAX_FID_DIM}"
 echo "MAX_MMD_DIM:      ${MAX_MMD_DIM}"
 echo "MAX_MMD_SAMPLES:  ${MAX_MMD_SAMPLES}"
@@ -209,7 +236,14 @@ CMD=(
   --max-mmd-dim "${MAX_MMD_DIM}"
   --max-mmd-samples "${MAX_MMD_SAMPLES}"
   --max-inspect-dim "${MAX_INSPECT_DIM}"
+  --selection-split "${SELECTION_SPLIT}"
+  --selection-repeats "${SELECTION_REPEATS}"
+  --selection-batch-size "${SELECTION_BATCH_SIZE}"
 )
+
+if [[ "${CLI_SELECTION_ONLY}" -eq 1 ]]; then
+  CMD+=(--selection-only)
+fi
 
 if [[ "${CLI_OVERWRITE}" -eq 1 ]]; then
   CMD+=(--overwrite)

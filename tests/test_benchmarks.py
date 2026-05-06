@@ -31,7 +31,7 @@ _PILOT_FIXTURE_BATCHES = {
     "real": "449825_05_real_pilot_evaluate",
     "image": "449826_08_image_pilot_evaluate",
 }
-_PILOT_FIXTURE_METRICS = ["FID", "MMD_RBF", "SLICED_WASSERSTEIN", "TAIL_COVERAGE_ERROR", "MSSLE"]
+_PILOT_FIXTURE_METRICS = ["INNER_LOSS_VAL"]
 
 
 def _first_model_preset_by_name(models: dict) -> dict[str, str]:
@@ -62,7 +62,7 @@ def _write_fake_pilot_eval_artifacts(root: Path) -> None:
                 for metric_rank, metric_name in enumerate(_PILOT_FIXTURE_METRICS):
                     rows.append(
                         {
-                            "source": "test_metrics",
+                            "source": "pilot_selection",
                             "metric_name": metric_name,
                             "value": float(1 + dataset_rank + model_rank + metric_rank / 10.0),
                             "checkpoint_epoch": 16,
@@ -289,14 +289,17 @@ def test_generated_bench_configs_use_template_budgets_but_selected_learning_rate
 
     assert synth_train["n_epochs"] == 512
     assert real_train["n_epochs"] == 512
-    assert image_train["n_epochs"] == 512
-    assert hrrr_train["n_epochs"] == 256
+    assert image_train["n_epochs"] == 128
+    assert hrrr_train["n_epochs"] == 128
     assert imagenet_train["n_epochs"] == 128
     assert synth_train["lr"] == synth_cfg["selection"]["selected_lr"]
     assert real_train["lr"] == real_cfg["selection"]["selected_lr"]
     assert image_train["lr"] == image_cfg["selection"]["selected_lr"]
     assert hrrr_train["lr"] == hrrr_cfg["selection"]["selected_lr"]
     assert imagenet_train["lr"] == imagenet_cfg["selection"]["selected_lr"]
+    assert synth_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
+    assert real_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
+    assert image_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
 
 
 def test_bench_templates_use_expected_trial_counts_and_single_train_preset():
@@ -306,7 +309,7 @@ def test_bench_templates_use_expected_trial_counts_and_single_train_preset():
 
     assert synth_cfg["run"]["n_trial"] == 5
     assert real_cfg["run"]["n_trial"] == 2
-    assert image_cfg["run"]["n_trial"] == 2
+    assert image_cfg["run"]["n_trial"] == 1
     assert synth_cfg["sweep"]["trains"] == ["standard"]
     assert real_cfg["sweep"]["trains"] == ["standard"]
     assert image_cfg["sweep"]["trains"] == ["standard"]
