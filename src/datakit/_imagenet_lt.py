@@ -1,7 +1,5 @@
 """ImageNet-LT loader using shipped annotation files and a local ImageNet tree."""
 
-from __future__ import annotations
-
 import os
 from pathlib import Path
 from typing import Any
@@ -38,13 +36,13 @@ def _imagenet_lt_root(data_home: str | Path | None) -> Path:
                 "ImageNet-LT raw data location is not configured. "
                 "Set FLOWBENCH_DATA so the loader uses $FLOWBENCH_DATA/raw/imagenet_lt, "
                 "or pass data_home explicitly. "
-                "Run `bash scripts/init.imagenet_lt.sh` after exporting FLOWBENCH_DATA."
+                "Run `python -m datakit init imagenet_lt` after exporting FLOWBENCH_DATA."
             )
         root = Path(flowbench_data).expanduser() / "raw" / "imagenet_lt"
     if not root.is_dir():
         raise RuntimeError(
             f"ImageNet-LT root does not exist: {root}. "
-            "Run `bash scripts/init.imagenet_lt.sh` to populate it."
+            "Run `python -m datakit init imagenet_lt` to populate it."
         )
     return root
 
@@ -65,7 +63,7 @@ def _resolve_imagenet_lt_annotation(
     if not candidate.is_file():
         raise RuntimeError(
             f"ImageNet-LT annotation file not found: {candidate}. "
-            "Run `bash scripts/init.imagenet_lt.sh` to copy the bundled annotations."
+            "Run `python -m datakit init imagenet_lt` to copy the bundled annotations."
         )
     return candidate
 

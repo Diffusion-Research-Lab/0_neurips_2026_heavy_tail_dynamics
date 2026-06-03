@@ -1,4 +1,4 @@
-"""Dataset registry and public loading helpers."""
+"""Real-dataset registry and public loading helpers."""
 
 from dataclasses import dataclass, field
 import hashlib
@@ -6,26 +6,11 @@ import os
 from pathlib import Path
 import time
 from typing import Any, Callable
-from urllib.request import urlretrieve
 import warnings
-
 import numpy as np
 import pandas as pd
-from sklearn.datasets import fetch_kddcup99, fetch_openml
 from sklearn.model_selection import train_test_split
 import torch
-
-from .._sampling import (
-    sample_checker,
-    sample_exponential,
-    sample_gaussian,
-    sample_scaled_isotropic_alpha_stable,
-    sample_spiral,
-    sample_student_t,
-    sample_unbalanced_highdim_alpha_stable_mixture,
-    sample_unbalanced_highdim_gaussian_mixture,
-)
-from ..utils import getpop
 from ._cifar100_lt import (
     _cifar100_root,
     _normalize_cifar100_split,
@@ -56,7 +41,6 @@ from ._lvis import (
     _lvis_search_roots,
     _load_lvis_json,
     _normalize_lvis_split,
-    _read_lvis_image,
     _resolve_lvis_image_path,
     _select_lvis_images,
 )
@@ -71,8 +55,6 @@ class DatasetPayload:
 
 
 DatasetLoader = Callable[..., pd.DataFrame | torch.Tensor | np.ndarray | DatasetPayload]
-DatasetSampler = Callable[..., torch.Tensor]
-SamplerKwargBuilders = dict[str, Callable[[dict[str, Any]], Any]]
 _IMAGE_CACHE_VERSION = 1
 
 
@@ -89,8 +71,6 @@ class DatasetEntry:
     dim: int | tuple[int, ...] | None = None
     n_samples: int | None = None
     loader: DatasetLoader | None = None
-    sampler: DatasetSampler | None = None
-    sampler_kwargs_builders: SamplerKwargBuilders = field(default_factory=dict)
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -108,12 +88,6 @@ def _copy_if_numpy(array: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tenso
     if isinstance(array, np.ndarray):
         return np.array(array, copy=True)
     return array
-
-
-def _decode_byte_string(value: Any) -> Any:
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8")
-    return value
 
 
 def _metadata_value(value: Any) -> Any:
@@ -158,36 +132,6 @@ def _resolve_real_data_home() -> Path:
     raise RuntimeError("Unable to create a real-dataset cache directory.")
 
 
-def _cache_remote_text_file(url: str, *, data_home: str | Path, filename: str) -> Path:
-    cache_dir = Path(data_home).expanduser()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / filename
-    if not cache_path.exists():
-        urlretrieve(url, cache_path)
-    return cache_path
-
-
-def _synthetic_entry(
-    name: str,
-    sampler: DatasetSampler,
-    *,
-    description: str,
-    tail_index_alpha: Any = None,
-    dim: int | None = None,
-    sampler_kwargs_builders: SamplerKwargBuilders | None = None,
-) -> DatasetEntry:
-    return DatasetEntry(
-        name=name,
-        dataset_type="synthetic",
-        description=description,
-        tail_index_alpha=tail_index_alpha,
-        split_mode="random",
-        dim=dim,
-        sampler=sampler,
-        sampler_kwargs_builders=sampler_kwargs_builders or {},
-    )
-
-
 def _real_entry(
     name: str,
     loader: DatasetLoader,
@@ -210,12 +154,6 @@ def _real_entry(
         n_samples=n_samples,
         loader=loader,
     )
-
-
-def _alpha_stable_mixture_base_scale(kwargs: dict[str, Any]) -> float:
-    if "base_scale" in kwargs:
-        return float(getpop(kwargs, "base_scale"))
-    return float(getpop(kwargs, "base_std", 0.55))
 
 
 def _resolve_dataset(
@@ -244,7 +182,7 @@ def _standardize_split_arrays(
     return (x_train - mean) / std, (x_val - mean) / std, (x_test - mean) / std
 
 
-def to_tensor_triplet(
+def _to_tensor_triplet(
     x_train: np.ndarray | torch.Tensor,
     x_val: np.ndarray | torch.Tensor,
     x_test: np.ndarray | torch.Tensor,
@@ -259,7 +197,7 @@ def to_tensor_triplet(
     )
 
 
-def coerce_numeric_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def _coerce_numeric_frame(frame: pd.DataFrame) -> pd.DataFrame:
     numeric_frame = frame.copy().dropna(axis=0).reset_index(drop=True)
     for column in numeric_frame.columns:
         if pd.api.types.is_datetime64_any_dtype(numeric_frame[column]):
@@ -319,28 +257,6 @@ def split_sample_indices(
     return np.arange(0, n_train), np.arange(n_train, n_train + n_val), np.arange(n_train + n_val, n_rows)
 
 
-def split_frame(
-    frame: pd.DataFrame,
-    *,
-    val_size: float,
-    test_size: float,
-    random_state: int,
-    split_mode: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    train_idx, val_idx, test_idx = split_sample_indices(
-        len(frame),
-        val_size=val_size,
-        test_size=test_size,
-        random_state=random_state,
-        split_mode=split_mode,
-    )
-    return (
-        frame.iloc[train_idx].reset_index(drop=True).to_numpy(),
-        frame.iloc[val_idx].reset_index(drop=True).to_numpy(),
-        frame.iloc[test_idx].reset_index(drop=True).to_numpy(),
-    )
-
-
 def _split_frame_to_tensors(
     frame: pd.DataFrame,
     *,
@@ -364,31 +280,7 @@ def _split_frame_to_tensors(
     x_test = frame.iloc[test_idx].reset_index(drop=True).to_numpy()
     if standardize:
         x_train, x_val, x_test = _standardize_split_arrays(x_train, x_val, x_test)
-    return to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype), (train_idx, val_idx, test_idx)
-
-
-def split_tensor_data(
-    data: torch.Tensor | np.ndarray,
-    *,
-    val_size: float,
-    test_size: float,
-    random_state: int,
-    split_mode: str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    x = torch.as_tensor(_copy_if_numpy(data))
-    if x.ndim < 1:
-        raise ValueError(f"Expected at least one sample dimension, got shape {tuple(x.shape)}.")
-    train_idx, val_idx, test_idx = split_sample_indices(
-        int(x.shape[0]),
-        val_size=val_size,
-        test_size=test_size,
-        random_state=random_state,
-        split_mode=split_mode,
-    )
-    train_idx = torch.as_tensor(train_idx, dtype=torch.long)
-    val_idx = torch.as_tensor(val_idx, dtype=torch.long)
-    test_idx = torch.as_tensor(test_idx, dtype=torch.long)
-    return x.index_select(0, train_idx), x.index_select(0, val_idx), x.index_select(0, test_idx)
+    return _to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype), (train_idx, val_idx, test_idx)
 
 
 def _split_tensor_to_tensors(
@@ -515,106 +407,13 @@ def _load_wildfires(**kwargs: Any) -> pd.DataFrame:
         raise TypeError(f"Unexpected wildfire loader kwargs: {unexpected}.")
     source = _strict_offline_text_file(
         Path(data_home).expanduser() / "fires.txt",
-        init_hint="bash scripts/init.wildfires.sh",
+        init_hint="python -m datakit init wildfires",
     )
     frame = pd.read_csv(source, header=None, sep=r"\s+")
     if frame.shape[1] == 1:
         return pd.DataFrame({"acres_burned": frame.iloc[:, 0].astype(float)})
     frame.columns = [f"x{i}" for i in range(frame.shape[1] - 1)] + ["acres_burned"]
     return frame.astype(float)
-
-
-def _load_earthquakes(**kwargs: Any) -> pd.DataFrame:
-    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "powerlaws")
-    if kwargs:
-        unexpected = ", ".join(sorted(kwargs))
-        raise TypeError(f"Unexpected earthquake loader kwargs: {unexpected}.")
-    source = _strict_offline_text_file(
-        Path(data_home).expanduser() / "quakes.txt",
-        init_hint="bash scripts/init.earthquakes.sh",
-    )
-    frame = pd.read_csv(source, header=None, sep=r"\s+")
-    return pd.DataFrame({"magnitude": frame.iloc[:, 0].astype(float)})
-
-
-def _load_kddcup(**kwargs: Any) -> pd.DataFrame:
-    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "scikit_learn")
-    Path(data_home).expanduser().mkdir(parents=True, exist_ok=True)
-    try:
-        bunch = fetch_kddcup99(
-            as_frame=True,
-            percent10=True,
-            data_home=str(data_home),
-            download_if_missing=False,
-            **kwargs,
-        )
-    except OSError as exc:
-        raise RuntimeError(
-            f"KDD Cup 99 raw data not found under {data_home} and compute nodes have no internet. "
-            "Pre-stage the dataset on a login node before submitting Slurm jobs:\n"
-            "  bash scripts/init.kddcup.sh\n"
-            f"Underlying error: {type(exc).__name__}: {exc}"
-        ) from exc
-    features = bunch.data.copy()
-    if not isinstance(features, pd.DataFrame):
-        features = pd.DataFrame(features)
-    for column in features.columns:
-        if pd.api.types.is_object_dtype(features[column]):
-            features[column] = features[column].map(_decode_byte_string)
-    numeric_features = features.select_dtypes(include=[np.number]).copy()
-    if numeric_features.shape[1] == 0:
-        raise ValueError("KDD Cup 99 loader produced no numeric feature columns.")
-    return numeric_features
-
-
-def _load_default_credit(**kwargs: Any) -> pd.DataFrame:
-    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "scikit_learn")
-    Path(data_home).expanduser().mkdir(parents=True, exist_ok=True)
-    try:
-        bunch = fetch_openml(
-            data_id=42477,
-            as_frame=True,
-            parser="pandas",
-            data_home=str(data_home),
-            **kwargs,
-        )
-    except OSError as exc:
-        raise RuntimeError(
-            f"Default-credit OpenML data not found under {data_home} and compute nodes have no internet. "
-            "Pre-stage the dataset on a login node before submitting Slurm jobs:\n"
-            "  bash scripts/init.default_credit.sh\n"
-            f"Underlying error: {type(exc).__name__}: {exc}"
-        ) from exc
-    frame = bunch.frame.copy()
-    if not isinstance(frame, pd.DataFrame):
-        frame = pd.DataFrame(frame)
-
-    target = None
-    target_names = bunch.target_names
-    if isinstance(target_names, str) and target_names in frame.columns:
-        target = frame.pop(target_names)
-    elif isinstance(target_names, list):
-        matching = [name for name in target_names if name in frame.columns]
-        if matching:
-            target = frame.pop(matching[0])
-    if target is None:
-        target = bunch.target.copy()
-
-    if "ID" in frame.columns:
-        frame = frame.drop(columns=["ID"])
-    for column in frame.columns:
-        if pd.api.types.is_numeric_dtype(frame[column]):
-            continue
-        coerced = pd.to_numeric(frame[column], errors="coerce")
-        if coerced.notna().sum() == frame[column].notna().sum():
-            frame[column] = coerced
-    if isinstance(target, pd.DataFrame) and target.shape[1] == 1:
-        target = target.iloc[:, 0]
-    if isinstance(target, pd.Series) and not pd.api.types.is_numeric_dtype(target):
-        coerced_target = pd.to_numeric(target, errors="coerce")
-        if coerced_target.notna().sum() == target.notna().sum():
-            target = coerced_target
-    return frame
 
 
 def _bool_kwarg(value: Any, *, name: str) -> bool:
@@ -762,7 +561,7 @@ def _load_lvis(**kwargs: Any) -> DatasetPayload:
             image_dirs=image_dirs,
             search_roots=search_roots,
         )
-        tensors.append(_read_lvis_image(image_path, image_size))
+        tensors.append(read_rgb_resized(image_path, image_size))
         image_id = int(image["id"])
         records.append(
             _lvis_record(
@@ -1011,91 +810,14 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
     return tensor[valid_samples].contiguous()
 
 
-ALL_DATASETS: dict[str, DatasetEntry] = {
-    "unbalanced_highdim_gaussian_mixture": _synthetic_entry(
-        "unbalanced_highdim_gaussian_mixture",
-        sample_unbalanced_highdim_gaussian_mixture,
-        description="Imbalanced high-dimensional Gaussian mixture synthetic dataset.",
-        sampler_kwargs_builders={
-            "dim": lambda kwargs: int(getpop(kwargs, "dim", 50)),
-            "n_modes": lambda kwargs: int(getpop(kwargs, "n_modes", 16)),
-            "rank": lambda kwargs: int(getpop(kwargs, "rank", 6)),
-            "imbalance_tau": lambda kwargs: float(getpop(kwargs, "imbalance_tau", 1.2)),
-            "mean_scale": lambda kwargs: float(getpop(kwargs, "mean_scale", 7.5)),
-            "base_std": lambda kwargs: float(getpop(kwargs, "base_std", 0.55)),
-            "anisotropy": lambda kwargs: float(getpop(kwargs, "anisotropy", 1.0)),
-            "structure_seed": lambda kwargs: int(getpop(kwargs, "structure_seed", 0)),
-        },
+REAL_DATASETS: dict[str, DatasetEntry] = {
+    "wildfires": _real_entry(
+        "wildfires",
+        _load_wildfires,
+        description="U.S. wildfire sizes in acres.",
+        tail_index_alpha=(1.1, 1.8),
+        dim=1,
     ),
-    "unbalanced_highdim_alpha_stable_mixture": _synthetic_entry(
-        "unbalanced_highdim_alpha_stable_mixture",
-        sample_unbalanced_highdim_alpha_stable_mixture,
-        description="Imbalanced high-dimensional mixture with alpha-stable local noise.",
-        tail_index_alpha="configurable",
-        sampler_kwargs_builders={
-            "dim": lambda kwargs: int(getpop(kwargs, "dim", 50)),
-            "alpha": lambda kwargs: float(getpop(kwargs, "alpha", 1.7)),
-            "n_modes": lambda kwargs: int(getpop(kwargs, "n_modes", 16)),
-            "rank": lambda kwargs: int(getpop(kwargs, "rank", 6)),
-            "imbalance_tau": lambda kwargs: float(getpop(kwargs, "imbalance_tau", 1.2)),
-            "mean_scale": lambda kwargs: float(getpop(kwargs, "mean_scale", 7.5)),
-            "base_scale": _alpha_stable_mixture_base_scale,
-            "anisotropy": lambda kwargs: float(getpop(kwargs, "anisotropy", 1.0)),
-            "structure_seed": lambda kwargs: int(getpop(kwargs, "structure_seed", 0)),
-        },
-    ),
-    "gaussian": _synthetic_entry(
-        "gaussian",
-        sample_gaussian,
-        description="Isotropic Gaussian synthetic dataset.",
-        tail_index_alpha=2.0,
-        sampler_kwargs_builders={"dim": lambda kwargs: int(getpop(kwargs, "dim", 1))},
-    ),
-    "checker": _synthetic_entry("checker", sample_checker, description="Checkerboard synthetic dataset.", dim=2),
-    "spiral": _synthetic_entry(
-        "spiral",
-        sample_spiral,
-        description="Noisy spiral synthetic dataset.",
-        dim=2,
-        sampler_kwargs_builders={
-            "spiral_turns": lambda kwargs: float(getpop(kwargs, "spiral_turns", 3.0)),
-            "spiral_radius": lambda kwargs: float(getpop(kwargs, "spiral_radius", 4.0)),
-            "spiral_noise": lambda kwargs: float(getpop(kwargs, "spiral_noise", 0.2)),
-        },
-    ),
-    "alpha_stable": _synthetic_entry(
-        "alpha_stable",
-        sample_scaled_isotropic_alpha_stable,
-        description="Isotropic alpha-stable synthetic dataset.",
-        tail_index_alpha="configurable",
-        sampler_kwargs_builders={
-            "dim": lambda kwargs: int(getpop(kwargs, "dim", 1)),
-            "alpha": lambda kwargs: float(getpop(kwargs, "alpha", 1.99)),
-        },
-    ),
-    "student": _synthetic_entry(
-        "student",
-        sample_student_t,
-        description="Student-t synthetic dataset.",
-        tail_index_alpha="configurable",
-        sampler_kwargs_builders={
-            "dim": lambda kwargs: int(getpop(kwargs, "dim", 1)),
-            "nu": lambda kwargs: float(getpop(kwargs, "nu", 10.0)),
-        },
-    ),
-    "exponential": _synthetic_entry(
-        "exponential",
-        sample_exponential,
-        description="Exponential synthetic dataset.",
-        sampler_kwargs_builders={
-            "dim": lambda kwargs: int(getpop(kwargs, "dim", 1)),
-            "rate": lambda kwargs: float(getpop(kwargs, "rate", 1.0)),
-        },
-    ),
-    "wildfires": _real_entry("wildfires", _load_wildfires, description="U.S. wildfire sizes in acres.", tail_index_alpha=(1.1, 1.8), dim=1),
-    "earthquakes": _real_entry("earthquakes", _load_earthquakes, description="Earthquake magnitude benchmark from the Clauset collection.", dim=1),
-    "kddcup": _real_entry("kddcup", _load_kddcup, description="KDD Cup 99 intrusion dataset with numeric feature columns only."),
-    "default_credit": _real_entry("default_credit", _load_default_credit, description="Default of Credit Card Clients dataset from OpenML."),
     "lvis": _real_entry(
         "lvis",
         _load_lvis,
@@ -1126,64 +848,10 @@ ALL_DATASETS: dict[str, DatasetEntry] = {
     ),
 }
 
-SYNTHETIC_DATASETS: dict[str, DatasetEntry] = {
-    name: entry for name, entry in ALL_DATASETS.items() if entry.dataset_type == "synthetic"
-}
-
-REAL_DATASETS: dict[str, DatasetEntry] = {
-    name: entry for name, entry in ALL_DATASETS.items() if entry.dataset_type == "real"
-}
-
-
-def fetch_synthetic_data(target_data: str, **kwargs: Any):
-    return_metadata = bool(getpop(kwargs, "return_metadata", False))
-    entry = _resolve_dataset(target_data, ALL_DATASETS, dataset_type="synthetic")
-    if entry.sampler is None:
-        raise RuntimeError(f"Synthetic dataset {target_data!r} has no sampler.")
-
-    n_samples = int(getpop(kwargs, "n_samples", 10_000))
-    val_size = float(getpop(kwargs, "val_size", 0.15))
-    test_size = float(getpop(kwargs, "test_size", 0.15))
-    random_state = int(getpop(kwargs, "random_state", 0))
-    standardize = bool(getpop(kwargs, "standardize", False))
-    device = getpop(kwargs, "device", "cpu")
-    dtype = getpop(kwargs, "dtype", torch.float32)
-
-    sampling_kwargs = {"n_samples": n_samples, "device": "cpu", "dtype": dtype}
-    for name, builder in entry.sampler_kwargs_builders.items():
-        sampling_kwargs[name] = builder(kwargs)
-
-    samples = entry.sampler(**sampling_kwargs).detach().cpu().numpy()
-    frame = pd.DataFrame(samples)
-    tensors, split_indices = _split_frame_to_tensors(
-        frame,
-        split_mode=entry.split_mode,
-        val_size=val_size,
-        test_size=test_size,
-        random_state=random_state,
-        standardize=standardize,
-        device=device,
-        dtype=dtype,
-    )
-    if not return_metadata:
-        return tensors
-    metadata = _build_return_metadata(
-        entry=entry,
-        kind="synthetic",
-        target_data=target_data,
-        params=sampling_kwargs,
-        split_config={"val_size": val_size, "test_size": test_size, "random_state": random_state},
-        standardize=standardize,
-        device=device,
-        dtype=dtype,
-        split_indices=split_indices,
-    )
-    return (*tensors, metadata)
-
 
 def fetch_real_data(target_data: str, **kwargs: Any):
     return_metadata = bool(kwargs.pop("return_metadata", False))
-    entry = _resolve_dataset(target_data, ALL_DATASETS, dataset_type="real")
+    entry = _resolve_dataset(target_data, REAL_DATASETS, dataset_type="real")
     if entry.loader is None:
         raise RuntimeError(f"Real dataset {target_data!r} has no loader.")
 
@@ -1207,7 +875,7 @@ def fetch_real_data(target_data: str, **kwargs: Any):
         loaded = loaded.data
 
     if isinstance(loaded, pd.DataFrame):
-        frame = coerce_numeric_frame(loaded)
+        frame = _coerce_numeric_frame(loaded)
         records = payload_metadata.get("records")
         if n_samples is not None:
             if n_samples > len(frame):
@@ -1272,8 +940,8 @@ def fetch_real_data(target_data: str, **kwargs: Any):
 
 
 def get_dataset_metadata(target_data: str) -> dict[str, Any]:
-    return _resolve_dataset(target_data, ALL_DATASETS).metadata()
+    return _resolve_dataset(target_data, REAL_DATASETS).metadata()
 
 
 def list_datasets() -> list[str]:
-    return sorted(ALL_DATASETS)
+    return sorted(REAL_DATASETS)

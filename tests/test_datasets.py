@@ -1,42 +1,26 @@
-"""Dataset module unittests."""
+"""Tests for synthetic and real dataset loaders."""
 
 import json
 import numpy as np
 import os
 import pickle
 from types import SimpleNamespace
-from sklearn.utils import Bunch
 import pandas as pd
 import pytest
 import torch
-from genkit.datasets._dataset import (
-    DatasetPayload,
-    _load_cifar100_lt, _load_default_credit, _load_earthquakes, _load_hrrr,
-    _load_imagenet_lt, _load_kddcup, _load_lvis, _load_wildfires,
-    _resolve_real_data_home, _decode_byte_string, _standardize_split_arrays,
-    _resolve_dataset, split_frame, split_tensor_data, _cache_remote_text_file,
-    ALL_DATASETS,
+from datakit import (
+    fetch_real_data,
+    get_dataset_metadata as get_real_dataset_metadata,
+    list_datasets as list_real_datasets,
 )
-from genkit.datasets import fetch_real_data, fetch_synthetic_data, get_dataset_metadata, list_datasets
+from datakit._dataset import (
+    DatasetPayload,
+    _load_cifar100_lt, _load_hrrr, _load_imagenet_lt, _load_lvis, _load_wildfires,
+    _resolve_real_data_home, _standardize_split_arrays,
+    _resolve_dataset, split_sample_indices,
+)
+from genkit.datasets import fetch_synthetic_data, get_dataset_metadata, list_datasets
 from benchmarks._real_data_cache import _loader_kwargs
-
-
-def _mock_default_credit_bunch():
-    frame = pd.DataFrame(
-        {
-            "ID": list(range(1, 11)),
-            "LIMIT_BAL": [20_000, 120_000, 90_000, 50_000, 50_000, 80_000, 200_000, 30_000, 70_000, 150_000],
-            "PAY_0": ["0", "1", "0", "-1", "0", "2", "0", "0", "-1", "1"],
-            "SEX": ["female", "female", "male", "female", "male", "male", "female", "male", "female", "male"],
-            "default payment next month": [1, 1, 0, 0, 0, 1, 0, 0, 0, 1],
-        }
-    )
-    return Bunch(
-        frame=frame,
-        data=frame.drop(columns=["default payment next month"]),
-        target=frame["default payment next month"],
-        target_names="default payment next month",
-    )
 
 
 def _write_lvis_fixture(root):
@@ -79,49 +63,6 @@ def _write_lvis_fixture(root):
     return root
 
 
-def test_load_default_credit_drops_identifier_and_coerces_numeric(monkeypatch):
-    monkeypatch.setattr("genkit.datasets._dataset.fetch_openml", lambda **_: _mock_default_credit_bunch())
-
-    frame = _load_default_credit()
-
-    assert list(frame.columns) == ["LIMIT_BAL", "PAY_0", "SEX"]
-    assert pd.api.types.is_numeric_dtype(frame["LIMIT_BAL"])
-    assert pd.api.types.is_numeric_dtype(frame["PAY_0"])
-    assert not pd.api.types.is_numeric_dtype(frame["SEX"])
-
-
-def test_fetch_real_data_supports_default_credit(monkeypatch):
-    monkeypatch.setattr("genkit.datasets._dataset.fetch_openml", lambda **_: _mock_default_credit_bunch())
-
-    x_train, x_val, x_test = fetch_real_data(
-        "default_credit",
-        val_size=0.2,
-        test_size=0.2,
-        random_state=0,
-        dtype=torch.float64,
-    )
-
-    assert x_train.shape == (6, 4)
-    assert x_val.shape == (2, 4)
-    assert x_test.shape == (2, 4)
-    assert x_train.dtype == torch.float64
-    assert x_val.dtype == torch.float64
-    assert x_test.dtype == torch.float64
-
-
-def test_default_credit_is_registered():
-    assert "default_credit" in list_datasets()
-    assert get_dataset_metadata("default_credit") == {
-        "name": "default_credit",
-        "tail_index_alpha": None,
-        "description": "Default of Credit Card Clients dataset from OpenML.",
-        "split_mode": "random",
-        "dataset_type": "real",
-        "dim": None,
-        "n_samples": None,
-    }
-
-
 def test_resolve_real_data_home_prefers_work(tmp_path, monkeypatch):
     work_root = tmp_path / "work"
     home_root = tmp_path / "home"
@@ -147,22 +88,10 @@ def test_resolve_real_data_home_uses_home_when_work_is_missing(tmp_path, monkeyp
     assert resolved == home_root / ".cache" / "flowbench_data"
 
 
-def test_load_earthquakes_uses_cached_file(tmp_path, monkeypatch):
-    data_home = tmp_path / "powerlaws"
-    data_home.mkdir()
-    (data_home / "quakes.txt").write_text("1.0\n2.5\n", encoding="utf-8")
-    monkeypatch.setattr("genkit.datasets._dataset.urlretrieve", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
-
-    frame = _load_earthquakes(data_home=data_home)
-
-    assert list(frame["magnitude"]) == [1.0, 2.5]
-
-
-def test_load_wildfires_uses_cached_file(tmp_path, monkeypatch):
+def test_load_wildfires_uses_cached_file(tmp_path):
     data_home = tmp_path / "powerlaws"
     data_home.mkdir()
     (data_home / "fires.txt").write_text("10\n20\n", encoding="utf-8")
-    monkeypatch.setattr("genkit.datasets._dataset.urlretrieve", lambda *args, **kwargs: pytest.fail("cache should bypass download"))
 
     frame = _load_wildfires(data_home=data_home)
 
@@ -253,8 +182,8 @@ def test_fetch_real_data_supports_hrrr_tensor_dataset(tmp_path, monkeypatch):
 
 
 def test_hrrr_dataset_is_registered():
-    assert "hrrr" in list_datasets()
-    assert get_dataset_metadata("hrrr") == {
+    assert "hrrr" in list_real_datasets()
+    assert get_real_dataset_metadata("hrrr") == {
         "name": "hrrr",
         "tail_index_alpha": None,
         "description": "HRRR accumulated precipitation fields on a 100x100 crop.",
@@ -290,7 +219,7 @@ def test_load_lvis_reads_local_fixture_and_filters_frequency(tmp_path):
 
 
 def test_load_lvis_reuses_processed_cache(tmp_path, monkeypatch):
-    import genkit.datasets._dataset as dataset_module
+    import datakit._dataset as dataset_module
 
     data_home = _write_lvis_fixture(tmp_path / "lvis")
     cache_dir = tmp_path / "cache"
@@ -307,7 +236,7 @@ def test_load_lvis_reuses_processed_cache(tmp_path, monkeypatch):
     def fail_read(*args, **kwargs):
         raise AssertionError("cache miss")
 
-    monkeypatch.setattr(dataset_module, "_read_lvis_image", fail_read)
+    monkeypatch.setattr(dataset_module, "read_rgb_resized", fail_read)
     second = _load_lvis(
         data_home=data_home,
         cache_dir=cache_dir,
@@ -380,7 +309,7 @@ def test_fetch_real_data_return_metadata_includes_lvis_records_and_histograms(tm
     assert x_train.shape == (3, 3, 8, 8)
     assert x_val.shape == (1, 3, 8, 8)
     assert x_test.shape == (1, 3, 8, 8)
-    assert metadata["dataset"] == get_dataset_metadata("lvis")
+    assert metadata["dataset"] == get_real_dataset_metadata("lvis")
     assert metadata["request"]["name"] == "lvis"
     assert metadata["request"]["params"]["max_samples"] == 5
     assert metadata["loader"]["image_size"] == 8
@@ -406,8 +335,8 @@ def test_lvis_uses_dsdir_and_fails_clearly_when_absent(monkeypatch):
 
 
 def test_lvis_dataset_is_registered():
-    assert "lvis" in list_datasets()
-    assert get_dataset_metadata("lvis") == {
+    assert "lvis" in list_real_datasets()
+    assert get_real_dataset_metadata("lvis") == {
         "name": "lvis",
         "tail_index_alpha": None,
         "description": "LVIS long-tailed object categories from local Jean Zay COCO/LVIS files; default image_size=64.",
@@ -433,19 +362,6 @@ def test_lvis_smoke_from_dsdir_if_available():
     assert tensor.min().item() >= 0.0
     assert tensor.max().item() <= 1.0
     assert len(loaded.metadata["records"]) == 3
-
-
-def test_kddcup_dataset_is_registered():
-    assert "kddcup" in list_datasets()
-    assert get_dataset_metadata("kddcup") == {
-        "name": "kddcup",
-        "tail_index_alpha": None,
-        "description": "KDD Cup 99 intrusion dataset with numeric feature columns only.",
-        "split_mode": "random",
-        "dataset_type": "real",
-        "dim": None,
-        "n_samples": None,
-    }
 
 
 def test_fetch_synthetic_data_supports_gaussian():
@@ -536,23 +452,9 @@ def test_bimodal_gaussian_datasets_are_not_registered():
         fetch_synthetic_data("unbalanced_bimodal_gaussian", n_samples=8)
 
 
-def test_fetch_synthetic_data_rejects_real_dataset_name():
-    with pytest.raises(ValueError, match="expected 'synthetic'"):
-        fetch_synthetic_data("default_credit", n_samples=8)
-
-
 def test_fetch_synthetic_data_unknown_name_raises_key_error():
     with pytest.raises(KeyError, match="no_such_dataset"):
         fetch_synthetic_data("no_such_dataset")
-
-
-def test_decode_byte_string_decodes_bytes_to_str():
-    assert _decode_byte_string(b"hello") == "hello"
-
-
-def test_decode_byte_string_passes_through_non_bytes():
-    assert _decode_byte_string("hello") == "hello"
-    assert _decode_byte_string(42) == 42
 
 
 def test_resolve_real_data_home_flowbench_data_home_takes_precedence(tmp_path, monkeypatch):
@@ -575,26 +477,23 @@ def test_resolve_real_data_home_flowbench_data_takes_top_precedence(tmp_path, mo
     assert primary.exists()
 
 
-def test_split_frame_chronological_preserves_temporal_order():
-    frame = pd.DataFrame({"x": list(range(20))})
-    train, val, test = split_frame(
-        frame, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological"
+def test_split_sample_indices_chronological_preserves_temporal_order():
+    train, val, test = split_sample_indices(
+        20, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological"
     )
-    assert int(train[-1, 0]) < int(val[0, 0])
-    assert int(val[-1, 0]) < int(test[0, 0])
+    assert int(train[-1]) < int(val[0])
+    assert int(val[-1]) < int(test[0])
 
 
-def test_split_frame_chronological_too_small_raises():
-    # 3 rows with val/test=0.2 each: floor(0.2*3)=0 → empty val/test split
-    frame = pd.DataFrame({"x": [1.0, 2.0, 3.0]})
+def test_split_sample_indices_chronological_too_small_raises():
+    # 3 rows with val/test=0.2 each: floor(0.2*3)=0 -> empty val/test split
     with pytest.raises(ValueError, match="empty split"):
-        split_frame(frame, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological")
+        split_sample_indices(3, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological")
 
 
-def test_split_frame_invalid_split_mode_raises():
-    frame = pd.DataFrame({"x": list(range(10))})
+def test_split_sample_indices_invalid_split_mode_raises():
     with pytest.raises(ValueError, match="split_mode"):
-        split_frame(frame, val_size=0.2, test_size=0.2, random_state=0, split_mode="bad_mode")
+        split_sample_indices(10, val_size=0.2, test_size=0.2, random_state=0, split_mode="bad_mode")
 
 
 def test_standardize_split_arrays_zero_variance_column_does_not_produce_nan():
@@ -610,17 +509,9 @@ def test_standardize_split_arrays_zero_variance_column_does_not_produce_nan():
 
 
 def test_resolve_dataset_type_mismatch_raises_value_error():
+    fake_datasets = {"gaussian": SimpleNamespace(dataset_type="synthetic")}
     with pytest.raises(ValueError, match="expected 'real'"):
-        _resolve_dataset("gaussian", ALL_DATASETS, dataset_type="real")
-
-
-def test_split_tensor_data_chronological_preserves_leading_order():
-    data = torch.arange(10, dtype=torch.float32).unsqueeze(1)
-    train, val, test = split_tensor_data(
-        data, val_size=0.2, test_size=0.2, random_state=0, split_mode="chronological"
-    )
-    assert float(train[-1, 0]) < float(val[0, 0])
-    assert float(val[-1, 0]) < float(test[0, 0])
+        _resolve_dataset("gaussian", fake_datasets, dataset_type="real")
 
 
 def test_fetch_real_data_n_samples_exceeding_available_warns(monkeypatch):
@@ -631,20 +522,9 @@ def test_fetch_real_data_n_samples_exceeding_available_warns(monkeypatch):
         dataset_type="real",
         standardize_default=False,
     )
-    monkeypatch.setattr("genkit.datasets._dataset._resolve_dataset", lambda *a, **kw: fake_entry)
+    monkeypatch.setattr("datakit._dataset._resolve_dataset", lambda *a, **kw: fake_entry)
     with pytest.warns(UserWarning, match="exceeds available"):
         fetch_real_data("anything", n_samples=100, val_size=0.2, test_size=0.2)
-
-
-def test_cache_remote_text_file_cache_hit_skips_download(tmp_path, monkeypatch):
-    cached = tmp_path / "data.txt"
-    cached.write_text("1.0\n2.0\n")
-    monkeypatch.setattr(
-        "genkit.datasets._dataset.urlretrieve",
-        lambda *a, **kw: pytest.fail("should not download when cached"),
-    )
-    result = _cache_remote_text_file("http://example.com/data.txt", data_home=tmp_path, filename="data.txt")
-    assert result == cached
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +623,7 @@ def test_load_cifar100_lt_is_deterministic_under_seed(tmp_path):
 
 
 def test_load_cifar100_lt_reuses_processed_cache(tmp_path, monkeypatch):
-    import genkit.datasets._dataset as dataset_module
+    import datakit._dataset as dataset_module
 
     root = _write_cifar100_fixture(tmp_path / "cifar100_lt", samples_per_class=8, n_classes=4)
     cache_dir = tmp_path / "cache"
@@ -822,8 +702,8 @@ def test_cifar100_lt_resolves_under_flowbench_data_env(tmp_path, monkeypatch):
 
 
 def test_cifar100_lt_is_registered():
-    assert "cifar100_lt" in list_datasets()
-    assert get_dataset_metadata("cifar100_lt") == {
+    assert "cifar100_lt" in list_real_datasets()
+    assert get_real_dataset_metadata("cifar100_lt") == {
         "name": "cifar100_lt",
         "tail_index_alpha": None,
         "description": "CIFAR-100 reshaped into a long-tailed subset using exponential class decay; default image_size=64.",
@@ -965,7 +845,7 @@ def test_load_imagenet_lt_max_samples_is_deterministic(tmp_path):
 
 
 def test_load_imagenet_lt_reuses_processed_cache(tmp_path, monkeypatch):
-    import genkit.datasets._dataset as dataset_module
+    import datakit._dataset as dataset_module
 
     root, image_root = _write_imagenet_lt_fixture(tmp_path / "imagenet_lt")
     cache_dir = tmp_path / "cache"
@@ -1047,8 +927,8 @@ def test_imagenet_lt_resolves_imagenet_root_via_data_home_subdir(tmp_path):
 
 
 def test_imagenet_lt_is_registered():
-    assert "imagenet_lt" in list_datasets()
-    assert get_dataset_metadata("imagenet_lt") == {
+    assert "imagenet_lt" in list_real_datasets()
+    assert get_real_dataset_metadata("imagenet_lt") == {
         "name": "imagenet_lt",
         "tail_index_alpha": None,
         "description": "ImageNet-LT split using shipped annotation files and a local ImageNet image tree; default image_size=64.",
@@ -1113,57 +993,6 @@ def test_loader_kwargs_for_imagenet_lt_sets_defaults(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_kddcup_loader_passes_download_if_missing_false(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_fetch(**kwargs):
-        captured.update(kwargs)
-        return Bunch(data=pd.DataFrame({"feature_a": [1.0, 2.0, 3.0, 4.0]}))
-
-    monkeypatch.setattr("genkit.datasets._dataset.fetch_kddcup99", fake_fetch)
-    frame = _load_kddcup(data_home=tmp_path)
-
-    assert captured["download_if_missing"] is False
-    assert captured["percent10"] is True
-    assert captured["data_home"] == str(tmp_path)
-    assert list(frame.columns) == ["feature_a"]
-
-
-def test_kddcup_loader_raises_clear_offline_error_when_data_missing(tmp_path, monkeypatch):
-    def fake_fetch(**kwargs):
-        raise OSError("Data not found and download_if_missing=False")
-
-    monkeypatch.setattr("genkit.datasets._dataset.fetch_kddcup99", fake_fetch)
-
-    with pytest.raises(RuntimeError, match=r"init\.kddcup\.sh"):
-        _load_kddcup(data_home=tmp_path)
-
-
-def test_default_credit_loader_raises_clear_offline_error(tmp_path, monkeypatch):
-    def fake_fetch(**kwargs):
-        raise OSError("Network is unreachable")
-
-    monkeypatch.setattr("genkit.datasets._dataset.fetch_openml", fake_fetch)
-
-    with pytest.raises(RuntimeError, match=r"init\.default_credit\.sh"):
-        _load_default_credit(data_home=tmp_path)
-
-
-def test_earthquakes_loader_raises_clear_offline_error_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "genkit.datasets._dataset.urlretrieve",
-        lambda *a, **kw: pytest.fail("loader must not call urlretrieve on compute nodes"),
-    )
-
-    with pytest.raises(RuntimeError, match=r"init\.earthquakes\.sh"):
-        _load_earthquakes(data_home=tmp_path / "powerlaws")
-
-
-def test_wildfires_loader_raises_clear_offline_error_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "genkit.datasets._dataset.urlretrieve",
-        lambda *a, **kw: pytest.fail("loader must not call urlretrieve on compute nodes"),
-    )
-
-    with pytest.raises(RuntimeError, match=r"init\.wildfires\.sh"):
+def test_wildfires_loader_raises_clear_offline_error_when_file_missing(tmp_path):
+    with pytest.raises(RuntimeError, match=r"python -m datakit init wildfires"):
         _load_wildfires(data_home=tmp_path / "powerlaws")

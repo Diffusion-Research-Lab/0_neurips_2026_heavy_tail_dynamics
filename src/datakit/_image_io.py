@@ -1,7 +1,5 @@
 """Shared image I/O helpers for image dataset loaders."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 

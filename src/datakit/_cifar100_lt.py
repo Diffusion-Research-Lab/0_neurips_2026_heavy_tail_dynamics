@@ -1,11 +1,4 @@
-"""CIFAR-100 Long-Tailed dataset loader.
-
-Builds an artificially long-tailed subset of CIFAR-100 by exponential class
-decay. Reads the standard CIFAR-100 Python pickle files directly without
-relying on torchvision downloads.
-"""
-
-from __future__ import annotations
+"""CIFAR-100-LT array loading helpers."""
 
 import os
 import pickle
@@ -45,13 +38,13 @@ def _cifar100_root(data_home: str | Path | None) -> Path:
                 "CIFAR-100-LT raw data location is not configured. "
                 "Set FLOWBENCH_DATA so the loader uses $FLOWBENCH_DATA/raw/cifar100_lt, "
                 "or pass data_home explicitly. "
-                "Run `bash scripts/init.cifar100_lt.sh` after exporting FLOWBENCH_DATA."
+                "Run `python -m datakit init cifar100_lt` after exporting FLOWBENCH_DATA."
             )
         root = Path(flowbench_data).expanduser() / "raw" / "cifar100_lt"
     if not root.is_dir():
         raise RuntimeError(
             f"CIFAR-100-LT root does not exist: {root}. "
-            "Run `bash scripts/init.cifar100_lt.sh` to populate it."
+            "Run `python -m datakit init cifar100_lt` to populate it."
         )
     return root
 

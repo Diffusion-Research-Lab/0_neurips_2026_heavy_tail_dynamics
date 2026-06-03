@@ -1,15 +1,11 @@
 """LVIS-specific dataset helpers."""
 
-from __future__ import annotations
-
 import json
 import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
-import torch
 
 
 _LVIS_ANNOTATION_FILES: dict[str, tuple[str, ...]] = {
@@ -397,13 +393,3 @@ def _resolve_lvis_image_path(
         f"Could not resolve LVIS image for image id={image.get('id')} file_name={file_name!r}. "
         f"Searched image roots:\n{searched}"
     )
-
-
-def _read_lvis_image(path: Path, image_size: int) -> torch.Tensor:
-    resampling = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
-    with Image.open(path) as image:
-        image = image.convert("RGB")
-        if image.size != (image_size, image_size):
-            image = image.resize((image_size, image_size), resampling)
-        array = np.asarray(image, dtype=np.float32) / 255.0
-    return torch.from_numpy(array).permute(2, 0, 1).contiguous()

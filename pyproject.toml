@@ -9,6 +9,7 @@ description = "Flow-Matching and Diffusion research codebase."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "diffusers>=0.35.0",
   "matplotlib>=3.7.1",
   "numpy>=1.24",
   "pandas>=2.0",
@@ -55,15 +56,21 @@ bench = [
   "warp-lang>=1.5.0",
 ]
 
+[project.scripts]
+datakit = "datakit._prepare:run_cli"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["genkit", "genkit.datasets", "labkit"]
+packages = ["datakit", "genkit", "labkit"]
+
+[tool.setuptools.package-data]
+datakit = ["resources/imagenet_lt/annotations/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["genkit", "labkit"]
+source = ["datakit", "genkit", "labkit"]
 omit = ["src/genkit/_vendor/*"]
 
 [tool.coverage.report]
