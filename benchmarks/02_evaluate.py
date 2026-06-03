@@ -520,43 +520,6 @@ def prepare_image_class_recovery_probe(reference_run_dir: Path, *, device: str) 
         return None, [f"class_recovery_probe_skipped: {type(exc).__name__}: {exc}"]
 
 
-def load_generator_and_data(
-    run_dir: Path,
-    *,
-    device: str = "cpu",
-    checkpoint_epoch: int | None = None,
-) -> tuple[Any, torch.Tensor, torch.Tensor, dict[str, Any], int | None]:
-    """Reload one trained generator and reconstruct its train/test splits."""
-    if checkpoint_epoch is None:
-        checkpoint_path = run_dir / "checkpoint.pt"
-        resolved_epoch = None
-    else:
-        checkpoint_path = run_dir / "checkpoints" / f"ckpt_epoch_{int(checkpoint_epoch):04d}.pt"
-        if not checkpoint_path.exists():
-            available = available_checkpoint_epochs(run_dir)
-            raise FileNotFoundError(
-                f"Checkpoint epoch {checkpoint_epoch} not found in {run_dir}. "
-                f"Available epochs: {available}"
-            )
-        resolved_epoch = int(checkpoint_epoch)
-
-    final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
-    checkpoint = final_checkpoint if checkpoint_epoch is None else torch.load(checkpoint_path, map_location="cpu")
-    config = yaml.safe_load((run_dir / "config.yaml").read_text())
-    dtype = checkpoint_dtype(config, final_checkpoint)
-    torch.set_default_dtype(dtype)
-
-    network_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["network"]))
-    model_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["model"]))
-    model_cfg.setdefault("params", {})
-    model_cfg["params"]["fdtype"] = dtype
-    model_cfg["params"]["device"] = device
-
-    x_train, _, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
-    generator = restore_generator(checkpoint, network_cfg, model_cfg, x_train, dtype=dtype, device=device)
-    return generator, x_train, x_test, config, resolved_epoch
-
-
 def evaluate_one_run(
     run_dir: Path,
     *,
