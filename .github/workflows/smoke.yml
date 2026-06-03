@@ -23,4 +23,4 @@ jobs:
           pip install -e .[dev,bench]
 
       - name: Run smoke test
-        run: python -m benchmarks.main --config benchmarks/configs/00_blank.yaml
+        run: python benchmarks/01_main.py --config tests/fixtures/benchmark_smoke.yaml --fail-on-error
