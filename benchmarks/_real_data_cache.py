@@ -1,7 +1,5 @@
 """Preprocessed real-dataset cache helpers for benchmark runs."""
 
-from __future__ import annotations
-
 import copy
 import hashlib
 import json
@@ -9,11 +7,9 @@ import os
 from pathlib import Path
 import time
 from typing import Any
-
 import torch
-
-from genkit.datasets import fetch_real_data
-from genkit.datasets._dataset import _resolve_real_data_home
+from datakit import fetch_real_data
+from datakit._dataset import _resolve_real_data_home
 
 
 CACHE_VERSION = 1
@@ -136,9 +132,7 @@ def _loader_kwargs(dataset_cfg: dict[str, Any], data_root: Path) -> dict[str, An
     kwargs = {**copy.deepcopy(dataset_cfg.get("params", {})), **copy.deepcopy(dataset_cfg.get("split", {}))}
     name = str(dataset_cfg["name"]).strip()
     raw_root = data_root / "raw"
-    if name in {"kddcup", "default_credit"}:
-        kwargs.setdefault("data_home", str(raw_root / "scikit_learn"))
-    elif name in {"earthquakes", "wildfires"}:
+    if name == "wildfires":
         kwargs.setdefault("data_home", str(raw_root / "powerlaws"))
     elif name == "lvis":
         kwargs.setdefault("cache_dir", str(data_root / "processed" / "_image_loader" / name))
@@ -253,3 +247,24 @@ def load_preprocessed_real_dataset(
         payload[key].to(device=device, dtype=dtype) for key in ("x_train", "x_val", "x_test")
     )
     return tensors  # type: ignore[return-value]
+
+
+def load_preprocessed_real_dataset_metadata(
+    dataset_cfg: dict[str, Any],
+    dtype: torch.dtype,
+    *,
+    data_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Load metadata stored next to one preprocessed real-dataset tensor cache."""
+    cache_path = real_dataset_cache_path(dataset_cfg, dtype, data_root=data_root)
+    if not cache_path.is_file():
+        raise FileNotFoundError(
+            f"Missing preprocessed real dataset cache: {cache_path}. "
+            "Run `make dataset` on Jean Zay before launching Slurm runs."
+        )
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+    ok, reason = _validate_cached_payload(payload, dataset_cfg, dtype)
+    if not ok:
+        raise RuntimeError(f"Preprocessed real dataset cache invalid ({reason}): {cache_path}")
+    metadata = payload.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}

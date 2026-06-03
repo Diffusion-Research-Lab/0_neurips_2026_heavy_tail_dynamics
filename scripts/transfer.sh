@@ -121,6 +121,7 @@ PY
     rm -rf "${supp_dir}"
 }
 
+[[ -d "${PROJECT_ROOT}/src/datakit" ]] || die "missing ${PROJECT_ROOT}/src/datakit"
 [[ -d "${PROJECT_ROOT}/src/genkit" ]] || die "missing ${PROJECT_ROOT}/src/genkit"
 [[ -d "${PROJECT_ROOT}/src/labkit" ]] || die "missing ${PROJECT_ROOT}/src/labkit"
 

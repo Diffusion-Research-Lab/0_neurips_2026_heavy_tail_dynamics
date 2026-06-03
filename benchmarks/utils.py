@@ -109,6 +109,76 @@ def latest_matching_dir(root: Path, pattern: str) -> Path:
     return matches[-1]
 
 
+def _path_suffix_from_marker(path: Path | str, marker: str) -> str:
+    parts = Path(str(path)).parts
+    if marker in parts:
+        return "/".join(parts[parts.index(marker):])
+    return Path(str(path)).as_posix().lstrip("./")
+
+
+def _same_config_path(left: Path | str, right: Path | str) -> bool:
+    left_path = Path(str(left)).expanduser()
+    right_path = Path(str(right)).expanduser()
+    candidates_left = {str(left), left_path.as_posix()}
+    candidates_right = {str(right), right_path.as_posix()}
+    if left_path.exists():
+        candidates_left.add(str(left_path.resolve()))
+    if right_path.exists():
+        candidates_right.add(str(right_path.resolve()))
+    if candidates_left & candidates_right:
+        return True
+    return _path_suffix_from_marker(left_path, "benchmarks") == _path_suffix_from_marker(right_path, "benchmarks")
+
+
+def _summary_config_matches(batch_dir: Path, config_path: Path) -> bool:
+    summary_paths = [batch_dir / "summary.txt", *sorted(batch_dir.glob("summary_shard_*.txt"))]
+    for summary_path in summary_paths:
+        if not summary_path.is_file():
+            continue
+        try:
+            lines = summary_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.startswith("config:"):
+                continue
+            recorded_config = line.split(":", 1)[1].strip()
+            if recorded_config and _same_config_path(recorded_config, config_path):
+                return True
+    return False
+
+
+def _saved_run_name_matches(batch_dir: Path, run_name: str) -> bool:
+    for config_path in sorted(batch_dir.glob("[0-9][0-9][0-9]*/config.yaml")):
+        try:
+            run_cfg = load_yaml(config_path).get("run", {})
+        except (OSError, ValueError, yaml.YAMLError):
+            continue
+        if isinstance(run_cfg, dict) and str(run_cfg.get("name", "")) == run_name:
+            return True
+    return False
+
+
+def latest_config_batch_dir(root: Path, config_path: Path) -> Path:
+    """Return the latest non-evaluation batch directory for one benchmark config."""
+    root = root.expanduser()
+    config_path = config_path.expanduser()
+    run_name = str(load_yaml(config_path)["run"]["name"])
+    candidates = []
+    for path in root.iterdir():
+        if not path.is_dir() or path.name.endswith("_evaluate"):
+            continue
+        if path.name.endswith(f"_{run_name}"):
+            candidates.append(path)
+            continue
+        if _summary_config_matches(path, config_path) or _saved_run_name_matches(path, run_name):
+            candidates.append(path)
+    matches = sorted(set(candidates), key=lambda path: (path.stat().st_mtime, path.name))
+    if not matches:
+        raise FileNotFoundError(f"No batch directory for config {config_path} under {root}")
+    return matches[-1]
+
+
 def count_config_runs(config: dict[str, Any]) -> int:
     """Return the expanded run count for one benchmark config."""
     sweep = require_section(config, "sweep")
@@ -129,7 +199,7 @@ def make_batch_dir(run_cfg: dict[str, Any], save_cfg: dict[str, Any]) -> Path:
     return batch_dir
 
 
-def main() -> int:
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -137,24 +207,19 @@ def main() -> int:
     latest.add_argument("--root", type=Path, required=True)
     latest.add_argument("--pattern", required=True)
 
+    latest_config = subparsers.add_parser("latest-config-batch", help="Print the latest batch directory for one config.")
+    latest_config.add_argument("--root", type=Path, required=True)
+    latest_config.add_argument("--config", type=Path, required=True)
+
     count_runs = subparsers.add_parser("count-runs", help="Print the expanded run count for one config.")
     count_runs.add_argument("--config", type=Path, required=True)
-
-    run_name = subparsers.add_parser("run-name", help="Print run.name for one config.")
-    run_name.add_argument("--config", type=Path, required=True)
 
     args = parser.parse_args()
     if args.command == "latest-batch":
         print(latest_matching_dir(args.root, args.pattern).resolve())
-        return 0
-    if args.command == "count-runs":
+    elif args.command == "latest-config-batch":
+        print(latest_config_batch_dir(args.root, args.config).resolve())
+    elif args.command == "count-runs":
         print(count_config_runs(load_yaml(args.config)))
-        return 0
-    if args.command == "run-name":
-        print(str(load_yaml(args.config)["run"]["name"]))
-        return 0
-    raise ValueError(f"Unknown command: {args.command}")
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    else:
+        raise ValueError(f"Unknown command: {args.command}")

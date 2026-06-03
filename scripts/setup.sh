@@ -110,6 +110,7 @@ echo "[setup] Installing project packages with benchmark extras"
 
 echo "[setup] Verifying imports"
 run_python - <<'PY'
+import datakit
 import genkit
 import pandas
 import torch

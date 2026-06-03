@@ -24,9 +24,10 @@ from benchmarks._real_data_cache import (  # noqa
     load_preprocessed_real_dataset,
     require_preprocessed_real_data,
 )
-from genkit.datasets import fetch_real_data, fetch_synthetic_data, list_datasets  # noqa
+from datakit import fetch_real_data, list_datasets as list_real_datasets  # noqa
+from genkit.datasets import fetch_synthetic_data, list_datasets as list_synthetic_datasets  # noqa
 from genkit.diffusion import DDPMV, DLPMEps  # noqa
-from genkit.flow import GaussianFlowLinear, GaussianFlowOT  # noqa
+from genkit.flow_matching import GaussianFlowLinear, GaussianFlowOT  # noqa
 from genkit.nn import MLPModel, UNetModel  # noqa
 from genkit.thirdparty import TEDMOrigin  # noqa
 from genkit.training import train  # noqa
@@ -445,7 +446,8 @@ def run_one(
         }
 
 
-def main() -> int:
+if __name__ == "__main__":
+
     setup_logging()
     args = parse_args()
     validate_args(args)
@@ -472,7 +474,8 @@ def main() -> int:
     batch_dir.mkdir(parents=True, exist_ok=True)
     print(f"batch_dir: {batch_dir}")
     print(f"shard: {args.shard_index + 1}/{args.shard_count}")
-    print(f"available datasets: {', '.join(list_datasets())}")
+    available_datasets = sorted(list_synthetic_datasets() + list_real_datasets())
+    print(f"available datasets: {', '.join(available_datasets)}")
 
     manifest_rows = []
     combinations = itertools.product(dataset_variants, network_variants, model_variants, train_variants, range(n_trial))
@@ -507,8 +510,3 @@ def main() -> int:
         )
     write_manifest_summary(batch_dir, manifest_rows=manifest_rows, args=args)
     print("done")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

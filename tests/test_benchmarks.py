@@ -1,3 +1,5 @@
+"""Tests for benchmark helpers and entrypoints."""
+
 from pathlib import Path
 import importlib
 import os
@@ -9,8 +11,11 @@ import pytest
 import torch
 
 import benchmarks._real_data_cache as real_data_cache
+import benchmarks.utils as bench_utils
 
 evaluate = importlib.import_module("benchmarks.02_evaluate")
+pilot_analysis = importlib.import_module("benchmarks.03_pilot_analysis")
+plotting_bench = importlib.import_module("benchmarks.04_plotting_bench")
 compute_test_metrics = evaluate.compute_test_metrics
 sample_generator_in_batches = evaluate.sample_generator_in_batches
 
@@ -149,36 +154,191 @@ def test_sample_generator_in_batches_respects_batch_size():
     assert samples.shape == (7, 2)
 
 
-def test_compute_test_metrics_keeps_other_metrics_when_one_fails(monkeypatch):
-    def raise_fid(*args, **kwargs):
-        raise RuntimeError("fid boom")
+def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
+    def raise_mmd(*args, **kwargs):
+        raise RuntimeError("mmd boom")
 
-    monkeypatch.setattr(evaluate, "fid", raise_fid)
+    monkeypatch.setattr(evaluate, "mmd_rbf", raise_mmd)
     x_ref = torch.arange(256, dtype=torch.float32).reshape(128, 2) + 1.0
     x_gen = x_ref + 0.1
 
     values, warnings = compute_test_metrics(
         x_ref,
         x_gen,
-        feature_dim=2,
-        max_fid_dim=4,
-        max_mmd_dim=4,
         max_mmd_samples=8,
     )
 
-    assert values["FID"] != values["FID"]
-    assert any("FID_failed: RuntimeError: fid boom" == warning for warning in warnings)
+    assert values["MMD_RBF"] != values["MMD_RBF"]
+    assert any("MMD_RBF_failed: RuntimeError: mmd boom" == warning for warning in warnings)
     for metric_name in [
-        "MMD_RBF",
-        "SLICED_WASSERSTEIN",
-        "TAIL_COVERAGE_ERROR",
         "TCE(90%)",
         "TCE(95%)",
         "TCE(99%)",
         "TCE(99.9%)",
-        "MSSLE",
     ]:
         assert torch.isfinite(torch.tensor(values[metric_name]))
+
+
+def test_compute_test_metrics_computes_mmd_for_high_dimensional_data():
+    x_ref = torch.arange(12 * 32, dtype=torch.float32).reshape(12, 32)
+    x_gen = x_ref + 0.1
+
+    values, warnings = compute_test_metrics(x_ref, x_gen, max_mmd_samples=8)
+
+    assert torch.isfinite(torch.tensor(values["MMD_RBF"]))
+    assert not any("mmd_skipped" in warning.lower() for warning in warnings)
+
+
+def test_image_class_recovery_metrics_count_support_and_histogram(monkeypatch):
+    probe = {
+        "eligible_classes": torch.tensor([0, 1]),
+        "test_probs": torch.tensor([0.75, 0.25]),
+        "test_acc": 0.9,
+        "n_test_classes": 2,
+    }
+    x_gen = torch.zeros(4, 1, 8, 8)
+
+    monkeypatch.setattr(evaluate, "predict_image_class_probe", lambda probe, x, device: torch.tensor([0, 0, 1, 2]))
+    metrics = evaluate.compute_image_class_recovery_metrics(probe, x_gen, device="cpu")
+
+    assert metrics["CLASS_RECOVERY_INDEX"] == pytest.approx(1.0)
+    assert metrics["CLASS_HIST_TV"] == pytest.approx(0.25)
+    assert metrics["N_TEST_CLASSES"] == 2.0
+    assert metrics["N_GEN_CLASSES"] == 3.0
+    assert metrics["CLASS_PROBE_TEST_ACC"] == pytest.approx(0.9)
+
+
+def test_latest_config_batch_finds_run_name_directory(tmp_path):
+    artifact_root = tmp_path / "benchmarks" / "artifacts"
+    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "real" / "wildfires" / "ddpm_v.yaml"
+    config_path.parent.mkdir(parents=True)
+    artifact_root.mkdir(parents=True)
+    config_path.write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+    expected = artifact_root / "20260527_173718_bench_real__wildfires__ddpm_v"
+    expected.mkdir()
+    (artifact_root / "20260527_173718_bench_real__wildfires__ddpm_v_evaluate").mkdir()
+
+    assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == expected
+
+
+def test_latest_config_batch_falls_back_to_saved_config_metadata(tmp_path):
+    artifact_root = tmp_path / "benchmarks" / "artifacts"
+    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "real" / "wildfires" / "ddpm_v.yaml"
+    config_path.parent.mkdir(parents=True)
+    artifact_root.mkdir(parents=True)
+    config_path.write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+    batch_dir = artifact_root / "1412454_ddpm_v"
+    batch_dir.mkdir()
+    (batch_dir / "summary_shard_000.txt").write_text("\n".join(["n_runs: 1", "config: /lustre/fswork/projects/rech/jcx/uor49lv/src/flowbench/benchmarks/configs/bench/real/wildfires/ddpm_v.yaml"]) + "\n", encoding="utf-8")  # noqa
+
+    assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == batch_dir
+
+
+def test_latest_config_batch_falls_back_to_run_config(tmp_path):
+    artifact_root = tmp_path / "benchmarks" / "artifacts"
+    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "real" / "wildfires" / "ddpm_v.yaml"
+    config_path.parent.mkdir(parents=True)
+    artifact_root.mkdir(parents=True)
+    config_path.write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+    batch_dir = artifact_root / "1412454_ddpm_v"
+    run_dir = batch_dir / "001_wildfires__mlp__ddpm_v__selected__trial-01"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.yaml").write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+
+    assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == batch_dir
+
+
+def test_analyze_pilot_ignores_benchmark_evaluation_batches(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    pilot_batch = artifact_root / "100_pilot_synth_evaluate"
+    bench_batch = artifact_root / "999_bench_synth__alpha_stable_iso__ddpm_v_evaluate"
+    pilot_batch.mkdir(parents=True)
+    bench_batch.mkdir()
+
+    assert pilot_analysis.discover_family_batch(artifact_root, "synth") == pilot_batch
+
+
+def test_plotting_ignores_pilot_evaluation_batches(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    pilot_run = artifact_root / "100_pilot_synth_evaluate" / "001_alpha_stable_target"
+    bench_run = artifact_root / "999_ddpm_v_evaluate" / "001_alpha_stable_target"
+    pilot_run.mkdir(parents=True)
+    bench_run.mkdir(parents=True)
+    rows = [
+        {
+            "dataset_preset": "alpha_stable_target",
+            "dataset_name": "alpha_stable",
+            "model_label": "DDPM-V",
+            "model_name": "ddpm_v",
+            "source": "test_metrics",
+            "metric_name": "MMD_RBF",
+            "value": 1.0,
+        }
+    ]
+    pd.DataFrame(rows).to_csv(pilot_run / "scalars.csv.gz", index=False, compression="gzip")
+    pd.DataFrame(rows).to_csv(bench_run / "scalars.csv.gz", index=False, compression="gzip")
+
+    batches = plotting_bench.discover_eval_batches(artifact_root)
+
+    assert batches == {"alpha_stable_target": [bench_run.parent]}
+
+
+def test_plotting_writes_image_class_recovery_table(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    table_root = tmp_path / "tables"
+
+    for dataset_name, metric_value in [("cifar100_lt", 0.25), ("imagenet_lt", 0.75)]:
+        run_dir = artifact_root / f"999_{dataset_name}_evaluate" / f"001_{dataset_name}"
+        run_dir.mkdir(parents=True)
+        rows = [
+            {
+                "run_dir": run_dir.name,
+                "checkpoint_epoch": 1,
+                "dataset_preset": dataset_name,
+                "dataset_name": dataset_name,
+                "model_label": "DDPM-V",
+                "model_name": "ddpm_v",
+                "model_alpha": float("nan"),
+                "source": "test_metrics",
+                "metric_name": "CLASS_RECOVERY_INDEX",
+                "value": 1.0,
+            },
+            {
+                "run_dir": run_dir.name,
+                "checkpoint_epoch": 2,
+                "dataset_preset": dataset_name,
+                "dataset_name": dataset_name,
+                "model_label": "DDPM-V",
+                "model_name": "ddpm_v",
+                "model_alpha": float("nan"),
+                "source": "test_metrics",
+                "metric_name": "CLASS_HIST_TV",
+                "value": 1.0 - metric_value,
+            },
+            {
+                "run_dir": run_dir.name,
+                "checkpoint_epoch": 2,
+                "dataset_preset": dataset_name,
+                "dataset_name": dataset_name,
+                "model_label": "DDPM-V",
+                "model_name": "ddpm_v",
+                "model_alpha": float("nan"),
+                "source": "test_metrics",
+                "metric_name": "CLASS_RECOVERY_INDEX",
+                "value": metric_value,
+            },
+        ]
+        pd.DataFrame(rows).to_csv(run_dir / "scalars.csv.gz", index=False, compression="gzip")
+
+    dataset_batches = plotting_bench.discover_eval_batches(artifact_root)
+    plotting_bench.render_image_class_recovery_table(dataset_batches, table_root)
+
+    table_path = table_root / "image_class_recovery.tex"
+    contents = table_path.read_text(encoding="utf-8")
+    assert "Image class recovery and class-histogram total variation" in contents
+    assert "CIFAR100-LT" in contents
+    assert "ImageNet-LT" in contents
+    assert "Class Hist. TV" in contents
 
 
 def test_image_bench_unet_config_expands_to_one_network_variant():
@@ -223,21 +383,12 @@ def test_image_bench_imagenet_lt_and_cifar100_lt_cap_at_50000():
 
 def test_tabular_real_pilot_caps_real_dataset_to_256_samples():
     config = load_yaml(Path("benchmarks/configs/pilot/real.yaml"))
-    assert config["datasets"]["kddcup"]["params"]["n_samples"] == 4096
-    assert "wildfires" not in config["datasets"]
+    assert config["datasets"]["wildfires"]["params"]["n_samples"] == 4096
 
 
 def test_tabular_real_bench_caps_real_dataset_to_50000_samples():
     config = load_yaml(Path("benchmarks/configs/templates/real_bench.yaml"))
-    assert config["datasets"]["kddcup"]["params"]["n_samples"] == 50000
-    assert "wildfires" not in config["datasets"]
-
-
-def test_benchmark_configs_do_not_use_wildfires():
-    for path in sorted(Path("benchmarks/configs").rglob("*.yaml")):
-        config = load_yaml(path)
-        assert "wildfires" not in config.get("sweep", {}).get("datasets", [])
-        assert "wildfires" not in config.get("datasets", {})
+    assert config["datasets"]["wildfires"]["params"]["n_samples"] == 50000
 
 
 def test_nonblank_pilots_try_at_least_two_learning_rates():
@@ -256,7 +407,7 @@ def test_generated_bench_config_tree_is_complete_and_explicit(generated_bench_ou
     bench_configs = sorted(bench_root.rglob("*.yaml"))
     assert len(bench_configs) == 35
     assert bench_root / "synth/alpha_stable_iso/tedm_origin.yaml" in bench_configs
-    assert bench_root / "real/kddcup/ddpm_v.yaml" in bench_configs
+    assert bench_root / "real/wildfires/ddpm_v.yaml" in bench_configs
     assert bench_root / "image/lvis/gaussian_flow_ot.yaml" in bench_configs
 
 
@@ -276,7 +427,7 @@ def test_generated_bench_configs_are_single_dataset_single_model_single_train(ge
 def test_generated_bench_configs_use_template_budgets_but_selected_learning_rates(generated_bench_outputs):
     bench_root = generated_bench_outputs["bench_config_root"]
     synth_cfg = load_yaml(bench_root / "synth/alpha_stable_iso/gaussian_flow_ot.yaml")
-    real_cfg = load_yaml(bench_root / "real/kddcup/gaussian_flow_linear.yaml")
+    real_cfg = load_yaml(bench_root / "real/wildfires/gaussian_flow_linear.yaml")
     image_cfg = load_yaml(bench_root / "image/lvis/tedm_origin.yaml")
     hrrr_cfg = load_yaml(bench_root / "image/hrrr/ddpm_v.yaml")
     imagenet_cfg = load_yaml(bench_root / "image/imagenet_lt/dlpm_eps.yaml")
@@ -332,8 +483,8 @@ def test_pilot_analysis_reports_exist_and_match_generated_configs(generated_benc
         "cifar100_lt",
         "hrrr",
         "imagenet_lt",
-        "kddcup",
         "lvis",
+        "wildfires",
     ]
 
 
@@ -353,13 +504,13 @@ def test_numbered_benchmark_entrypoints_work_from_outside_repo(tmp_path):
 def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
     dataset_cfg = {
         "kind": "real",
-        "name": "kddcup",
+        "name": "wildfires",
         "params": {"n_samples": 4},
         "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
     }
 
     def fake_fetch_real_data(name, **kwargs):
-        assert name == "kddcup"
+        assert name == "wildfires"
         assert kwargs["dtype"] is torch.float32
         assert kwargs["device"] == "cpu"
         assert kwargs["return_metadata"] is True
@@ -384,7 +535,7 @@ def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
 def test_slurm_strict_real_dataset_loading_requires_processed_cache(tmp_path, monkeypatch):
     dataset_cfg = {
         "kind": "real",
-        "name": "kddcup",
+        "name": "wildfires",
         "params": {"n_samples": 4},
         "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
     }
@@ -429,10 +580,10 @@ def test_resolved_config_preserves_run_metadata(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_kddcup_cfg():
+def _make_wildfires_cfg():
     return {
         "kind": "real",
-        "name": "kddcup",
+        "name": "wildfires",
         "params": {"n_samples": 4},
         "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
     }
@@ -448,7 +599,7 @@ def _fake_fetch_real_4samples(name, **kwargs):
 
 
 def test_build_preprocessed_real_dataset_skips_when_cache_is_valid(tmp_path, monkeypatch, capsys):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
 
     real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
@@ -462,18 +613,18 @@ def test_build_preprocessed_real_dataset_skips_when_cache_is_valid(tmp_path, mon
     out = capsys.readouterr().out
 
     assert result["status"] == "exists"
-    assert "[SKIP] Valid preprocessed cache found for kddcup" in out
+    assert "[SKIP] Valid preprocessed cache found for wildfires" in out
 
 
 def test_build_preprocessed_real_dataset_rebuilds_on_cache_key_mismatch(tmp_path, monkeypatch, capsys):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": "BOGUS",
-            "request": {"name": "kddcup"},
+            "request": {"name": "wildfires"},
             "x_train": torch.ones(2, 3),
             "x_val": torch.full((1, 3), 2.0),
             "x_test": torch.full((1, 3), 3.0),
@@ -486,12 +637,12 @@ def test_build_preprocessed_real_dataset_rebuilds_on_cache_key_mismatch(tmp_path
     out = capsys.readouterr().out
 
     assert result["status"] == "built"
-    assert "[REBUILD] kddcup" in out
+    assert "[REBUILD] wildfires" in out
     assert "cache_key mismatch" in out
 
 
 def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_path, monkeypatch, capsys):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
@@ -499,7 +650,7 @@ def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_
         {
             "cache_version": real_data_cache.CACHE_VERSION + 99,
             "cache_key": expected_key,
-            "request": {"name": "kddcup"},
+            "request": {"name": "wildfires"},
             "x_train": torch.ones(2, 3),
             "x_val": torch.full((1, 3), 2.0),
             "x_test": torch.full((1, 3), 3.0),
@@ -516,7 +667,7 @@ def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_
 
 
 def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requested_samples(tmp_path, monkeypatch, capsys):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
@@ -524,7 +675,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requeste
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": expected_key,
-            "request": {"name": "kddcup"},
+            "request": {"name": "wildfires"},
             "x_train": torch.zeros(40, 3),
             "x_val": torch.zeros(40, 3),
             "x_test": torch.zeros(40, 3),
@@ -541,7 +692,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requeste
 
 
 def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, monkeypatch, capsys):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
@@ -549,7 +700,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, 
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": expected_key,
-            "request": {"name": "kddcup"},
+            "request": {"name": "wildfires"},
             "x_train": torch.ones(2, 3),
             "x_val": torch.full((1, 3), 2.0),
             "x_test": "not a tensor",
@@ -566,7 +717,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, 
 
 
 def test_build_preprocessed_real_dataset_rebuilds_when_torch_load_fails(tmp_path, monkeypatch, capsys):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(b"not a torch payload")
@@ -576,12 +727,12 @@ def test_build_preprocessed_real_dataset_rebuilds_when_torch_load_fails(tmp_path
     out = capsys.readouterr().out
 
     assert result["status"] == "built"
-    assert "[REBUILD] kddcup" in out
+    assert "[REBUILD] wildfires" in out
     assert "torch.load failed" in out
 
 
 def test_load_preprocessed_real_dataset_rejects_invalid_cache(tmp_path):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -599,7 +750,7 @@ def test_load_preprocessed_real_dataset_rejects_invalid_cache(tmp_path):
 
 
 def test_main_build_dataset_propagates_missing_cache_under_strict_mode(tmp_path, monkeypatch):
-    cfg = _make_kddcup_cfg()
+    cfg = _make_wildfires_cfg()
     monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
     monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(tmp_path))
     monkeypatch.setenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "1")
@@ -694,7 +845,7 @@ def test_prefetch_torch_free_cache_key_matches_runtime():
     cfgs = [
         {
             "kind": "real",
-            "name": "kddcup",
+            "name": "wildfires",
             "params": {"n_samples": 50000},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": True},
         },

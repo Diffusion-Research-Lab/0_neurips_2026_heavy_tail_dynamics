@@ -1,9 +1,4 @@
-"""Build processed real-dataset split caches used by benchmark Slurm jobs.
-
-The ``--check-only`` path is intentionally torch-free so it can run on a Jean Zay
-login node without first loading the pytorch module. The build path (default)
-lazy-imports torch and sklearn-touching helpers.
-"""
+"""Build processed real-dataset split caches for benchmark jobs."""
 
 import argparse
 import copy
@@ -234,14 +229,10 @@ def _run_build(args, tasks: list, root: Path) -> int:
     return 0
 
 
-def main() -> int:
+if __name__ == "__main__":
     args = parse_args()
     root = _resolve_cache_root(args.cache_root)
     tasks = _collect_yaml_tasks(args)
     if args.check_only:
-        return _check_only(tasks, root)
-    return _run_build(args, tasks, root)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        raise SystemExit(_check_only(tasks, root))
+    raise SystemExit(_run_build(args, tasks, root))

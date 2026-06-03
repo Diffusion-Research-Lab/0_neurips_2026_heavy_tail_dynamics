@@ -6,7 +6,7 @@ run:
 
 sweep:
   datasets:
-    - kddcup_tiny
+    - gaussian_tiny
   networks:
     - mlp
   models:
@@ -15,11 +15,12 @@ sweep:
     - smoke
 
 datasets:
-  kddcup_tiny:
-    kind: real
-    name: kddcup
+  gaussian_tiny:
+    kind: synthetic
+    name: gaussian
     params:
       n_samples: 16
+      dim: 2
     split:
       val_size: 0.1
       test_size: 0.1
@@ -61,4 +62,4 @@ trains:
     ckpt_keep_last: 1
 
 save:
-  root_dir: benchmarks/artifacts
+  root_dir: /tmp/flowbench_smoke

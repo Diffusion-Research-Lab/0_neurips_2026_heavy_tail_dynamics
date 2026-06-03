@@ -1,3 +1,6 @@
+"""Reproduce the Shariatian et al. synthetic stable-data benchmark."""
+
+import argparse
 import ast
 import copy
 import os
@@ -6,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -15,6 +17,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path = [entry for entry in sys.path if Path(entry or ".").resolve() != SCRIPT_DIR]
 for path_entry in [REPO_ROOT, REPO_ROOT / "src"]:
     if str(path_entry) not in sys.path:
         sys.path.insert(0, str(path_entry))
@@ -28,17 +32,17 @@ from dlpm.methods.GenerativeLevyProcess import GenerativeLevyProcess  # noqa
 from dlpm.models.Model import MLPModel as VendorMLPModel              # noqa
 from genkit.diffusion import DDPMV, DLPMEps                           # noqa
 from genkit.thirdparty import DLPMEpsOrigin                           # noqa
-from labkit.report import PRETTY_RCPARAMS                             # noqa
 
 
 ####################################################################################################
 # Globals
-plt.rcParams.update(PRETTY_RCPARAMS)
-
 VENDOR_CONFIG = yaml.safe_load((VENDOR_ROOT / "dlpm" / "configs" / "2d_sas.yml").read_text())
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 FDTYPE = torch.float32
 IDTYPE = torch.int32
+
+ARTIFACT_ROOT = REPO_ROOT / "benchmarks" / "artifacts" / "shariatan_et_al"
+TABLE_ROOT = REPO_ROOT / "benchmarks" / "tables"
 
 N_SEEDS = 20
 SEEDS = list(range(N_SEEDS))
@@ -70,10 +74,25 @@ PAPER_VALUES = {
     1.9: (0.132, 0.101),
     2.0: (0.798, 0.601),
 }
+RESULT_COLUMNS = ["method", "model_alpha", "seed", "msle95", "loss_last", "n_steps"]
 
 
 ####################################################################################################
 # Functions
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the standalone Shariatian et al. synthetic benchmark.")
+    parser.add_argument("--output-root", type=Path, default=ARTIFACT_ROOT)
+    parser.add_argument("--table-root", type=Path, default=TABLE_ROOT)
+    parser.add_argument("--n-seeds", type=int, default=N_SEEDS)
+    parser.add_argument("--model-alphas", nargs="+", type=float, default=MODEL_ALPHAS)
+    parser.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
+    parser.add_argument("--skip-author", action="store_true", help="Skip the direct author-code baseline.")
+    args = parser.parse_args()
+    if args.n_seeds < 1:
+        raise ValueError("--n-seeds must be >= 1.")
+    return args
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -427,7 +446,13 @@ def run_author_one(model_alpha: float, seed: int) -> dict:
     }
 
 
-def build_results_table(combined_df: pd.DataFrame) -> pd.DataFrame:
+def build_results_table(
+    combined_df: pd.DataFrame,
+    methods: list[str],
+    model_alphas: list[float],
+    *,
+    include_author: bool,
+) -> pd.DataFrame:
     summary_df = (
         combined_df.groupby(["model_alpha", "method"], as_index=False)
         .agg(msle95_mean=("msle95", "mean"), msle95_std=("msle95", "std"))
@@ -435,11 +460,14 @@ def build_results_table(combined_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    row_labels = [METHOD_LABELS[method] for method in METHODS] + [METHOD_LABELS[AUTHOR_METHOD], "DLPM (paper results)"]
+    row_labels = [METHOD_LABELS[method] for method in methods]
+    if include_author:
+        row_labels.append(METHOD_LABELS[AUTHOR_METHOD])
+    row_labels.append("DLPM (paper results)")
     table_df = pd.DataFrame(
         "NA",
         index=row_labels,
-        columns=[f"$\\alpha = {alpha:.1f}$" for alpha in MODEL_ALPHAS],
+        columns=[f"$\\alpha = {alpha:.1f}$" for alpha in model_alphas],
         dtype=object,
     )
 
@@ -449,69 +477,82 @@ def build_results_table(combined_df: pd.DataFrame) -> pd.DataFrame:
         table_df.loc[label, col] = f"${row['msle95_mean']:.3f} \\pm {row['msle95_std']:.3f}$"
 
     for alpha, (mean, std) in PAPER_VALUES.items():
+        if alpha not in model_alphas:
+            continue
         table_df.loc["DLPM (paper results)", f"$\\alpha = {alpha:.1f}$"] = f"${mean:.3f} \\pm {std:.3f}$"
 
     return table_df
 
 
+def write_latex_results_table(table_df: pd.DataFrame, filepath: Path) -> None:
+    """Write a compact booktabs table for the MSLE results."""
+    lines = [
+        r"% Requires \usepackage{booktabs}",
+        r"\begin{table}[ht]",
+        r"\centering",
+        r"\caption{Synthetic stable-data results from Shariatian et al. (2025). Lower $\mathrm{MSLE}_{0.95}$ is better.}",
+        r"\label{tab:shariatan-et-al-msle}",
+        rf"\begin{{tabular}}{{l{'c' * len(table_df.columns)}}}",
+        r"\toprule",
+        r"$\mathrm{MSLE}_{0.95}$ & " + " & ".join(table_df.columns) + r" \\",
+        r"\midrule",
+    ]
+    for row_label, row in table_df.iterrows():
+        values = [str(value).replace("NA", r"--") for value in row]
+        lines.append(f"{row_label} & " + " & ".join(values) + r" \\")
+    lines.extend([r"\bottomrule", r"\end{tabular}", r"\end{table}", ""])
+    filepath.write_text("\n".join(lines), encoding="utf-8")
+
+
 ####################################################################################################
 # Main
 if __name__ == "__main__":
+    args = parse_args()
+    output_root = args.output_root.expanduser()
+    table_root = args.table_root.expanduser()
+    output_root.mkdir(parents=True, exist_ok=True)
+    table_root.mkdir(parents=True, exist_ok=True)
+
+    seeds = list(range(args.n_seeds))
+    model_alphas = list(args.model_alphas)
+    methods = list(args.methods)
 
     torch.set_num_threads(max(1, min(8, torch.get_num_threads())))
 
-    print("[INFO] Reproducing experiments from Shariatan et al. (2025)")
+    print("[INFO] Reproducing experiments from Shariatian et al. (2025)")
 
     # base on our code
     rows = []
-    total = len(METHODS) * len(MODEL_ALPHAS) * len(SEEDS)
+    total = len(methods) * len(model_alphas) * len(seeds)
     progress = tqdm(total=total, desc="[INFO] In-house models sweep")
-    for method_name in METHODS:
-        for model_alpha in MODEL_ALPHAS:
-            for seed in SEEDS:
+    for method_name in methods:
+        for model_alpha in model_alphas:
+            for seed in seeds:
                 rows.append(run_one(method_name, model_alpha, seed))
                 progress.update(1)
     progress.close()
     our_df = pd.DataFrame(rows).sort_values(["method", "model_alpha", "seed"]).reset_index(drop=True)
+    our_df.to_csv(output_root / "inhouse_results.csv", index=False)
 
     # direct author's code call
     rows = []
-    total = len(MODEL_ALPHAS) * len(SEEDS)
-    progress = tqdm(total=total, desc="[INFO] Author models sweep")
-    for model_alpha in MODEL_ALPHAS:
-        for seed in SEEDS:
-            rows.append(run_author_one(model_alpha, seed))
-            progress.update(1)
-    progress.close()
-    author_df = pd.DataFrame(rows).sort_values(["method", "model_alpha", "seed"]).reset_index(drop=True)
+    if not args.skip_author:
+        total = len(model_alphas) * len(seeds)
+        progress = tqdm(total=total, desc="[INFO] Author models sweep")
+        for model_alpha in model_alphas:
+            for seed in seeds:
+                rows.append(run_author_one(model_alpha, seed))
+                progress.update(1)
+        progress.close()
+    author_df = pd.DataFrame(rows, columns=RESULT_COLUMNS).sort_values(["method", "model_alpha", "seed"]).reset_index(drop=True)
+    author_df.to_csv(output_root / "author_results.csv", index=False)
 
-    table_df = build_results_table(pd.concat([our_df, author_df], ignore_index=True))
+    combined_df = pd.concat([our_df, author_df], ignore_index=True)
+    combined_df.to_csv(output_root / "results.csv", index=False)
+    table_df = build_results_table(combined_df, methods, model_alphas, include_author=not args.skip_author)
 
 ####################################################################################################
-# Plotting
-    fig, ax = plt.subplots(1, 1, figsize=(0.95 + 1.2 * len(table_df.columns), 0.9 + 0.42 * len(table_df.index)))
-
-    ax.axis("off")
-    table = ax.table(cellText=table_df.values, rowLabels=list(table_df.index), colLabels=list(table_df.columns),
-                     loc="center", cellLoc="center")
-    table.auto_set_font_size(False)
-    table.set_fontsize(8.5)
-    table.scale(1.0, 1.45)
-
-    corner_width = table[(1, -1)].get_width() if (1, -1) in table.get_celld() else table[(1, 0)].get_width()
-    corner_height = table[(0, 0)].get_height()
-    table.add_cell(0, -1, width=corner_width, height=corner_height, text=r"$\mathrm{MSLE}_{0.95}$", loc="center")
-
-    for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor("0.2")
-        cell.set_linewidth(0.6)
-        if row == 0 or col == -1:
-            cell.set_text_props(weight="bold")
-
-    fig.tight_layout()
-
-    fig_dir = Path("_figures")
-    fig_dir.mkdir(parents=True, exist_ok=False)
-    filepath = fig_dir / "shariatan_et_al.pdf"
+# Results table
+    filepath = table_root / "shariatan_et_al_msle_table.tex"
     print(f"[INFO] Saving results under '{filepath}'")
-    plt.savefig(filepath, dpi=300)
+    write_latex_results_table(table_df, filepath)

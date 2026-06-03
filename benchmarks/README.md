@@ -1,28 +1,22 @@
-## Benchmark Quickstart
+## Benchmarks
 
-To setup the benchmark:
-
-```bash
-  make send
-  ssh jz
-  cd $WORK/src/flowbench/
-  make setup
-  make dataset
-```
-
-Dataset caches live under `flowbench_data/`. Benchmark run outputs live under `benchmarks/artifacts/`.
-
-To launch the pilot:
+Run each step after the previous Slurm jobs are complete.
 
 ```bash
-  make pilot
-  make evaluate-pilot
-  make analyze-pilot
-```
+make send
+ssh jz
+cd "$WORK/src/flowbench"
 
-To launch the benchmark:
+make setup
+make dataset
 
-```bash
-  make bench
-  make evaluate-bench
+make pilot
+make evaluate-pilot
+make analyze-pilot
+
+make bench
+make evaluate-bench
+make plotting-bench
+
+make bench-shariatan
 ```

@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 
@@ -19,7 +18,7 @@ for _path in (REPO_ROOT, REPO_ROOT / "src"):
 from labkit.report import PRETTY_RCPARAMS, format_mean_std_latex  # noqa: E402
 
 
-ARTIFACT_ROOT = REPO_ROOT / "benchmarks" / "data"
+ARTIFACT_ROOT = REPO_ROOT / "benchmarks" / "artifacts"
 TABLE_ROOT = REPO_ROOT / "benchmarks" / "tables"
 FIGURE_ROOT = REPO_ROOT / "benchmarks" / "figures"
 
@@ -39,36 +38,51 @@ MODEL_COLORS = {
     "TEDM-Orig": "tab:olive",
 }
 LINE_WIDTH = 2.8
-MAX_EPOCH_POINTS = 20
 DATASET_LABELS = {
     "alpha_stable_target": "Alpha-stable iso.",
     "alpha_stable_mixture_target": "Alpha-stable mix.",
-    "kddcup": "KDD Cup",
+    "wildfires": "Wildfires",
     "cifar100_lt": "CIFAR100-LT",
     "hrrr": "HRRR",
     "imagenet_lt": "ImageNet-LT",
     "lvis": "LVIS",
 }
 
-PERFORMANCE_TABLE_METRICS = ["MMD_RBF", "TAIL_COVERAGE_ERROR", "MSSLE"]
-INSPECT_TABLE_METRICS = ["init_error", "training_loss_error"]
-CURVE_METRICS = ["MMD_RBF", "TAIL_COVERAGE_ERROR", "MSSLE"]
+PERFORMANCE_TABLE_METRICS = [
+    "MMD_RBF",
+    "TCE(90%)",
+    "TCE(95%)",
+    "TCE(99%)",
+    "TCE(99.9%)",
+]
+CLASS_RECOVERY_DATASETS = ["cifar100_lt", "imagenet_lt"]
+CLASS_RECOVERY_METRICS = [
+    ("CLASS_RECOVERY_INDEX", True),
+    ("CLASS_HIST_TV", False),
+]
+CURVE_METRICS = PERFORMANCE_TABLE_METRICS
 TRAIN_METRICS = ["training_loss", "training_loss_std", "grad_norm_epoch"]
 
 METRIC_LABELS = {
     "MMD_RBF": "MMD RBF",
-    "TAIL_COVERAGE_ERROR": "Tail Cov. Err.",
-    "MSSLE": "Quantile Log Err.",
-    "init_error": "Init. Error",
-    "training_loss_error": "Train Loss Err. (MSE)",
+    "TCE(90%)": "TCE(90%)",
+    "TCE(95%)": "TCE(95%)",
+    "TCE(99%)": "TCE(99%)",
+    "TCE(99.9%)": "TCE(99.9%)",
+    "CLASS_RECOVERY_INDEX": "Class Recovery",
+    "CLASS_HIST_TV": "Class Hist. TV",
     "training_loss": "Training Loss",
     "training_loss_std": "Training Loss Std.",
     "grad_norm_epoch": "Grad Norm",
 }
 METRIC_FILENAMES = {
     "MMD_RBF": "mmd_rbf",
-    "TAIL_COVERAGE_ERROR": "tail_cov_err",
-    "MSSLE": "quantile_log_err",
+    "TCE(90%)": "tce_90",
+    "TCE(95%)": "tce_95",
+    "TCE(99%)": "tce_99",
+    "TCE(99.9%)": "tce_999",
+    "CLASS_RECOVERY_INDEX": "class_recovery",
+    "CLASS_HIST_TV": "class_hist_tv",
     "training_loss": "training_loss",
     "training_loss_std": "training_loss_std",
     "grad_norm_epoch": "grad_norm",
@@ -106,6 +120,8 @@ def dataset_slug(dataset_name: str) -> str:
 def discover_eval_batches(artifact_root: Path) -> dict[str, list[Path]]:
     dataset_batches: dict[str, list[Path]] = {}
     for batch_dir in sorted(path for path in artifact_root.glob("*_evaluate") if path.is_dir()):
+        if "pilot" in batch_dir.name.lower():
+            continue
         run_dirs = sorted(path for path in batch_dir.iterdir() if path.is_dir())
         if not run_dirs:
             continue
@@ -161,14 +177,15 @@ def summarize_source_metrics(frame: pd.DataFrame, source: str, group_cols: list[
     return summary
 
 
-def best_parameter_rows(summary: pd.DataFrame, metric_name: str, fixed_cols: list[str]) -> pd.DataFrame:
+def best_parameter_rows(summary: pd.DataFrame, metric_name: str, fixed_cols: list[str], *, higher_is_better: bool = False) -> pd.DataFrame:
     sub = summary[summary["metric_name"].eq(metric_name)].dropna(subset=["median"]).copy()
     if sub.empty:
         return sub
     rows = []
     for _, group in sub.groupby(fixed_cols, dropna=False):
         if "model_alpha" in group.columns and not group["model_alpha"].isna().all():
-            rows.append(group.nsmallest(1, "median").iloc[0].to_dict())
+            selected = group.nlargest(1, "median") if higher_is_better else group.nsmallest(1, "median")
+            rows.append(selected.iloc[0].to_dict())
         else:
             rows.append(group.iloc[0].to_dict())
     return pd.DataFrame(rows)
@@ -187,8 +204,6 @@ def build_metric_table(summary: pd.DataFrame, metric_names: list[str], row_label
             if not pd.isna(row.get("model_alpha")):
                 caption = f"a={float(row['model_alpha']):.3g}"
             value = float(row["median"])
-            if metric_name == "init_error":
-                value = max(1e-12, value)
             table.loc[row["model_label"], col_name] = format_mean_std_latex(
                 value,
                 float(row["std"]),
@@ -237,9 +252,6 @@ def save_metric_curve(
         curve = summary[(summary["metric_name"].eq(metric_name)) & (summary["model_label"].eq(model_label))].sort_values(x_key)
         if curve.empty:
             continue
-        if x_key == "epoch" and len(curve) > MAX_EPOCH_POINTS:
-            sample_idx = np.unique(np.round(np.linspace(0, len(curve) - 1, num=MAX_EPOCH_POINTS)).astype(int))
-            curve = curve.iloc[sample_idx]
         ax.plot(
             curve[x_key],
             curve["median"],
@@ -265,90 +277,80 @@ def save_metric_curve(
     plt.close(fig)
 
 
-def load_last_jacobian_curves(batch_dirs: list[Path]) -> tuple[dict[int, dict[str, list[np.ndarray]]], list[str], list[int]]:
-    curves_by_epoch: dict[int, dict[str, list[np.ndarray]]] = {}
-    model_labels: set[str] = set()
-    for batch_dir in batch_dirs:
-        for run_dir in sorted(path for path in batch_dir.iterdir() if path.is_dir()):
-            jacobian_path = run_dir / "jacobian_last_epoch.npz"
-            scalars_path = run_dir / "scalars.csv.gz"
-            if not jacobian_path.exists() or not scalars_path.exists():
-                continue
-            sample = pd.read_csv(scalars_path, nrows=1)
-            if sample.empty:
-                continue
-            row = sample.iloc[0]
-            model_label = DISPLAY_MODEL_LABELS.get(str(row.get("model_name", "")), str(row.get("model_label", "")))
-            payload = np.load(jacobian_path)
-            checkpoint_epoch = int(np.asarray(payload["checkpoint_epoch"]).item())
-            curve = np.asarray(payload["curve"], dtype=float)
-            model_labels.add(model_label)
-            curves_by_epoch.setdefault(checkpoint_epoch, {}).setdefault(model_label, []).append(curve)
-    ordered_models = ordered_labels(model_labels)
-    selected_epochs = sorted(curves_by_epoch)
-    for checkpoint_epoch in selected_epochs:
-        for model_label in ordered_models:
-            curves_by_epoch[checkpoint_epoch].setdefault(model_label, [])
-    return curves_by_epoch, ordered_models, selected_epochs
+def final_checkpoint_rows(scalars: pd.DataFrame) -> pd.DataFrame:
+    if "run_dir" not in scalars.columns or "checkpoint_epoch" not in scalars.columns:
+        return scalars
+    checkpoint_epoch = pd.to_numeric(scalars["checkpoint_epoch"], errors="coerce")
+    group_cols = ["run_dir"]
+    if "eval_batch_dir" in scalars.columns:
+        group_cols.insert(0, "eval_batch_dir")
+    max_epoch = checkpoint_epoch.groupby([scalars[col] for col in group_cols]).transform("max")
+    return scalars[checkpoint_epoch.eq(max_epoch)].copy()
 
 
-def save_jacobian_curve_panels(
-    curves_by_epoch: dict[int, dict[str, list[np.ndarray]]],
-    *,
-    models: list[str],
-    checkpoint_epochs: list[int],
-    dataset_name: str,
-    output_path: Path,
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if not checkpoint_epochs:
-        fig, ax = plt.subplots(figsize=(4.8, 2.8))
-        ax.axis("off")
-        ax.text(
-            0.5,
-            0.5,
-            "Jacobian spectral norm curve\nnot available in current eval artifacts.",
-            ha="center",
-            va="center",
-            fontsize=11,
+def render_image_class_recovery_table(dataset_batches: dict[str, list[Path]], table_root: Path) -> None:
+    summaries = []
+    for dataset_name in CLASS_RECOVERY_DATASETS:
+        batch_dirs = dataset_batches.get(dataset_name)
+        if not batch_dirs:
+            continue
+        scalars = final_checkpoint_rows(load_dataset_scalars(batch_dirs))
+        summary = summarize_source_metrics(
+            scalars,
+            "test_metrics",
+            ["dataset_preset", "model_label", "model_alpha"],
         )
-        fig.suptitle(dataset_title(dataset_name), y=0.98)
-        fig.tight_layout()
-        fig.savefig(output_path, bbox_inches="tight")
-        plt.close(fig)
+        metric_names = [metric_name for metric_name, _ in CLASS_RECOVERY_METRICS]
+        summary = summary[summary["metric_name"].isin(metric_names)].copy()
+        if not summary.empty:
+            summaries.append(summary)
+
+    if not summaries:
         return
-    fig, axes = plt.subplots(1, len(checkpoint_epochs), figsize=(2.8 * len(checkpoint_epochs), 2.8), sharex=True, sharey=True)
-    axes = [axes] if len(checkpoint_epochs) == 1 else list(axes)
-    for ax, checkpoint_epoch in zip(axes, checkpoint_epochs):
-        x_values = None
-        for model_label in models:
-            values_list = curves_by_epoch[checkpoint_epoch][model_label]
-            if not values_list:
-                continue
-            values = np.stack(values_list, axis=0)
-            x_values = np.arange(values.shape[1])
-            ax.plot(
-                x_values,
-                np.median(values, axis=0),
-                linewidth=LINE_WIDTH,
-                label=model_label,
-                alpha=0.8,
-                color=MODEL_COLORS.get(model_label, "tab:gray"),
+
+    summary = pd.concat(summaries, ignore_index=True)
+    row_labels = ordered_labels(summary["model_label"].dropna().unique())
+    col_names = [
+        f"{dataset_title(dataset_name)} {METRIC_LABELS[metric_name]}"
+        for dataset_name in CLASS_RECOVERY_DATASETS
+        if dataset_name in set(summary["dataset_preset"])
+        for metric_name, _ in CLASS_RECOVERY_METRICS
+    ]
+    table = pd.DataFrame("NA", index=row_labels, columns=col_names, dtype=object)
+
+    for dataset_name in CLASS_RECOVERY_DATASETS:
+        dataset_summary = summary[summary["dataset_preset"].eq(dataset_name)]
+        if dataset_summary.empty:
+            continue
+        for metric_name, higher_is_better in CLASS_RECOVERY_METRICS:
+            winners = best_parameter_rows(
+                dataset_summary,
+                metric_name,
+                ["model_label"],
+                higher_is_better=higher_is_better,
             )
-        ax.set_title(f"Checkpoint {checkpoint_epoch}")
-        ax.set_xlabel("Time trajectory")
-        if x_values is not None:
-            ax.set_xticks([0, x_values[-1]], ["data", "noise"])
-        ax.set_yscale("log")
-        ax.grid(alpha=0.2, which="both")
-    axes[0].set_ylabel("Jac. Spectral Norm")
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(2, len(labels)), frameon=False)
-    fig.suptitle(dataset_title(dataset_name), y=1.02)
-    fig.tight_layout(rect=(0, 0, 1, 0.9))
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
+            if winners.empty:
+                continue
+            best_idx = winners["median"].idxmax() if higher_is_better else winners["median"].idxmin()
+            best_label = winners.loc[best_idx, "model_label"]
+            col_name = f"{dataset_title(dataset_name)} {METRIC_LABELS[metric_name]}"
+            for _, row in winners.iterrows():
+                caption = ""
+                if not pd.isna(row.get("model_alpha")):
+                    caption = f"a={float(row['model_alpha']):.3g}"
+                table.loc[row["model_label"], col_name] = format_mean_std_latex(
+                    float(row["median"]),
+                    float(row["std"]),
+                    caption=caption,
+                    bold=row["model_label"] == best_label,
+                )
+
+    tex = dataframe_to_latex_table(
+        table,
+        caption="Image class recovery and class-histogram total variation on labeled image benchmarks. Higher is better for recovery; lower is better for TV.",
+        label="tab:bench-image-class-recovery",
+    )
+    save_text(table_root / "image_class_recovery.tex", tex)
 
 
 def render_dataset(
@@ -369,15 +371,6 @@ def render_dataset(
         label=f"tab:bench-{dataset_slug(dataset_name)}-performance",
     )
     save_text(table_root / f"{dataset_slug(dataset_name)}__performance.tex", perf_tex)
-
-    inspect_summary = summarize_source_metrics(scalars, "inspect", ["model_label", "model_alpha"])
-    inspect_table = build_metric_table(inspect_summary, INSPECT_TABLE_METRICS, row_labels)
-    inspect_tex = dataframe_to_latex_table(
-        inspect_table,
-        caption=f"{dataset_title(dataset_name)} inspection metrics. Lower is better for every metric.",
-        label=f"tab:bench-{dataset_slug(dataset_name)}-inspect",
-    )
-    save_text(table_root / f"{dataset_slug(dataset_name)}__inspect.tex", inspect_tex)
 
     test_evolution = summarize_source_metrics(scalars, "test_metrics", ["checkpoint_epoch", "model_label"])
     for metric_name in CURVE_METRICS:
@@ -401,17 +394,8 @@ def render_dataset(
             ylabel=METRIC_LABELS[metric_name],
         )
 
-    jacobian_curves, models, checkpoint_epochs = load_last_jacobian_curves(batch_dirs)
-    save_jacobian_curve_panels(
-        jacobian_curves,
-        models=models,
-        checkpoint_epochs=checkpoint_epochs,
-        dataset_name=dataset_name,
-        output_path=figure_root / f"{dataset_slug(dataset_name)}__jacobian_spectral_norm.pdf",
-    )
 
-
-def main() -> int:
+if __name__ == "__main__":
     args = parse_args()
     plt.rcParams.update(PRETTY_RCPARAMS)
     dataset_batches = discover_eval_batches(args.artifact_root)
@@ -429,8 +413,4 @@ def main() -> int:
             figure_root=args.figure_root,
         )
         print(f"[done] dataset={dataset_name} tables={args.table_root} figures={args.figure_root}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    render_image_class_recovery_table(dataset_batches, args.table_root)

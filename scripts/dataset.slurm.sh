@@ -41,16 +41,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -d "${SUBMIT_DIR}/src/genkit" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
+if [[ -d "${SUBMIT_DIR}/src/datakit" && -d "${SUBMIT_DIR}/src/genkit" && -d "${SUBMIT_DIR}/src/labkit" && -d "${SUBMIT_DIR}/benchmarks" ]]; then
   PROJECT_ROOT="${SUBMIT_DIR}"
-elif [[ -d "${SUBMIT_DIR}/../src/genkit" && -d "${SUBMIT_DIR}/../src/labkit" && -d "${SUBMIT_DIR}/../benchmarks" ]]; then
+elif [[ -d "${SUBMIT_DIR}/../src/datakit" && -d "${SUBMIT_DIR}/../src/genkit" && -d "${SUBMIT_DIR}/../src/labkit" && -d "${SUBMIT_DIR}/../benchmarks" ]]; then
   PROJECT_ROOT="$(cd -- "${SUBMIT_DIR}/.." && pwd)"
 else
   echo "[dataset-slurm] Could not infer project root from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
   exit 1
 fi
 
-VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv-genkit}"
+VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv}"
 DATASET_SCRIPT="${PROJECT_ROOT}/${DATASET_SCRIPT_REL}"
 
 if ! command -v module >/dev/null 2>&1; then
@@ -63,11 +63,11 @@ conda deactivate 2>/dev/null || true
 module load "${JZ_MODULE}"
 
 if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
-  if [[ -f "${PROJECT_ROOT}/.venv/bin/activate" ]]; then
-    VENV_DIR="${PROJECT_ROOT}/.venv"
+  if [[ -f "${PROJECT_ROOT}/.venv-genkit/bin/activate" ]]; then
+    VENV_DIR="${PROJECT_ROOT}/.venv-genkit"
   else
     echo "[dataset-slurm] Missing virtual environment." >&2
-    echo "[dataset-slurm] Expected: ${PROJECT_ROOT}/.venv-genkit (or ${PROJECT_ROOT}/.venv)" >&2
+    echo "[dataset-slurm] Expected: ${PROJECT_ROOT}/.venv (or ${PROJECT_ROOT}/.venv-genkit)" >&2
     echo "[dataset-slurm] Run setup first on login node:" >&2
     echo "  make setup" >&2
     exit 1

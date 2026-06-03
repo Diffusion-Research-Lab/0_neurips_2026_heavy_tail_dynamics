@@ -6,7 +6,7 @@ run:
 
 sweep:
   datasets:
-    - kddcup
+    - wildfires
   networks:
     - mlp
   models:
@@ -19,9 +19,9 @@ sweep:
     - standard
 
 datasets:
-  kddcup:
+  wildfires:
     kind: real
-    name: kddcup
+    name: wildfires
     params:
       n_samples: 50000
     split:

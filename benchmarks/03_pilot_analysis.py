@@ -47,7 +47,7 @@ MODEL_LABELS = {
 DATASET_SLUGS = {
     "alpha_stable_target": "alpha_stable_iso",
     "alpha_stable_mixture_target": "alpha_stable_mix",
-    "kddcup": "kddcup",
+    "wildfires": "wildfires",
     "cifar100_lt": "cifar100_lt",
     "imagenet_lt": "imagenet_lt",
     "hrrr": "hrrr",
@@ -90,11 +90,11 @@ def discover_family_batch(artifact_root: Path, family: str) -> Path:
     spec = FAMILY_SPECS[family]
     candidates = [
         path for path in artifact_root.glob(spec["batch_pattern"])
-        if path.is_dir() and any(term in path.name.lower() for term in spec["match_terms"])
+        if path.is_dir() and "pilot" in path.name.lower() and any(term in path.name.lower() for term in spec["match_terms"])
     ]
     if not candidates:
         raise FileNotFoundError(f"No evaluated pilot batch found for family={family!r} under {artifact_root}.")
-    return sorted(candidates)[-1]
+    return sorted(candidates, key=lambda path: (path.stat().st_mtime, path.name))[-1]
 
 
 def safe_read_yaml(path: Path) -> dict[str, Any] | None:
@@ -472,7 +472,7 @@ def write_bench_configs(recommendations_df: pd.DataFrame, bench_config_root: Pat
         write_yaml(output_path, config)
 
 
-def main() -> int:
+if __name__ == "__main__":
     args = parse_args()
     pilot_frame = load_batches(args.artifact_root)
     setting_summary = summarize_settings(pilot_frame)
@@ -487,8 +487,3 @@ def main() -> int:
 
     print(f"Loaded {pilot_frame['artifact_run_dir'].nunique()} evaluated pilot runs.")
     print(f"Wrote {len(recommendations_df)} per-dataset/model selections.")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
