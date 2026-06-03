@@ -1,12 +1,9 @@
-"""Metric functions module."""
+"""Evaluation metric helpers."""
 
 import torch
 __all__ = [
-    "fid",
     "mmd_rbf",
-    "mssle",
     "sliced_wasserstein",
-    "tail_coverage_curve",
     "tail_coverage_error",
 ]
 
@@ -53,49 +50,6 @@ def _median_heuristic_gamma(x_ref, x_gen):
     return float(0.5 / median_d2.clamp_min(torch.finfo(z.dtype).eps).item())
 
 
-def _feature_mean_and_covariance(x):
-    """Fit an empirical Gaussian model to feature samples."""
-    x = _to_2d_tensor(x)
-    mean = x.mean(dim=0)
-    centered = x - mean
-    denom = max(int(x.shape[0]) - 1, 1)
-    cov = centered.T @ centered / float(denom)
-    cov = 0.5 * (cov + cov.T)
-    return mean, cov
-
-
-def _matrix_sqrt_psd(mat):
-    """Stable symmetric square root for a PSD matrix."""
-    mat = 0.5 * (mat + mat.T)
-    eigvals, eigvecs = torch.linalg.eigh(mat)
-    eigvals = eigvals.clamp_min(0.0)
-    return (eigvecs * eigvals.sqrt().unsqueeze(0)) @ eigvecs.T
-
-
-def _frechet_gaussian_distance(mean_ref, cov_ref, mean_gen, cov_gen, eps=1e-6):
-    """Compute the Fréchet distance between two fitted Gaussian laws."""
-    if eps <= 0.0:
-        raise ValueError("eps must be strictly positive.")
-
-    mean_ref = _to_2d_tensor(mean_ref, dtype=torch.float64).reshape(-1)
-    mean_gen = _to_2d_tensor(mean_gen, device=mean_ref.device, dtype=mean_ref.dtype).reshape(-1)
-    cov_ref = _to_2d_tensor(cov_ref, device=mean_ref.device, dtype=mean_ref.dtype)
-    cov_gen = _to_2d_tensor(cov_gen, device=mean_ref.device, dtype=mean_ref.dtype)
-    if cov_ref.shape != cov_gen.shape:
-        raise ValueError("cov_ref and cov_gen must have the same shape.")
-
-    eye = torch.eye(cov_ref.shape[0], device=cov_ref.device, dtype=cov_ref.dtype)
-    cov_ref = 0.5 * (cov_ref + cov_ref.T) + float(eps) * eye
-    cov_gen = 0.5 * (cov_gen + cov_gen.T) + float(eps) * eye
-
-    cov_ref_sqrt = _matrix_sqrt_psd(cov_ref)
-    middle = cov_ref_sqrt @ cov_gen @ cov_ref_sqrt
-    middle_sqrt = _matrix_sqrt_psd(middle)
-    mean_diff = mean_ref - mean_gen
-    score = mean_diff.dot(mean_diff) + torch.trace(cov_ref + cov_gen - 2.0 * middle_sqrt)
-    return float(score.clamp_min(0.0).item())
-
-
 def _default_tail_probs(n, *, device, dtype, min_exceedances=10):
     """Choose a small default tail-probability grid with enough exceedances."""
     if n < 2:
@@ -108,48 +62,6 @@ def _default_tail_probs(n, *, device, dtype, min_exceedances=10):
     if probs.numel() == 0:
         probs = torch.tensor([p_min], device=device, dtype=dtype)
     return probs
-
-
-def fid(x_ref, x_gen, eps=1e-6):
-    """Compute a Gaussian Fréchet distance between two feature samples."""
-    x_ref = _to_2d_tensor(x_ref)
-    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
-    _validate_same_feature_dim(x_ref, x_gen)
-    if x_ref.shape[0] < 2 or x_gen.shape[0] < 2:
-        raise ValueError("fid requires at least two samples in each input.")
-
-    mean_ref, cov_ref = _feature_mean_and_covariance(x_ref)
-    mean_gen, cov_gen = _feature_mean_and_covariance(x_gen)
-    return _frechet_gaussian_distance(mean_ref, cov_ref, mean_gen, cov_gen, eps=eps)
-
-
-def mssle(x_ref, x_gen, scale=1.0, reduction="mean"):
-    """Compute SSLE on rank-aligned samples or quantile curves."""
-    x_ref = _to_2d_tensor(x_ref)
-    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
-    _validate_same_feature_dim(x_ref, x_gen)
-    n_points = min(int(x_ref.shape[0]), int(x_gen.shape[0]))
-    if n_points < 2:
-        raise ValueError("aligned order statistics require at least two samples in each input.")
-    if x_ref.shape[0] == x_gen.shape[0]:
-        x_ref = torch.sort(x_ref, dim=0).values
-        x_gen = torch.sort(x_gen, dim=0).values
-    else:
-        p = torch.linspace(0.0, 1.0, n_points, device=x_ref.device, dtype=x_ref.dtype)
-        x_ref = torch.quantile(x_ref, p, dim=0)
-        x_gen = torch.quantile(x_gen, p, dim=0)
-
-    g_ref = torch.sign(x_ref) * torch.log1p(torch.abs(x_ref) / float(scale))
-    g_gen = torch.sign(x_gen) * torch.log1p(torch.abs(x_gen) / float(scale))
-    errors = (g_ref - g_gen).pow(2).mean(dim=0)
-
-    if reduction == "mean":
-        return float(errors.mean().item())
-    if reduction == "sum":
-        return float(errors.sum().item())
-    if reduction == "none":
-        return errors
-    raise ValueError("reduction must be one of {'mean', 'sum', 'none'}.")
 
 
 def mmd_rbf(x_ref, x_gen, gamma=None, estimator="biased"):
@@ -205,7 +117,7 @@ def sliced_wasserstein(x_ref, x_gen, n_projections=128, n_grid=1000, eps=1e-12, 
     return float(torch.trapz((q_ref - q_gen).pow(2), q, dim=0).mean().item())
 
 
-def tail_coverage_curve(x_ref, x_gen, probs=None, tail="upper", min_exceedances=10):
+def _tail_coverage_curve(x_ref, x_gen, probs=None, tail="upper", min_exceedances=10):
     """Tail exceedance calibration at reference thresholds."""
     x_ref = _to_2d_tensor(x_ref)
     x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
@@ -236,8 +148,8 @@ def tail_coverage_curve(x_ref, x_gen, probs=None, tail="upper", min_exceedances=
 
 def tail_coverage_error(x_ref, x_gen, probs=None, tail="upper", min_exceedances=10, mode="log", reduction="mean", eps=1e-12):
     """Aggregate marginal tail-coverage mismatch over tail probabilities and features."""
-    _, ref_cov, gen_cov = tail_coverage_curve(x_ref, x_gen, probs=probs, tail=tail,
-                                              min_exceedances=min_exceedances)
+    _, ref_cov, gen_cov = _tail_coverage_curve(x_ref, x_gen, probs=probs, tail=tail,
+                                               min_exceedances=min_exceedances)
 
     if mode == "log":
         err = (torch.log(gen_cov + float(eps)) - torch.log(ref_cov + float(eps))).abs()

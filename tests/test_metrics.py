@@ -2,61 +2,8 @@
 
 import pytest
 import torch
-from genkit.metrics import fid, mmd_rbf, mssle, sliced_wasserstein, tail_coverage_error
+from genkit.metrics import mmd_rbf, sliced_wasserstein, tail_coverage_error
 from .utils import _devices
-
-
-@pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_fid_zero_for_identical_samples(device, dtype):
-    torch.manual_seed(0)
-    x = torch.randn(1024, 3, device=device, dtype=dtype)
-
-    score = fid(x, x)
-
-    assert isinstance(score, float)
-    assert score == pytest.approx(0.0, abs=1e-10)
-
-
-@pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_fid_matches_squared_mean_shift_for_translated_samples(device, dtype):
-    torch.manual_seed(0)
-    x = torch.randn(4096, 4, device=device, dtype=dtype)
-    shift = torch.tensor([2.0, -1.0, 0.5, 0.0], device=device, dtype=dtype)
-    y = x + shift
-
-    score = fid(x, y)
-    expected = float((shift * shift).sum().item())
-
-    assert isinstance(score, float)
-    assert score == pytest.approx(expected, rel=5e-2, abs=5e-2)
-
-
-@pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_fid_detects_covariance_mismatch(device, dtype):
-    torch.manual_seed(0)
-    x = torch.randn(4096, 2, device=device, dtype=dtype)
-    y = 2.0 * x
-
-    score = fid(x, y)
-
-    assert isinstance(score, float)
-    assert score > 0.0
-
-
-@pytest.mark.parametrize("device", _devices())
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_mssle_is_zero_for_permuted_identical_empirical_samples(device, dtype):
-    torch.manual_seed(0)
-    x = torch.randn(1024, 3, device=device, dtype=dtype)
-    y = x[torch.randperm(x.shape[0], device=device)]
-
-    score = mssle(x, y)
-
-    assert isinstance(score, float)
-    assert score == pytest.approx(0.0, abs=1e-12)
 
 
 @pytest.mark.parametrize("device", _devices())

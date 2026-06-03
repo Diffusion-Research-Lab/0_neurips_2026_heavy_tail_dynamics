@@ -1,1 +1,1 @@
-"""Unittests module."""
+"""Test package marker."""

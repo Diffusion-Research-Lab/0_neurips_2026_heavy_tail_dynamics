@@ -6,7 +6,7 @@ import textwrap
 import pytest
 import torch
 from labkit.config import load_config, parse_dtype, parse_idtype
-from labkit.report import format_mean_std_latex, summarize_metric_values, to_latex_sci
+from labkit.report import format_mean_std_latex
 from labkit.utils import get_device, set_seed
 
 
@@ -105,13 +105,6 @@ def test_load_config_rejects_unknown_authors_root_mode(tmp_path):
 
 
 def test_report_helpers_format_compact_scientific_strings():
-    stats = summarize_metric_values([1.0, 2.0, 3.0])
-    assert stats["mean"] == pytest.approx(2.0)
-    assert stats["std"] == pytest.approx((2.0 / 3.0) ** 0.5)
-
-    assert to_latex_sci(0.0123) == r"1.23\,10^{-2}"
-    assert to_latex_sci(2.5) == "2.50"
-
     plain = format_mean_std_latex(2.5, 0.0)
     captioned = format_mean_std_latex(1.23e-3, 4.56e-4, caption="S", bold=True)
     assert plain == r"$2.50$"

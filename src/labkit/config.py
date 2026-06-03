@@ -1,4 +1,4 @@
-"""Configuration toolkit module."""
+"""Configuration parsing helpers."""
 
 import os
 import copy
@@ -93,18 +93,11 @@ def _materialize_specials(x: Any, *, dtype: torch.dtype) -> Any:
 
 
 class Config:
-    """
-    Experimental configuration.
-    """
+    """Experimental configuration namespace."""
+
     def __init__(self, data: Dict[str, Any]):
         for k, v in data.items():
             setattr(self, k, Config(v) if isinstance(v, dict) else v)
-
-    def as_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        for k, v in self.__dict__.items():
-            out[k] = v.as_dict() if isinstance(v, Config) else v
-        return out
 
     def set_up(self) -> None:
         if hasattr(self, "AUTHORS_ROOT") and hasattr(self, "authors_root_env_var"):
@@ -119,9 +112,7 @@ class Config:
 
 
 def load_config(path: Union[str, Path], defaults: Dict[str, Any] = DEFAULTS) -> Config:
-    """
-    Load an experimental configuration.
-    """
+    """Load an experimental configuration."""
     path = Path(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     merged = _deep_merge(defaults, raw)

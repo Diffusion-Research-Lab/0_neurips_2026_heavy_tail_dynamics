@@ -1,4 +1,4 @@
-"""Inspect module unittests."""
+"""Tests for model inspection utilities."""
 
 import importlib.util
 import numpy as np

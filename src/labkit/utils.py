@@ -1,4 +1,4 @@
-"""Utility functions for diffusion model experiments."""
+"""General lab utility helpers."""
 
 import random
 import numpy as np

@@ -1,6 +1,7 @@
 """Reporting helpers for tables, figures, and LaTeX-ready strings."""
 
 import numpy as np
+
 PRETTY_RCPARAMS = {
     "font.family": "serif",
     "font.serif": ["Times New Roman", "STIXGeneral", "DejaVu Serif"],
@@ -39,16 +40,7 @@ PRETTY_RCPARAMS = {
 }
 
 
-def summarize_metric_values(values: list[float]) -> dict[str, float | list[float]]:
-    """Return mean and population standard deviation for a list of scalars."""
-    values = [float(v) for v in values]
-    n_values = max(len(values), 1)
-    mean = float(sum(values) / n_values)
-    std = float((sum((value - mean) ** 2 for value in values) / n_values) ** 0.5)
-    return {"values": values, "mean": mean, "std": std}
-
-
-def to_latex_sci(x: float, digits: int = 2) -> str:
+def _to_latex_sci(x: float, digits: int = 2) -> str:
     """Format a scalar in compact LaTeX scientific notation."""
     if not np.isfinite(x):
         return str(x)
@@ -63,10 +55,10 @@ def to_latex_sci(x: float, digits: int = 2) -> str:
 
 def format_mean_std_latex(mean: float, std: float, caption: str = "", bold: bool = False) -> str:
     """Format a mean-plus-std pair as a LaTeX mathtext string."""
-    mean_str = to_latex_sci(mean, digits=2)
+    mean_str = _to_latex_sci(mean, digits=2)
     core = rf"\mathbf{{{mean_str}}}" if bold else mean_str
     if not np.isclose(std, 0.0):
-        std_str = to_latex_sci(std, digits=2)
+        std_str = _to_latex_sci(std, digits=2)
         core = rf"{core}_{{\pm {std_str}}}"
     if caption:
         core = rf"\underset{{\mathrm{{{caption}}}}}{{{core}}}"
