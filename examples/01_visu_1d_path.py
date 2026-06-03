@@ -10,11 +10,13 @@ from genkit import DDPMV, GaussianFlowLinear, DLPMEps
 from genkit.datasets import fetch_synthetic_data
 from genkit.nn import MLPModel
 from genkit.training import train
-from genkit.utils import format_duration
 from labkit.report import PRETTY_RCPARAMS
+
 plt.rcParams.update(PRETTY_RCPARAMS)
 
 
+####################################################################################################
+# Main
 if __name__ == "__main__":
 
     t0 = time.time()
@@ -36,22 +38,10 @@ if __name__ == "__main__":
     fdtype = torch.float32
     idtype = torch.int32
 
-    x_train, x_val, x_test = fetch_synthetic_data(
-        "alpha_stable",
-        alpha=alpha,
-        n_samples=n_samples,
-        dim=dim,
-        device=device,
-        dtype=fdtype,
-    )
-    print(
-        "1D path visualization"
-        f" | device={device}"
-        f" | n_samples={n_samples}"
-        f" | n_steps={n_steps}"
-        f" | batch_size={batch_size}"
-        f" | n_epochs={n_epochs}"
-    )
+    x_train, x_val, x_test = fetch_synthetic_data("alpha_stable", alpha=alpha, n_samples=n_samples,
+                                                  dim=dim, device=device, dtype=fdtype)
+    print("[INFO] 1D path visualization | device={device} | n_samples={n_samples} | n_steps={n_steps}"
+          f" | batch_size={batch_size} | n_epochs={n_epochs}")
 
     train_kwargs = dict(target_data=x_train, batch_size=batch_size, n_epochs=n_epochs,
                         num_workers=0, lr=lr, device=device)
@@ -63,23 +53,18 @@ if __name__ == "__main__":
 
     trained_generators = {}
     for title, model_cls, color, extra_kwargs in model_specs:
-        print(f"[TRAIN] {title} | epochs={n_epochs} | batch_size={batch_size} | lr={lr:.1e}")
+        print(f"[INFO] Train {title} | epochs={n_epochs} | batch_size={batch_size} | lr={lr:.1e}")
         net = MLPModel(input_dim=dim, **net_kwargs).to(device=device, dtype=fdtype)
-        generator = model_cls(
-            net=net,
-            dim=dim,
-            n_steps=n_steps,
-            device=device,
-            fdtype=fdtype,
-            idtype=idtype,
-            **extra_kwargs,
-        )
+        generator = model_cls(net=net, dim=dim, n_steps=n_steps, device=device, fdtype=fdtype,
+                              idtype=idtype, **extra_kwargs)
         generator, _ = train(generative_model=generator, **train_kwargs)
         trained_generators[title] = {"generator": generator, "color": color}
 
     figures_dir = Path("_figures")
     figures_dir.mkdir(parents=True, exist_ok=True)
 
+####################################################################################################
+# Plotting
     fig = plt.figure(figsize=(4.5, 3.5 * len(model_specs)), dpi=150)
     outer = fig.add_gridspec(len(model_specs), 1, hspace=0.45)
 
@@ -122,6 +107,8 @@ if __name__ == "__main__":
             hist_ax.tick_params(axis="both", left=False, bottom=False, labelleft=False, labelbottom=False)
 
     fig.tight_layout()
+
     filepath = figures_dir / "visu_1d_path.pdf"
     fig.savefig(filepath)
-    print(f"saved={filepath} | total={format_duration(time.time() - t0)}")
+
+    print(f"[INFO] saved={filepath} | total={time.time() - t0:.1f}s")

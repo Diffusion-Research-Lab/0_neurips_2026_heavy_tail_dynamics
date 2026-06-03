@@ -29,7 +29,7 @@ To reproduce the NeurIPS 2026 paper results, see `benchmarks/README.md`.
 
 ```python
 from genkit.datasets import fetch_synthetic_data
-from genkit.flow import GaussianFlowLinear
+from genkit.flow_matching import GaussianFlowLinear
 from genkit.nn import MLPModel
 from genkit.training import train
 
@@ -55,4 +55,17 @@ generator, _stats_ = train(
 
 x_gen = generator.sample(n_samples=2048)
 print(x_gen.shape)
+```
+
+### Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@article{cherkaoui2026heavy,
+  title={Do Heavy Tails Help Diffusion? On the Subtle Trade-off Between Initialization and Training},
+  author={Cherkaoui, Hamza and Halconruy, H{\'e}l{\`e}ne and Ocello, Antonio},
+  journal={arXiv preprint arXiv:2605.13175},
+  year={2026}
+}
 ```
