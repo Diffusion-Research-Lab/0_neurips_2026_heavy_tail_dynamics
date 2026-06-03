@@ -148,7 +148,7 @@ class VESDE:
 """
     losses_body = """
 import torch
-from genkit.utils import cosine_schedule
+from genkit._schedules import cosine_schedule
 
 
 def get_sde_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=False, eps=1e-3):
@@ -176,7 +176,7 @@ def get_sde_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_we
 """
     sampling_body = """
 import torch
-from genkit.utils import cosine_schedule
+from genkit._schedules import cosine_schedule
 
 
 class ReverseDiffusionPredictor:

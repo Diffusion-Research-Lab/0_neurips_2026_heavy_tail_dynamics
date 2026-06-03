@@ -1,13 +1,43 @@
-"""Diffusion module."""
+"""Diffusion and DLPM model definitions."""
 
 import warnings
 import torch
-from ._abs import Base, DDPMAbstarct
-from ._sampling import sample_scaled_scalar_alpha_stable
-from .utils import cosine_schedule
+from ._abs import Base, DDPMAbstract
+from ._noise import sample_scaled_scalar_alpha_stable
+from ._schedules import cosine_schedule
 
 
-class DDPMV(DDPMAbstarct):
+class DDPMEps(DDPMAbstract):
+    """DDPM with eps-prediction parameterization."""
+    _family = "diffusion"
+    _loss_tag = "mse"
+
+    def _loss_fn(self, eps_hat: torch.Tensor, eps: torch.Tensor, t: torch.Tensor):
+        """Return unreduced epsilon-prediction losses for a DDPM batch."""
+        return torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
+
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Evaluate epsilon-prediction losses on noisy DDPM latents."""
+        _, x_t, eps, t_norm, t_idx, _ = self._latent(x_1=x, eps=z, t=t)
+
+        eps_hat = self._net(x_t, t_norm)
+        if eps.shape != eps_hat.shape:
+            raise ValueError(
+                f"Shape mismatch: eps has shape {tuple(eps.shape)} but eps_hat has shape {tuple(eps_hat.shape)}."
+            )
+
+        return self._loss_fn(eps_hat, eps, t_idx)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: int = None) -> torch.Tensor:
+        """Compute the reduced DDPM epsilon-prediction training loss."""
+        return self._reduce(self._loss(x=x, z=z, t=t))
+
+    def _get_eps_hat(self, x: torch.Tensor, t_norm: torch.Tensor, t_idx: int) -> torch.Tensor:
+        """Return direct epsilon predictions for sampling."""
+        return self._net(x, t_norm)
+
+
+class DDPMV(DDPMAbstract):
     """DDPM with v-prediction parameterization."""
     _family = "diffusion"
     _loss_tag = "mse"
@@ -39,7 +69,7 @@ class DDPMV(DDPMAbstarct):
         return torch.sqrt(1.0 - self._alpha_bar[t_idx]) * x + torch.sqrt(self._alpha_bar[t_idx]) * self._net(x, t_norm)
 
 
-class DDPMX0(DDPMAbstarct):
+class DDPMX0(DDPMAbstract):
     """DDPM with x0-prediction parameterization."""
     _family = "diffusion"
     _loss_tag = "mse"
@@ -71,7 +101,7 @@ class DDPMX0(DDPMAbstarct):
 
 
 class DLPMEps(Base):
-    """DLPM (epsilon/noise prediction) with a fixed beta schedule (variance-preserving)."""
+    """DLPM with eps-prediction parameterization."""
     _family = "diffusion"
     _loss_tag = "sqrt_mse"
 
@@ -88,10 +118,14 @@ class DLPMEps(Base):
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = 'cpu',
+        sampler: str = "native",
     ):
         """Initialize the native DLPM epsilon model and its stable-noise schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
                          fdtype=fdtype, idtype=idtype, device=device)
+        self._sampler = sampler
+        if self._sampler != "native":
+            raise ValueError(f"DLPMEps only supports sampler='native', got {self._sampler!r}.")
 
         self._a = float(alpha)
         if not (0.0 < self._a <= 2.0):
@@ -194,10 +228,10 @@ class DLPMEps(Base):
         else:  # if t is given
             t = self._check_t(t, self._n)
 
-        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                                          # (_n_trial_A * _n_trial_G * n,)
-        t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)                                  # (_n_trial_A * _n_trial_G * n, 1)
+        t_e = self._expand(t.view(1, 1, self._n)).reshape(-1)                                       # (_n_trial_A * _n_trial_G * n,)
+        t_norm = self._expand((t / self._n_steps).view(1, 1, self._n)).reshape(-1, 1)               # (_n_trial_A * _n_trial_G * n, 1)
 
-        eps = self._sample_source_default(self._n, expand_trials=True)                                                 # (_n_trial_A * _n_trial_G * n, dim)
+        eps = self._sample_source_default(self._n, expand_trials=True)                              # (_n_trial_A * _n_trial_G * n, dim)
 
         x_1_e = x_1.view(1, 1, self._n, *self._sample_shape).expand(
             self._n_trial_A,

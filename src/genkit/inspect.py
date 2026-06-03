@@ -9,9 +9,9 @@ import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
 from hmmlearn.hmm import GaussianHMM
-from ._abs import DDPMAbstarct
+from ._abs import DDPMAbstract
 from .diffusion import DLPMEps, DDPMV, DDPMX0
-from .flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+from .flow_matching import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
 __all__ = [
     "model_est_err_curve",
     "model_est_jacobian_spectral_curve",
@@ -87,7 +87,7 @@ def _sample_forward_marginal(model, x_data: torch.Tensor, n_samples: int, t=None
     idx = torch.randint(x_data.shape[0], (n_samples,), device=x_data.device)
     x1 = x_data.index_select(0, idx).to(device=model._device, dtype=model._fdtype)
 
-    if isinstance(model, DDPMAbstarct):
+    if isinstance(model, DDPMAbstract):
         t = model._n_steps if t is None else t
         _, x_t, _, _, _, _ = model._latent(x_1=x1, t=t)
         return x_t

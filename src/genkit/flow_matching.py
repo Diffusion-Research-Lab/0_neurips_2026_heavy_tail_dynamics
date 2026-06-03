@@ -1,4 +1,4 @@
-"""Flow module."""
+"""Flow-matching models."""
 
 import numpy as np
 import torch
@@ -57,11 +57,28 @@ class GaussianFlowOT(GaussianFlowAbstract):
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
+        sampler: str = "heun",
+        schedule: str = "linear",
+        sample_steps: int | None = None,
+        image_seq_len: int | None = None,
+        base_shift: float = 0.5,
+        max_shift: float = 1.15,
+        base_image_seq_len: int = 256,
+        max_image_seq_len: int = 4096,
+        atol: float = 1e-3,
+        rtol: float = 1e-3,
+        h_init: float | None = None,
+        h_min: float = 1e-4,
+        h_max: float = 0.1,
     ):
         """Initialize the OT-style Gaussian flow with a minimum variance floor."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
                          base_or_sample=base_or_sample, sigma_max=sigma_max, fdtype=fdtype,
-                         idtype=idtype, device=device)
+                         idtype=idtype, device=device, sampler=sampler, schedule=schedule,
+                         sample_steps=sample_steps, image_seq_len=image_seq_len, base_shift=base_shift,
+                         max_shift=max_shift, base_image_seq_len=base_image_seq_len,
+                         max_image_seq_len=max_image_seq_len, atol=atol, rtol=rtol,
+                         h_init=h_init, h_min=h_min, h_max=h_max)
 
         if not (0.0 < sigma_min < 1.0):
             raise ValueError("`sigma_min` must be in (0,1).")
@@ -115,11 +132,28 @@ class GaussianFlowDDPM(GaussianFlowAbstract):
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
+        sampler: str = "heun",
+        schedule: str = "linear",
+        sample_steps: int | None = None,
+        image_seq_len: int | None = None,
+        base_shift: float = 0.5,
+        max_shift: float = 1.15,
+        base_image_seq_len: int = 256,
+        max_image_seq_len: int = 4096,
+        atol: float = 1e-3,
+        rtol: float = 1e-3,
+        h_init: float | None = None,
+        h_min: float = 1e-4,
+        h_max: float = 0.1,
     ):
         """Initialize the VP-inspired Gaussian flow and its cosine schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
                          base_or_sample=base_or_sample, sigma_max=sigma_max, fdtype=fdtype,
-                         idtype=idtype, device=device)
+                         idtype=idtype, device=device, sampler=sampler, schedule=schedule,
+                         sample_steps=sample_steps, image_seq_len=image_seq_len, base_shift=base_shift,
+                         max_shift=max_shift, base_image_seq_len=base_image_seq_len,
+                         max_image_seq_len=max_image_seq_len, atol=atol, rtol=rtol,
+                         h_init=h_init, h_min=h_min, h_max=h_max)
 
         self._s0 = float(cosine_s)
 

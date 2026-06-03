@@ -1,14 +1,13 @@
-"""Diffusion module."""
+"""Base classes for diffusion and flow-matching models."""
 
 import math
 import torch
-from .utils import cosine_schedule
+from ._schedules import build_flow_timesteps, cosine_schedule
+from ._solvers import sample_ddim, sample_ddpm, sample_flow, sample_flow_adaptive_heun
 
 
 class Base:
     """Common base class for native generative models.
-
-    It stores shared dtype, device, sampling, and timestep utilities.
     """
 
     def __init__(
@@ -113,7 +112,7 @@ class Base:
         raise TypeError(f"Unsupported type for 't': {type(t).__name__}.")
 
 
-class DDPMAbstarct(Base):
+class DDPMAbstract(Base):
     """DDPM abstract."""
 
     def __init__(
@@ -126,6 +125,9 @@ class DDPMAbstarct(Base):
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = 'cpu',
+        sampler: str = "ddpm",
+        sample_steps: int | None = None,
+        eta: float = 0.0,
     ):
         """Build the shared DDPM coefficients and posterior schedule."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
@@ -134,6 +136,15 @@ class DDPMAbstarct(Base):
         if float(sigma_max) <= 0.0:
             raise ValueError(f"sigma_max must be positive, got {sigma_max}.")
         self._sigma_max = float(sigma_max)
+        self._sampler = sampler
+        if self._sampler not in {"ddpm", "ddim"}:
+            raise ValueError(f"Unknown DDPM sampler {self._sampler!r}; expected 'ddpm' or 'ddim'.")
+        self._sample_steps = None if sample_steps is None else int(sample_steps)
+        if self._sample_steps is not None and not (1 <= self._sample_steps <= self._n_steps):
+            raise ValueError(f"sample_steps must be in [1, {self._n_steps}], got {sample_steps}.")
+        self._eta = float(eta)
+        if self._eta < 0.0:
+            raise ValueError(f"eta must be non-negative, got {eta}.")
 
         self._alpha_bar, self._alphas, self._betas, self._sqrt_post_var = cosine_schedule(n_steps,
                                                                                           device,
@@ -176,37 +187,25 @@ class DDPMAbstarct(Base):
         return loss_values.mean()
 
     @torch.no_grad()
-    def _sample(self, n_samples: int) -> torch.Tensor:
-        """Run the reverse DDPM chain and collect intermediate states."""
-        self._net.eval()
-
-        x = self._sample_source(n_samples)
-        l_x = [x]
-
-        for t in range(1, self._n_steps + 1)[::-1]:
-
-            t_idx = t - 1
-            t_norm = torch.full((n_samples, 1), t / self._n_steps, device=self._device, dtype=self._fdtype)
-
-            eps_hat = self._get_eps_hat(x, t_norm, t_idx)
-
-            x = (x - self._betas[t_idx] / torch.sqrt(1.0 - self._alpha_bar[t_idx]) * eps_hat) / torch.sqrt(self._alphas[t_idx])
-            if t > 1:
-                x = x + self._sigma_max * self._sqrt_post_var[t_idx] * torch.randn_like(x)
-
-            l_x.append(x)
-
-        return x, l_x
+    def _sample(
+        self,
+        n_samples: int,
+        return_trajectory: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        """Dispatch to a native DDPM inference sampler."""
+        if self._sampler == "ddpm":
+            return sample_ddpm(self, n_samples, return_trajectory=return_trajectory)
+        return sample_ddim(self, n_samples, n_steps=self._sample_steps, eta=self._eta, return_trajectory=return_trajectory)
 
     @torch.no_grad()
     def sample(self, n_samples: int) -> torch.Tensor:
         """Generate samples by running the reverse DDPM process."""
-        x, _ = self._sample(n_samples)
+        x, _ = self._sample(n_samples, return_trajectory=False)
         return x
 
 
 class FlowAbstract(Base):
-    """Abstract source flow (Flow Matching)."""
+    """Abstract Flow Matching."""
 
     def __init__(
         self,
@@ -219,6 +218,19 @@ class FlowAbstract(Base):
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
+        sampler: str = "heun",
+        schedule: str = "linear",
+        sample_steps: int | None = None,
+        image_seq_len: int | None = None,
+        base_shift: float = 0.5,
+        max_shift: float = 1.15,
+        base_image_seq_len: int = 256,
+        max_image_seq_len: int = 4096,
+        atol: float = 1e-3,
+        rtol: float = 1e-3,
+        h_init: float | None = None,
+        h_min: float = 1e-4,
+        h_max: float = 0.1,
     ):
         """Initialize a continuous-time flow model on a bounded time interval."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, base_or_sample=base_or_sample,
@@ -228,6 +240,35 @@ class FlowAbstract(Base):
         self._t_max = float(t_max)
         if not (0.0 <= self._t_min < self._t_max <= 1.0):
             raise ValueError(f"Need 0 <= t_min < t_max <= 1, got {self._t_min}, {self._t_max}")
+
+        self._sampler = sampler
+        if self._sampler not in {"euler", "heun", "rk4", "adaptive_heun"}:
+            raise ValueError(f"Unknown flow sampler {self._sampler!r}.")
+
+        self._schedule = schedule
+        if self._schedule not in {"linear", "quadratic", "flux_shifted"}:
+            raise ValueError(f"Unknown flow timestep schedule {self._schedule!r}.")
+
+        self._sample_steps = self._n_steps if sample_steps is None else int(sample_steps)
+        if self._sample_steps < 1:
+            raise ValueError(f"sample_steps must be at least 1, got {sample_steps}.")
+        self._schedule_kwargs = {}
+        if self._schedule == "flux_shifted":
+            if image_seq_len is None:
+                raise ValueError("image_seq_len is required for schedule='flux_shifted'.")
+            self._schedule_kwargs = {
+                "image_seq_len": int(image_seq_len),
+                "base_shift": float(base_shift),
+                "max_shift": float(max_shift),
+                "base_image_seq_len": int(base_image_seq_len),
+                "max_image_seq_len": int(max_image_seq_len),
+            }
+
+        self._atol = float(atol)
+        self._rtol = float(rtol)
+        self._h_init = h_init
+        self._h_min = float(h_min)
+        self._h_max = float(h_max)
 
     def _t(self, n_samples):
         """Draw random continuous times in the configured training interval."""
@@ -299,41 +340,48 @@ class FlowAbstract(Base):
         return x_0, x_1, t
 
     @torch.no_grad()
-    def _sample(self, n_samples: int) -> torch.Tensor:
-        """Integrate the learned velocity field and keep the full trajectory."""
+    def _sample(
+        self,
+        n_samples: int,
+        return_trajectory: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        """Dispatch to a flow inference schedule and ODE solver."""
         self._net.eval()
-
         x = self._sample_source(n_samples)
-        l_x = [x]
+        if self._sampler == "adaptive_heun":
+            return sample_flow_adaptive_heun(
+                self._net,
+                x,
+                t_min=self._t_min,
+                t_max=self._t_max,
+                atol=self._atol,
+                rtol=self._rtol,
+                h_init=self._h_init,
+                h_min=self._h_min,
+                h_max=self._h_max,
+                return_trajectory=return_trajectory,
+            )
 
-        t0, t1 = self._t_min, self._t_max
-        dt = (t1 - t0) / float(self._n_steps)
-        t = torch.full((n_samples, 1), t0, device=self._device, dtype=self._fdtype)
-
-        for _ in range(self._n_steps):
-            v0 = self._net(x, t)
-
-            t_next = (t + dt).clamp_max(t1)
-            x_euler = x + dt * v0
-
-            v1 = self._net(x_euler, t_next)
-
-            x = x + 0.5 * dt * (v0 + v1)
-            t = t_next
-
-            l_x.append(x)
-
-        return x, l_x
+        timesteps = build_flow_timesteps(
+            schedule=self._schedule,
+            n_steps=self._sample_steps,
+            t_min=self._t_min,
+            t_max=self._t_max,
+            device=self._device,
+            dtype=self._fdtype,
+            **self._schedule_kwargs,
+        )
+        return sample_flow(self._net, x, timesteps, sampler=self._sampler, return_trajectory=return_trajectory)
 
     @torch.no_grad()
     def sample(self, n_samples: int) -> torch.Tensor:
         """Generate samples by integrating the learned flow field."""
-        x, _ = self._sample(n_samples)
+        x, _ = self._sample(n_samples, return_trajectory=False)
         return x
 
 
 class GaussianFlowAbstract(FlowAbstract):
-    """Abstract Gaussian source flow (Flow Matching)."""
+    """Abstract Gaussian Flow Matching."""
 
     def __init__(
         self,
@@ -347,11 +395,27 @@ class GaussianFlowAbstract(FlowAbstract):
         fdtype: torch.dtype = torch.float32,
         idtype: torch.dtype = torch.int32,
         device: torch.device = "cpu",
+        sampler: str = "heun",
+        schedule: str = "linear",
+        sample_steps: int | None = None,
+        image_seq_len: int | None = None,
+        base_shift: float = 0.5,
+        max_shift: float = 1.15,
+        base_image_seq_len: int = 256,
+        max_image_seq_len: int = 4096,
+        atol: float = 1e-3,
+        rtol: float = 1e-3,
+        h_init: float | None = None,
+        h_min: float = 1e-4,
+        h_max: float = 0.1,
     ):
         """Initialize a Gaussian-source flow with a configurable source scale."""
         super().__init__(net=net, dim=dim, n_steps=n_steps, t_min=t_min, t_max=t_max,
                          base_or_sample=base_or_sample, fdtype=fdtype, idtype=idtype,
-                         device=device)
+                         device=device, sampler=sampler, schedule=schedule, sample_steps=sample_steps,
+                         image_seq_len=image_seq_len, base_shift=base_shift, max_shift=max_shift,
+                         base_image_seq_len=base_image_seq_len, max_image_seq_len=max_image_seq_len,
+                         atol=atol, rtol=rtol, h_init=h_init, h_min=h_min, h_max=h_max)
 
         if float(sigma_max) <= 0.0:
             raise ValueError(f"sigma_max must be positive, got {sigma_max}.")

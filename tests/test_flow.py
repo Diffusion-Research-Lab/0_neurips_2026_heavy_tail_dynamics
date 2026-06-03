@@ -1,14 +1,21 @@
-"""Flow module timestep tests."""
+"""Tests for flow-matching models and samplers."""
 
 import pytest
 import torch
-from genkit.flow import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+from genkit._schedules import flux_shifted_timesteps
+from genkit.flow_matching import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
 from .utils import _devices
 
 
 class _ZeroNet(torch.nn.Module):
     def forward(self, x, t):
         return torch.zeros_like(x)
+
+
+class _OnesNet(torch.nn.Module):
+    def forward(self, x, t):
+        assert t.shape == (x.size(0), 1)
+        return torch.ones_like(x)
 
 
 def _assert_finite_loss(model_cls, *, t, device, dtype, **kwargs):
@@ -104,3 +111,97 @@ def test_gaussian_flow_latent_x0_shape_mismatch_raises():
     x0 = torch.randn(4, 3)  # wrong dim
     with pytest.raises(ValueError, match="x0"):
         m._latent(x1, x_0=x0)
+
+
+@pytest.mark.parametrize("sampler", ["euler", "heun", "rk4"])
+def test_gaussian_flow_sample_dispatches_named_samplers(sampler):
+    base = torch.zeros(2, dtype=torch.float32)
+    model = GaussianFlowLinear(
+        net=_OnesNet(),
+        dim=2,
+        n_steps=4,
+        t_min=0.0,
+        t_max=1.0,
+        base_or_sample=base,
+        sampler=sampler,
+    )
+
+    out, trajectory = model._sample(3, return_trajectory=True)
+
+    assert torch.allclose(out, torch.ones(3, 2))
+    assert len(trajectory) == 5
+
+
+def test_gaussian_flow_uses_constructor_sampler_by_default():
+    base = torch.zeros(2, dtype=torch.float32)
+    model = GaussianFlowLinear(
+        net=_OnesNet(),
+        dim=2,
+        n_steps=4,
+        t_min=0.0,
+        t_max=1.0,
+        base_or_sample=base,
+        sampler="euler",
+    )
+
+    out, trajectory = model._sample(3, return_trajectory=True)
+
+    assert torch.allclose(out, torch.ones(3, 2))
+    assert len(trajectory) == 5
+
+
+def test_gaussian_flow_sample_accepts_flux_shifted_schedule():
+    base = torch.zeros(2, dtype=torch.float32)
+    model = GaussianFlowLinear(
+        net=_ZeroNet(),
+        dim=2,
+        n_steps=4,
+        t_min=0.0,
+        t_max=1.0,
+        base_or_sample=base,
+        sampler="heun",
+        schedule="flux_shifted",
+        image_seq_len=1024,
+        sample_steps=32,
+    )
+
+    out = model.sample(2)
+
+    assert out.shape == (2, 2)
+    assert torch.allclose(out, torch.zeros_like(out))
+
+
+def test_gaussian_flow_rejects_sampler_and_schedule_aliases():
+    with pytest.raises(ValueError, match="adaptive"):
+        GaussianFlowLinear(net=_ZeroNet(), dim=2, sampler="adaptive")
+    with pytest.raises(ValueError, match="flux"):
+        GaussianFlowLinear(net=_ZeroNet(), dim=2, schedule="flux", image_seq_len=1024)
+
+
+def test_flux_shifted_schedule_is_monotone_and_seq_len_dependent():
+    small = flux_shifted_timesteps(4, 0.0, 1.0, image_seq_len=256)
+    large = flux_shifted_timesteps(4, 0.0, 1.0, image_seq_len=4096)
+
+    assert small[0].item() == 0.0
+    assert small[-1].item() == 1.0
+    assert torch.all(small[1:] > small[:-1])
+    assert torch.all(large[1:] > large[:-1])
+    assert large[1].item() > small[1].item()
+
+
+def test_gaussian_flow_adaptive_heun_smoke():
+    base = torch.zeros(2, dtype=torch.float32)
+    model = GaussianFlowLinear(
+        net=_OnesNet(),
+        dim=2,
+        n_steps=4,
+        t_min=0.0,
+        t_max=1.0,
+        base_or_sample=base,
+        sampler="adaptive_heun",
+        h_init=0.25,
+    )
+
+    out = model.sample(3)
+
+    assert torch.allclose(out, torch.ones(3, 2))

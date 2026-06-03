@@ -1,63 +1,10 @@
-"""Tests for small utility helpers."""
+"""Tests for schedule helpers."""
 
 import math
 import pytest
 import torch
-from genkit.utils import cosine_schedule, format_duration, getpop, to_numpy
+from genkit._schedules import cosine_schedule
 from .utils import _devices
-
-
-def test_getpop_returns_value_and_removes_key():
-    payload = {"alpha": 1.5, "other": 3}
-
-    value = getpop(payload, "alpha")
-
-    assert value == 1.5
-    assert payload == {"other": 3}
-
-
-def test_getpop_returns_default_for_missing_key():
-    payload = {"other": 3}
-
-    value = getpop(payload, "alpha", 2.0)
-
-    assert value == 2.0
-    assert payload == {"other": 3}
-
-
-def test_getpop_raises_keyerror_without_default():
-    with pytest.raises(KeyError):
-        getpop({}, "missing")
-
-
-def test_to_numpy_recursively_converts_nested_tensors():
-    nested = {
-        "x": torch.tensor([1.0, 2.0]),
-        "items": [torch.tensor(3.0), {"y": torch.tensor([[4.0]])}],
-        "plain": "ok",
-    }
-
-    converted = to_numpy(nested)
-
-    assert converted["x"].tolist() == [1.0, 2.0]
-    assert converted["items"][0].shape == ()
-    assert converted["items"][1]["y"].shape == (1, 1)
-    assert converted["plain"] == "ok"
-
-
-@pytest.mark.parametrize(
-    ("seconds", "expected"),
-    [
-        (-1.0, "0s"),
-        (0.0, "0s"),
-        (59.1, "59s"),
-        (61.0, "1min 1s"),
-        (3661.0, "1h 1min 1s"),
-        (3600.0, "1h"),
-    ],
-)
-def test_format_duration_formats_short_human_readable_strings(seconds, expected):
-    assert format_duration(seconds) == expected
 
 
 @pytest.mark.parametrize("fdtype", [torch.float32, torch.float64])

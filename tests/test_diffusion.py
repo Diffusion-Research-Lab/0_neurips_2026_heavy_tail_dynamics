@@ -95,3 +95,24 @@ def test_dlpmeps_loss_rejects_invalid_t(device, dtype):
 
     with pytest.raises(ValueError):
         model.loss(x, t=0)
+
+
+def test_dlpmeps_sample_accepts_native_sampler():
+    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=4, sampler="native")
+
+    out = model.sample(2)
+
+    assert out.shape == (2, 2)
+
+
+def test_dlpmeps_uses_constructor_sampler_by_default():
+    model = DLPMEps(net=_ZeroNet(), dim=2, n_steps=4, sampler="native")
+
+    out = model.sample(2)
+
+    assert out.shape == (2, 2)
+
+
+def test_dlpmeps_sample_rejects_non_native_sampler():
+    with pytest.raises(ValueError, match="native"):
+        DLPMEps(net=_ZeroNet(), dim=2, n_steps=4, sampler="heun")

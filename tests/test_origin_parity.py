@@ -3,7 +3,7 @@
 import pytest
 import torch
 from genkit.diffusion import DDPMV, DDPMX0, DLPMEps
-from genkit.flow import GaussianFlowLinear
+from genkit.flow_matching import GaussianFlowLinear
 from genkit.thirdparty import DLPMEpsOrigin, FlowMatchingOrigin, ScoreSDEOrigin
 from .utils import (
     _AffineTimeNet,
@@ -68,14 +68,14 @@ def _assert_same_loss_and_grads(native, origin, x, seed: int):
 
 
 def test_dlpmeps_matches_origin_loss_and_gradients():
-    x = torch.randn(6, 2, dtype=torch.float32)
+    x = torch.linspace(-1.0, 1.0, 12, dtype=torch.float32).reshape(6, 2)
     native, origin = _make_dlpm_pair()
     for seed in (0, 1, 2):
         _assert_same_loss_and_grads(native, origin, x, seed)
 
 
 def test_dlpmeps_matches_origin_sample_and_one_step_update():
-    x = torch.randn(6, 2, dtype=torch.float32)
+    x = torch.linspace(-1.0, 1.0, 12, dtype=torch.float32).reshape(6, 2)
     native, origin = _make_dlpm_pair()
 
     _reset_seeds(3)

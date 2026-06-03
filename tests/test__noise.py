@@ -1,11 +1,11 @@
-"""Sampling module unittests."""
+"""Tests for noise and synthetic-data samplers."""
 
 import sys
 from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from genkit._sampling import (
+from genkit._noise import (
     sample_checker,
     sample_exponential,
     sample_gaussian,

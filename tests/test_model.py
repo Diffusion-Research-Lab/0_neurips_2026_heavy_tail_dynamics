@@ -1,9 +1,9 @@
-"""Neural networks module unittests."""
+"""Tests for neural network modules."""
 
 import pytest
 import torch
-from genkit.nn import MLPModel, timestep_embedding
-from genkit.diffusion import DDPMV
+from genkit.nn import MLPModel, Transformer2DModel, TransformerModel, UNet2DModel, UNetModel
+from genkit.diffusion import DDPMEps, DDPMV, DDPMX0
 from .utils import _devices
 
 
@@ -18,9 +18,9 @@ def _ddpm(n_steps=10):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("device", _devices())
-def test_timestep_embedding_shape_dtype_device(dtype, device):
+def test_private_timestep_embedding_shape_dtype_device(dtype, device):
     t = torch.rand(17, device=device, dtype=dtype)
-    y = timestep_embedding(t, 32).to(dtype=dtype)
+    y = MLPModel._timestep_embedding(t, 32).to(dtype=dtype)
     assert y.shape == (17, 32)
     assert y.dtype == dtype
     assert y.device.type == device.type
@@ -39,6 +39,29 @@ def test_mlp_model_shape_dtype_device(input_dim, output_dim, expected_shape, dty
     assert y.dtype == dtype
     assert y.device.type == device.type
     assert torch.isfinite(y).all()
+
+
+def test_diffusers_image_models_import_and_unet_model_smoke():
+    assert Transformer2DModel.__name__ == "Transformer2DModel"
+    assert UNet2DModel.__name__ == "UNet2DModel"
+    assert TransformerModel.__name__ == "TransformerModel"
+
+    model = UNetModel(
+        sample_size=8,
+        n_steps=4,
+        in_channels=1,
+        out_channels=1,
+        width=8,
+        channel_mult=(1,),
+        layers_per_block=1,
+        norm_num_groups=1,
+        attention=False,
+    )
+    x = torch.randn(2, 1, 8, 8)
+    t = torch.tensor([[0.0], [1.0]])
+    y = model(x, t)
+
+    assert y.shape == x.shape
 
 
 # --- Base._check_t validation ---
@@ -160,3 +183,83 @@ def test_ddpm_sigma_max_scales_reverse_posterior_noise(monkeypatch):
 def test_ddpm_rejects_invalid_sigma_max():
     with pytest.raises(ValueError, match="sigma_max"):
         DDPMV(net=_ZeroNet(), dim=2, n_steps=10, sigma_max=0.0)
+
+
+def test_ddpm_sample_dispatches_native_sampler():
+    m = DDPMV(net=_ZeroNet(), dim=2, n_steps=3, sampler="ddpm")
+
+    out, trajectory = m._sample(2, return_trajectory=True)
+
+    assert out.shape == (2, 2)
+    assert len(trajectory) == 4
+
+
+def test_ddpm_uses_constructor_sampler_by_default():
+    base = torch.zeros(2, dtype=torch.float32)
+    m = DDPMEps(net=_ZeroNet(), dim=2, n_steps=8, base_or_sample=base, sampler="ddim", sample_steps=4, eta=0.0)
+
+    out, trajectory = m._sample(3, return_trajectory=True)
+
+    assert out.shape == (3, 2)
+    assert len(trajectory) == 5
+
+
+def test_ddpm_sample_rejects_unknown_sampler():
+    with pytest.raises(ValueError, match="ddpm"):
+        DDPMV(net=_ZeroNet(), dim=2, n_steps=3, sampler="heun")
+
+
+def test_ddpm_eps_loss_and_sample_smoke():
+    m = DDPMEps(net=_ZeroNet(), dim=2, n_steps=5)
+    x = torch.randn(4, 2)
+
+    loss = m.loss(x, t=0.5)
+    out = m.sample(3)
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+    assert out.shape == (3, 2)
+
+
+@pytest.mark.parametrize("model_cls", [DDPMEps, DDPMV, DDPMX0])
+def test_ddim_sampling_supports_all_ddpm_parameterizations(model_cls):
+    base = torch.zeros(2, dtype=torch.float32)
+    m = model_cls(net=_ZeroNet(), dim=2, n_steps=8, base_or_sample=base, sampler="ddim", sample_steps=4, eta=0.0)
+
+    out, trajectory = m._sample(3, return_trajectory=True)
+
+    assert out.shape == (3, 2)
+    assert len(trajectory) == 5
+
+
+def test_ddim_eta_zero_is_deterministic_with_fixed_source():
+    base = torch.ones(2, dtype=torch.float32)
+    m = DDPMEps(net=_ZeroNet(), dim=2, n_steps=8, base_or_sample=base, sampler="ddim", sample_steps=4, eta=0.0)
+
+    torch.manual_seed(0)
+    out0 = m.sample(3)
+    torch.manual_seed(1)
+    out1 = m.sample(3)
+
+    assert torch.equal(out0, out1)
+
+
+def test_ddim_eta_positive_is_stochastic_with_fixed_source():
+    base = torch.ones(2, dtype=torch.float32)
+    m = DDPMEps(net=_ZeroNet(), dim=2, n_steps=8, base_or_sample=base, sampler="ddim", sample_steps=4, eta=1.0)
+
+    torch.manual_seed(0)
+    out0 = m.sample(3)
+    torch.manual_seed(1)
+    out1 = m.sample(3)
+
+    assert not torch.equal(out0, out1)
+
+
+def test_ddim_rejects_invalid_n_steps_and_eta():
+    with pytest.raises(ValueError, match="sample_steps"):
+        DDPMEps(net=_ZeroNet(), dim=2, n_steps=4, sampler="ddim", sample_steps=0)
+    with pytest.raises(ValueError, match="sample_steps"):
+        DDPMEps(net=_ZeroNet(), dim=2, n_steps=4, sampler="ddim", sample_steps=5)
+    with pytest.raises(ValueError, match="eta"):
+        DDPMEps(net=_ZeroNet(), dim=2, n_steps=4, sampler="ddim", eta=-1.0)

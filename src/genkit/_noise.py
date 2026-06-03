@@ -1,4 +1,4 @@
-"""Sampling functions for various distributions."""
+"""Noise and synthetic-data sampling functions."""
 
 import numpy as np
 import scipy
@@ -244,20 +244,8 @@ def _unbalanced_highdim_mixture_structure(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build shared centers, directions, and sampled mode ids for high-dimensional mixtures."""
     rank = min(int(rank), int(dim))
-    embedding = _orthonormal_embedding(
-        dim,
-        rank,
-        device=device,
-        dtype=dtype,
-        structure_seed=structure_seed,
-    )
-    codebook = _structured_mode_codebook(
-        n_modes,
-        rank,
-        device=device,
-        dtype=dtype,
-        structure_seed=structure_seed,
-    )
+    embedding = _orthonormal_embedding(dim, rank, device=device, dtype=dtype, structure_seed=structure_seed)
+    codebook = _structured_mode_codebook(n_modes, rank, device=device, dtype=dtype, structure_seed=structure_seed)
     centers = mean_scale * (codebook @ embedding.T)
     directions = torch.nn.functional.normalize(centers, dim=1)
 
@@ -317,20 +305,8 @@ def sample_unbalanced_highdim_alpha_stable_mixture(
         dtype=dtype,
     )
 
-    noise_iso = sample_scaled_isotropic_alpha_stable(
-        n_samples,
-        dim=dim,
-        alpha=alpha,
-        device=device,
-        dtype=dtype,
-    )
-    noise_axis = sample_scaled_isotropic_alpha_stable(
-        n_samples,
-        dim=1,
-        alpha=alpha,
-        device=device,
-        dtype=dtype,
-    ) * directions[mode_index]
+    noise_iso = sample_scaled_isotropic_alpha_stable(n_samples, dim=dim, alpha=alpha, device=device, dtype=dtype)
+    noise_axis = sample_scaled_isotropic_alpha_stable(n_samples, dim=1, alpha=alpha, device=device, dtype=dtype) * directions[mode_index]
     noise = noise_iso + anisotropy * noise_axis
 
     return centers[mode_index] + base_scale * noise

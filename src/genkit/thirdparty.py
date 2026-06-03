@@ -11,7 +11,7 @@ import types
 import torch
 import torch.nn.functional as F
 from ._abs import Base
-from ._sampling import sample_gaussian
+from ._noise import sample_gaussian
 
 __all__ = [
     "ScoreSDEOrigin",
