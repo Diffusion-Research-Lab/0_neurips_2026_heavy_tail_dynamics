@@ -37,7 +37,6 @@ datasets:
     params:
       split: train
       image_size: 64
-      max_samples: 50000
       seed: 0
     split:
       val_size: 0.1
@@ -50,9 +49,8 @@ datasets:
     name: cifar100_lt
     params:
       split: train
-      image_size: 64
+      image_size: 32
       imbalance_factor: 20
-      max_samples: 50000
       seed: 0
     split:
       val_size: 0.1
@@ -66,7 +64,6 @@ datasets:
     params:
       split: train
       image_size: 64
-      max_samples: 50000
       seed: 0
     split:
       val_size: 0.1

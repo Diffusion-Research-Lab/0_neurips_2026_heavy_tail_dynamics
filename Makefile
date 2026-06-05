@@ -26,17 +26,15 @@ BENCH_TEMPLATE_DIR        ?= benchmarks/configs/templates
 BENCH_CONFIG_DIR          ?= benchmarks/configs/bench
 
 
-# Real-data cache controls. Override DATASETS to submit a subset.
-DATASETS                  ?= wildfires hrrr lvis cifar100_lt imagenet_lt
-INIT_DATASETS             ?= wildfires cifar100_lt imagenet_lt
+# Dataset cache controls. Override DATASETS to submit a subset.
+DATASETS                  ?= hrrr lvis cifar100_lt imagenet_lt
+INIT_DATASETS             ?= cifar100_lt imagenet_lt
 
 
 # Slurm array sizes.
 PILOT_SYNTH_SHARDS        ?= 15
-PILOT_REAL_SHARDS         ?= 8
 PILOT_IMAGE_SHARDS        ?= 15
 EVAL_PILOT_SYNTH_SHARDS   ?= 4
-EVAL_PILOT_REAL_SHARDS    ?= 2
 EVAL_PILOT_IMAGE_SHARDS   ?= 4
 
 
@@ -69,7 +67,6 @@ JZ_GPU_ARGS               ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:
 JZ_GPU_DEV_ARGS           ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-dev --account=jcx@v100
 PILOT_SBATCH_ARGS         ?= $(JZ_GPU_ARGS) --time=04:00:00
 BENCH_SBATCH_ARGS_SYNTH   ?= $(JZ_GPU_ARGS) --time=04:00:00
-BENCH_SBATCH_ARGS_REAL    ?= $(JZ_GPU_ARGS) --time=03:00:00
 BENCH_SBATCH_ARGS_IMAGE   ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=10:00:00
 EVAL_PILOT_SBATCH_ARGS    ?= $(JZ_GPU_DEV_ARGS) --time=00:50:00
 EVAL_SBATCH_ARGS          ?= $(JZ_GPU_ARGS) --time=06:00:00
@@ -78,14 +75,13 @@ DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1
 
 # Evaluation options.
 PILOT_SELECTION_ARGS      ?= --selection-only --selection-split val --selection-repeats 8 --selection-batch-size 64
-EVAL_BENCH_TABULAR_ARGS   ?= --n-eval-samples 2048 --n-eval-repeats 4 --sample-batch-size 64 --max-mmd-samples 4096
+EVAL_BENCH_SYNTH_ARGS     ?= --n-eval-samples 2048 --n-eval-repeats 4 --sample-batch-size 64 --max-mmd-samples 4096
 EVAL_BENCH_IMAGE_ARGS     ?= --n-eval-samples 4096 --n-eval-repeats 6 --sample-batch-size 64 --max-mmd-samples 256
 SHARIATAN_ARGS            ?=
 
 
 # Pilot configs and dataset prefetch inputs.
 PILOT_SYNTH_CONFIG        ?= $(PILOT_CONFIG_DIR)/synth.yaml
-PILOT_REAL_CONFIG         ?= $(PILOT_CONFIG_DIR)/real.yaml
 PILOT_IMAGE_CONFIG        ?= $(PILOT_CONFIG_DIR)/image.yaml
 PREFETCH_CONFIG_INPUTS    = $(PILOT_CONFIG_DIR) $(BENCH_TEMPLATE_DIR) $(BENCH_CONFIG_DIR)
 
@@ -93,7 +89,7 @@ PREFETCH_CONFIG_INPUTS    = $(PILOT_CONFIG_DIR) $(BENCH_TEMPLATE_DIR) $(BENCH_CO
 .DEFAULT_GOAL := help
 
 .PHONY: setup dataset pilot analyze-pilot bench bench-shariatan evaluate-pilot evaluate-bench \
-        plotting-bench check send supp help
+        analyze-bench check send supp help
 
 
 # Environment bootstrap.
@@ -142,7 +138,6 @@ endef
 pilot:
 	@mkdir -p "$(LOG_DIR)"
 	sbatch --job-name=htfm_pilot --array=$(call pilot_array,$(PILOT_SYNTH_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(PILOT_SYNTH_CONFIG)" --skip-existing
-	sbatch --job-name=htfm_pilot --array=$(call pilot_array,$(PILOT_REAL_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(PILOT_REAL_CONFIG)" --skip-existing
 	sbatch --job-name=htfm_pilot --array=$(call pilot_array,$(PILOT_IMAGE_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(PILOT_IMAGE_CONFIG)" --skip-existing
 
 analyze-pilot:
@@ -157,7 +152,6 @@ bench:
 	  array_end="$$((count - 1))"; \
 	  case "$$config" in \
 	    */image/*) bench_sbatch_args='$(BENCH_SBATCH_ARGS_IMAGE)' ;; \
-	    */real/*) bench_sbatch_args='$(BENCH_SBATCH_ARGS_REAL)' ;; \
 	    *) bench_sbatch_args='$(BENCH_SBATCH_ARGS_SYNTH)' ;; \
 	  esac; \
 	  echo "[bench] submit $$config ($$count runs)"; \
@@ -175,10 +169,6 @@ evaluate-pilot:
 	test -n "$$pilot_synth_batch" || { echo "No synth pilot batch found under $(ARTIFACT_DIR)" >&2; exit 2; }; \
 	sbatch --job-name=htfm_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_SYNTH_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
 	  --batch-dir "$$pilot_synth_batch" $(PILOT_SELECTION_ARGS)
-	@pilot_real_batch="$$($(call latest_batch,*_real) 2>/dev/null || true)"; \
-	test -n "$$pilot_real_batch" || { echo "No real pilot batch found under $(ARTIFACT_DIR)" >&2; exit 2; }; \
-	sbatch --job-name=htfm_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_REAL_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
-	  --batch-dir "$$pilot_real_batch" $(PILOT_SELECTION_ARGS)
 	@pilot_image_batch="$$($(call latest_batch,*_image) 2>/dev/null || true)"; \
 	test -n "$$pilot_image_batch" || { echo "No image pilot batch found under $(ARTIFACT_DIR)" >&2; exit 2; }; \
 	sbatch --job-name=htfm_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_IMAGE_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
@@ -193,7 +183,7 @@ evaluate-bench:
 	  if [[ -z "$$batch_dir" ]]; then echo "[evaluate-bench] skip $$config -> no batch found under $(ARTIFACT_DIR)"; continue; fi; \
 	  case "$$config" in \
 	    */image/*) eval_args='$(EVAL_BENCH_IMAGE_ARGS)' ;; \
-	    *) eval_args='$(EVAL_BENCH_TABULAR_ARGS)' ;; \
+	    *) eval_args='$(EVAL_BENCH_SYNTH_ARGS)' ;; \
 	  esac; \
 	  echo "[evaluate-bench] submit $$config -> $$batch_dir"; \
 	  sbatch --job-name=htfm_eval_bench $(EVAL_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh --batch-dir "$$batch_dir" $$eval_args; \
@@ -201,7 +191,7 @@ evaluate-bench:
 
 
 # Local reporting and checks.
-plotting-bench:
+analyze-bench:
 	$(RUN_PYTHON) "$(BENCH_PLOTTING)" --artifact-root "$(ARTIFACT_DIR)" --table-root "$(TABLE_DIR)" --figure-root "$(FIGURE_DIR)"
 
 check:
@@ -224,14 +214,14 @@ supp:
 help:
 	@printf "Available targets:\n"
 	@printf "  %-22s %s\n" "setup" "Install Jean Zay environment"
-	@printf "  %-22s %s\n" "dataset" "Submit real-data cache jobs; override with DATASETS=hrrr"
+	@printf "  %-22s %s\n" "dataset" "Submit image dataset cache jobs; override with DATASETS=hrrr"
 	@printf "  %-22s %s\n" "pilot" "Submit pilot configs via Slurm"
 	@printf "  %-22s %s\n" "analyze-pilot" "Generate per-dataset winners, reports, and bench configs"
 	@printf "  %-22s %s\n" "bench" "Generate and submit explicit benchmark configs via Slurm"
 	@printf "  %-22s %s\n" "bench-shariatan" "Run standalone Shariatian et al. benchmark"
 	@printf "  %-22s %s\n" "evaluate-pilot" "Submit pilot evaluation only"
 	@printf "  %-22s %s\n" "evaluate-bench" "Submit benchmark evaluation only"
-	@printf "  %-22s %s\n" "plotting-bench" "Generate benchmark tables and figures from current eval artifacts"
+	@printf "  %-22s %s\n" "analyze-bench" "Generate benchmark tables and figures from current eval artifacts"
 	@printf "  %-22s %s\n" "check" "Run lint, tests, local smoke, and examples"
 	@printf "  %-22s %s\n" "send" "Send code and configs only to the remote benchmark host"
 	@printf "  %-22s %s\n" "supp" "Build the supplementary code archive"

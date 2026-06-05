@@ -6,10 +6,8 @@ import os
 import pandas as pd
 import subprocess
 import sys
-
 import pytest
 import torch
-
 import benchmarks._real_data_cache as real_data_cache
 import benchmarks.utils as bench_utils
 
@@ -17,6 +15,7 @@ evaluate = importlib.import_module("benchmarks.02_evaluate")
 pilot_analysis = importlib.import_module("benchmarks.03_pilot_analysis")
 plotting_bench = importlib.import_module("benchmarks.04_plotting_bench")
 compute_test_metrics = evaluate.compute_test_metrics
+compute_test_vs_test_metrics = evaluate.compute_test_vs_test_metrics
 sample_generator_in_batches = evaluate.sample_generator_in_batches
 
 _main = importlib.import_module("benchmarks.01_main")
@@ -33,7 +32,6 @@ _PILOT_ANALYSIS_SCRIPT = _PROJECT_ROOT / "benchmarks" / "03_pilot_analysis.py"
 
 _PILOT_FIXTURE_BATCHES = {
     "synth": "449824_02_alphastable_pilot_evaluate",
-    "real": "449825_05_real_pilot_evaluate",
     "image": "449826_08_image_pilot_evaluate",
 }
 _PILOT_FIXTURE_METRICS = ["INNER_LOSS_VAL"]
@@ -171,10 +169,10 @@ def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
     assert values["MMD_RBF"] != values["MMD_RBF"]
     assert any("MMD_RBF_failed: RuntimeError: mmd boom" == warning for warning in warnings)
     for metric_name in [
-        "TCE(90%)",
-        "TCE(95%)",
-        "TCE(99%)",
-        "TCE(99.9%)",
+        "TCE(90)",
+        "TCE(99)",
+        "TCE(99,9)",
+        "TCE(99,99)",
     ]:
         assert torch.isfinite(torch.tensor(values[metric_name]))
 
@@ -187,6 +185,15 @@ def test_compute_test_metrics_computes_mmd_for_high_dimensional_data():
 
     assert torch.isfinite(torch.tensor(values["MMD_RBF"]))
     assert not any("mmd_skipped" in warning.lower() for warning in warnings)
+
+
+def test_compute_test_vs_test_metrics_computes_mmd_baseline():
+    x_ref = torch.arange(24 * 3, dtype=torch.float32).reshape(24, 3)
+
+    values, warnings = compute_test_vs_test_metrics(x_ref, max_mmd_samples=8)
+
+    assert torch.isfinite(torch.tensor(values["MMD_RBF"]))
+    assert warnings == []
 
 
 def test_image_class_recovery_metrics_count_support_and_histogram(monkeypatch):
@@ -210,40 +217,40 @@ def test_image_class_recovery_metrics_count_support_and_histogram(monkeypatch):
 
 def test_latest_config_batch_finds_run_name_directory(tmp_path):
     artifact_root = tmp_path / "benchmarks" / "artifacts"
-    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "real" / "wildfires" / "ddpm_v.yaml"
+    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "synth" / "alpha_stable_iso" / "ddpm_v.yaml"
     config_path.parent.mkdir(parents=True)
     artifact_root.mkdir(parents=True)
-    config_path.write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
-    expected = artifact_root / "20260527_173718_bench_real__wildfires__ddpm_v"
+    config_path.write_text("run:\n  name: bench_synth__alpha_stable_iso__ddpm_v\n", encoding="utf-8")
+    expected = artifact_root / "20260527_173718_bench_synth__alpha_stable_iso__ddpm_v"
     expected.mkdir()
-    (artifact_root / "20260527_173718_bench_real__wildfires__ddpm_v_evaluate").mkdir()
+    (artifact_root / "20260527_173718_bench_synth__alpha_stable_iso__ddpm_v_evaluate").mkdir()
 
     assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == expected
 
 
 def test_latest_config_batch_falls_back_to_saved_config_metadata(tmp_path):
     artifact_root = tmp_path / "benchmarks" / "artifacts"
-    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "real" / "wildfires" / "ddpm_v.yaml"
+    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "synth" / "alpha_stable_iso" / "ddpm_v.yaml"
     config_path.parent.mkdir(parents=True)
     artifact_root.mkdir(parents=True)
-    config_path.write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+    config_path.write_text("run:\n  name: bench_synth__alpha_stable_iso__ddpm_v\n", encoding="utf-8")
     batch_dir = artifact_root / "1412454_ddpm_v"
     batch_dir.mkdir()
-    (batch_dir / "summary_shard_000.txt").write_text("\n".join(["n_runs: 1", "config: /lustre/fswork/projects/rech/jcx/uor49lv/src/flowbench/benchmarks/configs/bench/real/wildfires/ddpm_v.yaml"]) + "\n", encoding="utf-8")  # noqa
+    (batch_dir / "summary_shard_000.txt").write_text("\n".join(["n_runs: 1", "config: /lustre/fswork/projects/rech/jcx/uor49lv/src/flowbench/benchmarks/configs/bench/synth/alpha_stable_iso/ddpm_v.yaml"]) + "\n", encoding="utf-8")  # noqa
 
     assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == batch_dir
 
 
 def test_latest_config_batch_falls_back_to_run_config(tmp_path):
     artifact_root = tmp_path / "benchmarks" / "artifacts"
-    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "real" / "wildfires" / "ddpm_v.yaml"
+    config_path = tmp_path / "benchmarks" / "configs" / "bench" / "synth" / "alpha_stable_iso" / "ddpm_v.yaml"
     config_path.parent.mkdir(parents=True)
     artifact_root.mkdir(parents=True)
-    config_path.write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+    config_path.write_text("run:\n  name: bench_synth__alpha_stable_iso__ddpm_v\n", encoding="utf-8")
     batch_dir = artifact_root / "1412454_ddpm_v"
-    run_dir = batch_dir / "001_wildfires__mlp__ddpm_v__selected__trial-01"
+    run_dir = batch_dir / "001_alpha_stable_iso__mlp__ddpm_v__selected__trial-01"
     run_dir.mkdir(parents=True)
-    (run_dir / "config.yaml").write_text("run:\n  name: bench_real__wildfires__ddpm_v\n", encoding="utf-8")
+    (run_dir / "config.yaml").write_text("run:\n  name: bench_synth__alpha_stable_iso__ddpm_v\n", encoding="utf-8")
 
     assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == batch_dir
 
@@ -281,6 +288,92 @@ def test_plotting_ignores_pilot_evaluation_batches(tmp_path):
     batches = plotting_bench.discover_eval_batches(artifact_root)
 
     assert batches == {"alpha_stable_target": [bench_run.parent]}
+
+
+def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
+    batch_dir = tmp_path / "artifacts" / "999_alpha_stable_target_evaluate"
+    figure_root = tmp_path / "figures"
+    table_root = tmp_path / "tables"
+    metrics = {
+        "TCE(90)": 0.11,
+        "TCE(99)": 0.04,
+        "TCE(99,9)": 0.02,
+        "TCE(99,99)": 0.01,
+    }
+
+    for run_idx, (model_label, mmd_value) in enumerate([("GF-OT", 0.12), ("DDPM-V", 0.2)], start=1):
+        run_dir = batch_dir / f"{run_idx:03d}_alpha_stable_target"
+        run_dir.mkdir(parents=True)
+        rows = []
+        for eval_repeat_idx in range(3):
+            base_row = {
+                "run_dir": run_dir.name,
+                "checkpoint_epoch": 2,
+                "dataset_preset": "alpha_stable_target",
+                "dataset_name": "alpha_stable",
+                "model_label": model_label,
+                "model_name": model_label.lower(),
+                "model_alpha": float("nan"),
+                "eval_repeat_idx": eval_repeat_idx,
+                "epoch": float("nan"),
+            }
+            rows.append(
+                {
+                    **base_row,
+                    "source": "test_metrics",
+                    "metric_name": "MMD_RBF",
+                    "value": mmd_value + 0.01 * eval_repeat_idx,
+                }
+            )
+            for metric_name, value in metrics.items():
+                rows.append(
+                    {
+                        **base_row,
+                        "source": "test_metrics",
+                        "metric_name": metric_name,
+                        "value": value + 0.01 * eval_repeat_idx,
+                    }
+                )
+        rows.append(
+            {
+                "run_dir": run_dir.name,
+                "checkpoint_epoch": 2,
+                "dataset_preset": "alpha_stable_target",
+                "dataset_name": "alpha_stable",
+                "model_label": model_label,
+                "model_name": model_label.lower(),
+                "model_alpha": float("nan"),
+                "source": "test_vs_test_metrics",
+                "metric_name": "MMD_RBF",
+                "value": 0.05,
+                "eval_repeat_idx": float("nan"),
+                "epoch": float("nan"),
+            }
+        )
+        pd.DataFrame(rows).to_csv(run_dir / "scalars.csv.gz", index=False, compression="gzip")
+
+    stale_table = table_root / "alpha_stable_iso__performance.tex"
+    stale_table.parent.mkdir(parents=True)
+    stale_table.write_text("stale", encoding="utf-8")
+    stale_figures = [
+        figure_root / f"alpha_stable_iso__{stem}.pdf"
+        for stem in ["mmd_rbf", "tce_90", "tce_95", "tce_99", "tce_999", "tce_9999"]
+    ]
+    for stale_figure in stale_figures:
+        stale_figure.parent.mkdir(parents=True, exist_ok=True)
+        stale_figure.write_text("stale", encoding="utf-8")
+
+    plotting_bench.render_dataset(
+        "alpha_stable_target",
+        [batch_dir],
+        table_root=table_root,
+        figure_root=figure_root,
+    )
+
+    assert (figure_root / "alpha_stable_iso__mmd_rbf_boxplot.pdf").is_file()
+    assert (figure_root / "alpha_stable_iso__tce_quantiles.pdf").is_file()
+    assert not stale_table.exists()
+    assert all(not path.exists() for path in stale_figures)
 
 
 def test_plotting_writes_image_class_recovery_table(tmp_path):
@@ -364,35 +457,30 @@ def test_pilot_and_template_configs_have_required_sections_and_valid_sweeps():
             assert variants, f"{path.name}: empty {section} sweep"
 
 
-def test_image_pilot_caps_real_datasets_to_256_samples():
+def test_image_pilot_caps_real_datasets_and_uses_native_cifar_resolution():
     config = load_yaml(Path("benchmarks/configs/pilot/image.yaml"))
 
     assert config["datasets"]["hrrr"]["params"]["n_samples"] == 4096
     assert config["datasets"]["lvis"]["params"]["max_samples"] == 4096
     assert config["datasets"]["cifar100_lt"]["params"]["max_samples"] == 4096
+    assert config["datasets"]["cifar100_lt"]["params"]["image_size"] == 32
     assert config["datasets"]["imagenet_lt"]["params"]["max_samples"] == 4096
 
 
-def test_image_bench_imagenet_lt_and_cifar100_lt_cap_at_50000():
+def test_image_bench_uncaps_image_datasets_and_uses_target_resolutions():
     config = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
-    assert config["datasets"]["imagenet_lt"]["params"]["max_samples"] == 50000
-    assert config["datasets"]["cifar100_lt"]["params"]["max_samples"] == 50000
+    assert config["datasets"]["lvis"]["params"]["image_size"] == 64
+    assert config["datasets"]["cifar100_lt"]["params"]["image_size"] == 32
+    assert config["datasets"]["imagenet_lt"]["params"]["image_size"] == 64
+    assert "max_samples" not in config["datasets"]["lvis"]["params"]
+    assert "max_samples" not in config["datasets"]["cifar100_lt"]["params"]
+    assert "max_samples" not in config["datasets"]["imagenet_lt"]["params"]
     assert config["datasets"]["cifar100_lt"]["params"]["imbalance_factor"] == 20
     assert "category_frequency" not in config["datasets"]["lvis"]["params"]
 
 
-def test_tabular_real_pilot_caps_real_dataset_to_256_samples():
-    config = load_yaml(Path("benchmarks/configs/pilot/real.yaml"))
-    assert config["datasets"]["wildfires"]["params"]["n_samples"] == 4096
-
-
-def test_tabular_real_bench_caps_real_dataset_to_50000_samples():
-    config = load_yaml(Path("benchmarks/configs/templates/real_bench.yaml"))
-    assert config["datasets"]["wildfires"]["params"]["n_samples"] == 50000
-
-
 def test_nonblank_pilots_try_at_least_two_learning_rates():
-    for filename in ["synth.yaml", "real.yaml", "image.yaml"]:
+    for filename in ["synth.yaml", "image.yaml"]:
         config = load_yaml(Path("benchmarks/configs/pilot") / filename)
         train_names = list(config["sweep"]["trains"])
         learning_rates = {float(config["trains"][name]["lr"]) for name in train_names}
@@ -405,9 +493,8 @@ def test_nonblank_pilots_try_at_least_two_learning_rates():
 def test_generated_bench_config_tree_is_complete_and_explicit(generated_bench_outputs):
     bench_root = generated_bench_outputs["bench_config_root"]
     bench_configs = sorted(bench_root.rglob("*.yaml"))
-    assert len(bench_configs) == 35
+    assert len(bench_configs) == 30
     assert bench_root / "synth/alpha_stable_iso/tedm_origin.yaml" in bench_configs
-    assert bench_root / "real/wildfires/ddpm_v.yaml" in bench_configs
     assert bench_root / "image/lvis/gaussian_flow_ot.yaml" in bench_configs
 
 
@@ -427,42 +514,34 @@ def test_generated_bench_configs_are_single_dataset_single_model_single_train(ge
 def test_generated_bench_configs_use_template_budgets_but_selected_learning_rates(generated_bench_outputs):
     bench_root = generated_bench_outputs["bench_config_root"]
     synth_cfg = load_yaml(bench_root / "synth/alpha_stable_iso/gaussian_flow_ot.yaml")
-    real_cfg = load_yaml(bench_root / "real/wildfires/gaussian_flow_linear.yaml")
     image_cfg = load_yaml(bench_root / "image/lvis/tedm_origin.yaml")
     hrrr_cfg = load_yaml(bench_root / "image/hrrr/ddpm_v.yaml")
     imagenet_cfg = load_yaml(bench_root / "image/imagenet_lt/dlpm_eps.yaml")
 
     synth_train = synth_cfg["trains"][synth_cfg["sweep"]["trains"][0]]
-    real_train = real_cfg["trains"][real_cfg["sweep"]["trains"][0]]
     image_train = image_cfg["trains"][image_cfg["sweep"]["trains"][0]]
     hrrr_train = hrrr_cfg["trains"][hrrr_cfg["sweep"]["trains"][0]]
     imagenet_train = imagenet_cfg["trains"][imagenet_cfg["sweep"]["trains"][0]]
 
     assert synth_train["n_epochs"] == 512
-    assert real_train["n_epochs"] == 512
     assert image_train["n_epochs"] == 128
     assert hrrr_train["n_epochs"] == 128
     assert imagenet_train["n_epochs"] == 128
     assert synth_train["lr"] == synth_cfg["selection"]["selected_lr"]
-    assert real_train["lr"] == real_cfg["selection"]["selected_lr"]
     assert image_train["lr"] == image_cfg["selection"]["selected_lr"]
     assert hrrr_train["lr"] == hrrr_cfg["selection"]["selected_lr"]
     assert imagenet_train["lr"] == imagenet_cfg["selection"]["selected_lr"]
     assert synth_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
-    assert real_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
     assert image_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
 
 
 def test_bench_templates_use_expected_trial_counts_and_single_train_preset():
     synth_cfg = load_yaml(Path("benchmarks/configs/templates/synth_bench.yaml"))
-    real_cfg = load_yaml(Path("benchmarks/configs/templates/real_bench.yaml"))
     image_cfg = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
 
     assert synth_cfg["run"]["n_trial"] == 5
-    assert real_cfg["run"]["n_trial"] == 2
     assert image_cfg["run"]["n_trial"] == 1
     assert synth_cfg["sweep"]["trains"] == ["standard"]
-    assert real_cfg["sweep"]["trains"] == ["standard"]
     assert image_cfg["sweep"]["trains"] == ["standard"]
 
 
@@ -476,7 +555,7 @@ def test_pilot_analysis_reports_exist_and_match_generated_configs(generated_benc
     assert report_png.is_file()
 
     frame = pd.read_csv(report_csv)
-    assert len(frame) == 35
+    assert len(frame) == 30
     assert sorted(frame["dataset_slug"].unique().tolist()) == [
         "alpha_stable_iso",
         "alpha_stable_mix",
@@ -484,7 +563,6 @@ def test_pilot_analysis_reports_exist_and_match_generated_configs(generated_benc
         "hrrr",
         "imagenet_lt",
         "lvis",
-        "wildfires",
     ]
 
 
@@ -504,13 +582,13 @@ def test_numbered_benchmark_entrypoints_work_from_outside_repo(tmp_path):
 def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
     dataset_cfg = {
         "kind": "real",
-        "name": "wildfires",
-        "params": {"n_samples": 4},
-        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
+        "name": "cifar100_lt",
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4, "seed": 0},
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
     }
 
     def fake_fetch_real_data(name, **kwargs):
-        assert name == "wildfires"
+        assert name == "cifar100_lt"
         assert kwargs["dtype"] is torch.float32
         assert kwargs["device"] == "cpu"
         assert kwargs["return_metadata"] is True
@@ -535,9 +613,9 @@ def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
 def test_slurm_strict_real_dataset_loading_requires_processed_cache(tmp_path, monkeypatch):
     dataset_cfg = {
         "kind": "real",
-        "name": "wildfires",
-        "params": {"n_samples": 4},
-        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
+        "name": "cifar100_lt",
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4, "seed": 0},
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
     }
 
     monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
@@ -580,12 +658,12 @@ def test_resolved_config_preserves_run_metadata(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_wildfires_cfg():
+def _make_cifar100_lt_cfg():
     return {
         "kind": "real",
-        "name": "wildfires",
-        "params": {"n_samples": 4},
-        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": True},
+        "name": "cifar100_lt",
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4, "seed": 0},
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
     }
 
 
@@ -599,7 +677,7 @@ def _fake_fetch_real_4samples(name, **kwargs):
 
 
 def test_build_preprocessed_real_dataset_skips_when_cache_is_valid(tmp_path, monkeypatch, capsys):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
 
     real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
@@ -613,18 +691,18 @@ def test_build_preprocessed_real_dataset_skips_when_cache_is_valid(tmp_path, mon
     out = capsys.readouterr().out
 
     assert result["status"] == "exists"
-    assert "[SKIP] Valid preprocessed cache found for wildfires" in out
+    assert "[SKIP] Valid preprocessed cache found for cifar100_lt" in out
 
 
 def test_build_preprocessed_real_dataset_rebuilds_on_cache_key_mismatch(tmp_path, monkeypatch, capsys):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": "BOGUS",
-            "request": {"name": "wildfires"},
+            "request": {"name": "cifar100_lt"},
             "x_train": torch.ones(2, 3),
             "x_val": torch.full((1, 3), 2.0),
             "x_test": torch.full((1, 3), 3.0),
@@ -637,12 +715,12 @@ def test_build_preprocessed_real_dataset_rebuilds_on_cache_key_mismatch(tmp_path
     out = capsys.readouterr().out
 
     assert result["status"] == "built"
-    assert "[REBUILD] wildfires" in out
+    assert "[REBUILD] cifar100_lt" in out
     assert "cache_key mismatch" in out
 
 
 def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_path, monkeypatch, capsys):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
@@ -650,7 +728,7 @@ def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_
         {
             "cache_version": real_data_cache.CACHE_VERSION + 99,
             "cache_key": expected_key,
-            "request": {"name": "wildfires"},
+            "request": {"name": "cifar100_lt"},
             "x_train": torch.ones(2, 3),
             "x_val": torch.full((1, 3), 2.0),
             "x_test": torch.full((1, 3), 3.0),
@@ -667,7 +745,7 @@ def test_build_preprocessed_real_dataset_rebuilds_on_cache_version_mismatch(tmp_
 
 
 def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requested_samples(tmp_path, monkeypatch, capsys):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
@@ -675,7 +753,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requeste
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": expected_key,
-            "request": {"name": "wildfires"},
+            "request": {"name": "cifar100_lt"},
             "x_train": torch.zeros(40, 3),
             "x_val": torch.zeros(40, 3),
             "x_test": torch.zeros(40, 3),
@@ -692,7 +770,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_cache_overshoots_requeste
 
 
 def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, monkeypatch, capsys):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
@@ -700,7 +778,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, 
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": expected_key,
-            "request": {"name": "wildfires"},
+            "request": {"name": "cifar100_lt"},
             "x_train": torch.ones(2, 3),
             "x_val": torch.full((1, 3), 2.0),
             "x_test": "not a tensor",
@@ -717,7 +795,7 @@ def test_build_preprocessed_real_dataset_rebuilds_when_tensor_missing(tmp_path, 
 
 
 def test_build_preprocessed_real_dataset_rebuilds_when_torch_load_fails(tmp_path, monkeypatch, capsys):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(b"not a torch payload")
@@ -727,12 +805,12 @@ def test_build_preprocessed_real_dataset_rebuilds_when_torch_load_fails(tmp_path
     out = capsys.readouterr().out
 
     assert result["status"] == "built"
-    assert "[REBUILD] wildfires" in out
+    assert "[REBUILD] cifar100_lt" in out
     assert "torch.load failed" in out
 
 
 def test_load_preprocessed_real_dataset_rejects_invalid_cache(tmp_path):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -750,7 +828,7 @@ def test_load_preprocessed_real_dataset_rejects_invalid_cache(tmp_path):
 
 
 def test_main_build_dataset_propagates_missing_cache_under_strict_mode(tmp_path, monkeypatch):
-    cfg = _make_wildfires_cfg()
+    cfg = _make_cifar100_lt_cfg()
     monkeypatch.delenv("FLOWBENCH_DATA", raising=False)
     monkeypatch.setenv("FLOWBENCH_DATA_HOME", str(tmp_path))
     monkeypatch.setenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "1")
@@ -788,7 +866,7 @@ def test_prefetch_check_only_exits_0_when_cache_valid(tmp_path):
         {
             "kind": "real",
             "name": "cifar100_lt",
-            "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4096, "seed": 0},
+            "params": {"split": "train", "image_size": 32, "imbalance_factor": 20, "max_samples": 4096, "seed": 0},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
         },
         torch.float32,
@@ -802,9 +880,9 @@ def test_prefetch_check_only_exits_0_when_cache_valid(tmp_path):
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": expected_key,
             "request": {"name": "cifar100_lt"},
-            "x_train": torch.zeros(8, 3, 64, 64),
-            "x_val": torch.zeros(4, 3, 64, 64),
-            "x_test": torch.zeros(4, 3, 64, 64),
+            "x_train": torch.zeros(8, 3, 32, 32),
+            "x_val": torch.zeros(4, 3, 32, 32),
+            "x_test": torch.zeros(4, 3, 32, 32),
         },
         cache_path,
     )
@@ -845,12 +923,6 @@ def test_prefetch_torch_free_cache_key_matches_runtime():
     cfgs = [
         {
             "kind": "real",
-            "name": "wildfires",
-            "params": {"n_samples": 50000},
-            "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": True},
-        },
-        {
-            "kind": "real",
             "name": "cifar100_lt",
             "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 256, "seed": 0},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
@@ -868,6 +940,22 @@ def test_prefetch_torch_free_cache_key_matches_runtime():
             runtime_key = real_data_cache.real_dataset_cache_key(cfg, dtype)
             yaml_key = prefetch_module.cache_key_from_yaml(cfg, dtype_str)
             assert runtime_key == yaml_key, (cfg["name"], dtype_str, runtime_key, yaml_key)
+
+
+def test_prefetch_skips_missing_generated_config_directories(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "prefetch_datasets", _PREFETCH_SCRIPT
+    )
+    prefetch_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prefetch_module)
+
+    missing_dir = tmp_path / "bench"
+    missing_file = tmp_path / "missing.yaml"
+
+    assert prefetch_module._expand_config_inputs([missing_dir]) == []
+    assert prefetch_module._expand_config_inputs([missing_file]) == [missing_file]
 
 
 def test_prefetch_check_only_path_does_not_import_torch():

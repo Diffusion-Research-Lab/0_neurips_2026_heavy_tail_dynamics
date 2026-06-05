@@ -19,7 +19,7 @@
 FlowBench provides:
 - heavy-tailed samplers and generative baselines for flow-matching and diffusion models,
 - lightweight training, inspection, and evaluation utilities to compare learned generative dynamics,
-- benchmark loaders and sweep tooling for reproducible experiments on synthetic and real datasets.
+- benchmark loaders and sweep tooling for reproducible experiments on synthetic and image datasets.
 
 ### Benchmark
 

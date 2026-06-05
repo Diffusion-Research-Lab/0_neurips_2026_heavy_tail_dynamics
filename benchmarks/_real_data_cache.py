@@ -11,21 +11,7 @@ import torch
 from datakit import fetch_real_data
 from datakit._dataset import _resolve_real_data_home
 
-
 CACHE_VERSION = 1
-TRUTHY = {"1", "true", "yes", "y", "on"}
-
-
-def real_data_root(data_root: str | Path | None = None) -> Path:
-    """Return the FlowBench real-data root."""
-    if data_root is not None:
-        return Path(data_root).expanduser()
-    return _resolve_real_data_home()
-
-
-def require_preprocessed_real_data() -> bool:
-    """Return whether real benchmark data must be loaded from processed cache."""
-    return os.getenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "").lower() in TRUTHY
 
 
 def _jsonable(value: Any) -> Any:
@@ -70,7 +56,7 @@ def real_dataset_cache_path(
     data_root: str | Path | None = None,
 ) -> Path:
     """Return the processed tensor cache path for one real-dataset request."""
-    root = real_data_root(data_root)
+    root = Path(data_root).expanduser() if data_root is not None else _resolve_real_data_home()
     name = str(dataset_cfg["name"]).strip()
     key = real_dataset_cache_key(dataset_cfg, dtype)
     return root / "processed" / name / f"{name}_{key}.pt"
@@ -132,9 +118,7 @@ def _loader_kwargs(dataset_cfg: dict[str, Any], data_root: Path) -> dict[str, An
     kwargs = {**copy.deepcopy(dataset_cfg.get("params", {})), **copy.deepcopy(dataset_cfg.get("split", {}))}
     name = str(dataset_cfg["name"]).strip()
     raw_root = data_root / "raw"
-    if name == "wildfires":
-        kwargs.setdefault("data_home", str(raw_root / "powerlaws"))
-    elif name == "lvis":
+    if name == "lvis":
         kwargs.setdefault("cache_dir", str(data_root / "processed" / "_image_loader" / name))
     elif name == "cifar100_lt":
         kwargs.setdefault("data_home", str(raw_root / "cifar100_lt"))
@@ -155,7 +139,7 @@ def build_preprocessed_real_dataset(
     source_config: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build one final train/val/test real-dataset cache."""
-    root = real_data_root(data_root)
+    root = Path(data_root).expanduser() if data_root is not None else _resolve_real_data_home()
     cache_path = real_dataset_cache_path(dataset_cfg, dtype, data_root=root)
     name = str(dataset_cfg["name"])
     if cache_path.is_file() and not overwrite:

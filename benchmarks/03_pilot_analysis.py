@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 """Analyze pilot evaluation results and generate final benchmark configs."""
 
-from __future__ import annotations
-
 import argparse
 import copy
 from pathlib import Path
@@ -15,15 +13,13 @@ for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-import matplotlib  # noqa: E402
-
+import matplotlib                                                                                    # noqa
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import yaml  # noqa: E402
-
-from benchmarks.utils import load_yaml  # noqa: E402
+import matplotlib.pyplot as plt                                                                      # noqa
+import numpy as np                                                                                   # noqa
+import pandas as pd                                                                                  # noqa
+import yaml                                                                                          # noqa
+from benchmarks.utils import load_yaml                                                               # noqa
 
 ARTIFACT_ROOT = PROJECT_ROOT / "benchmarks" / "artifacts"
 CONFIG_ROOT = PROJECT_ROOT / "benchmarks" / "configs"
@@ -47,7 +43,6 @@ MODEL_LABELS = {
 DATASET_SLUGS = {
     "alpha_stable_target": "alpha_stable_iso",
     "alpha_stable_mixture_target": "alpha_stable_mix",
-    "wildfires": "wildfires",
     "cifar100_lt": "cifar100_lt",
     "imagenet_lt": "imagenet_lt",
     "hrrr": "hrrr",
@@ -60,12 +55,6 @@ FAMILY_SPECS = {
         "batch_pattern": "*_evaluate",
         "match_terms": ("synth", "alphastable"),
     },
-    "real": {
-        "pilot_config": CONFIG_ROOT / "pilot" / "real.yaml",
-        "bench_template": CONFIG_ROOT / "templates" / "real_bench.yaml",
-        "batch_pattern": "*_evaluate",
-        "match_terms": ("real",),
-    },
     "image": {
         "pilot_config": CONFIG_ROOT / "pilot" / "image.yaml",
         "bench_template": CONFIG_ROOT / "templates" / "image_bench.yaml",
@@ -74,16 +63,6 @@ FAMILY_SPECS = {
     },
 }
 DATASET_TRAIN_OVERRIDES = {}
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact-root", type=Path, default=ARTIFACT_ROOT, help="Root directory containing benchmark artifacts.")
-    parser.add_argument("--report-root", type=Path, default=REPORT_ROOT, help="Output directory for CSV/Markdown/PNG reports.")
-    parser.add_argument("--bench-config-root", type=Path, default=BENCH_CONFIG_ROOT, help="Output directory for generated benchmark configs.")
-    parser.add_argument("--skip-reports", action="store_true", help="Do not write CSV/Markdown/PNG reports.")
-    parser.add_argument("--skip-configs", action="store_true", help="Do not write benchmark configs.")
-    return parser.parse_args()
 
 
 def discover_family_batch(artifact_root: Path, family: str) -> Path:
@@ -97,32 +76,6 @@ def discover_family_batch(artifact_root: Path, family: str) -> Path:
     return sorted(candidates, key=lambda path: (path.stat().st_mtime, path.name))[-1]
 
 
-def safe_read_yaml(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def maybe_float(value: Any) -> float:
-    try:
-        if value is None:
-            return float("nan")
-        return float(value)
-    except (TypeError, ValueError):
-        return float("nan")
-
-
-def infer_bench_name(batch_dir: Path) -> str:
-    name = batch_dir.name.lower()
-    if "synth" in name or "alphastable" in name:
-        return "synth"
-    if "real" in name:
-        return "real"
-    if "image" in name:
-        return "image"
-    raise ValueError(f"Could not infer family from batch dir: {batch_dir}")
-
-
 def first_non_null(frame: pd.DataFrame, column: str, default: Any = np.nan) -> Any:
     if column not in frame.columns or frame.empty:
         return default
@@ -130,95 +83,95 @@ def first_non_null(frame: pd.DataFrame, column: str, default: Any = np.nan) -> A
     return default if pd.isna(value) else value
 
 
-def parse_compact_lr(train_preset: str) -> float:
-    token = str(train_preset).removeprefix("pilot_lr")
-    match = re.fullmatch(r"(\d+)e(\d+)", token)
-    if not match:
-        return maybe_float(token)
-    base, exponent = match.groups()
-    return float(f"{base}e-{exponent}")
+if __name__ == "__main__":
 
-
-def infer_model_name(model_preset: str) -> str:
-    model_preset = str(model_preset)
-    for model_name in MODEL_ORDER:
-        if model_preset.startswith(model_name):
-            return model_name
-    return model_preset
-
-
-def build_setting_label(model_preset: str, train_preset: str, train_lr: float) -> str:
-    parts = [model_preset, train_preset]
-    if pd.notna(train_lr):
-        parts.append(f"lr={train_lr:.3g}")
-    return " | ".join(parts)
-
-
-def extract_run_metadata(frame: pd.DataFrame, artifact_run_dir: Path) -> dict[str, Any]:
-    run_tokens = artifact_run_dir.name.split("__")
-    dataset_preset = first_non_null(frame, "dataset_preset", run_tokens[1] if len(run_tokens) > 1 else "dataset")
-    dataset_name = first_non_null(frame, "dataset_name", dataset_preset)
-    model_preset = first_non_null(frame, "model_preset", run_tokens[3] if len(run_tokens) > 3 else "model")
-    train_preset = first_non_null(frame, "train_preset", run_tokens[4] if len(run_tokens) > 4 else "train")
-    model_name = first_non_null(frame, "model_name", infer_model_name(model_preset))
-    train_lr = maybe_float(first_non_null(frame, "train_lr", parse_compact_lr(train_preset)))
-
-    return {
-        "bench_name": infer_bench_name(artifact_run_dir.parent),
-        "dataset_preset": dataset_preset,
-        "dataset_name": dataset_name,
-        "dataset_slug": DATASET_SLUGS.get(str(dataset_preset), str(dataset_preset)),
-        "model_name": model_name,
-        "model_label": first_non_null(frame, "model_label", MODEL_LABELS.get(model_name, model_name)),
-        "model_preset": model_preset,
-        "train_preset": train_preset,
-        "train_lr": train_lr,
-        "setting_key": f"{model_preset}__{train_preset}",
-        "setting_label": build_setting_label(str(model_preset), str(train_preset), train_lr),
-    }
-
-
-def load_artifact_run(artifact_run_dir: Path) -> pd.DataFrame | None:
-    scalars_path = artifact_run_dir / "scalars.csv.gz"
-    if not scalars_path.exists():
-        return None
-
-    summary = safe_read_yaml(artifact_run_dir / "summary.yaml") or {}
-    frame = pd.read_csv(scalars_path)
-    frame = frame[frame["source"].isin(["pilot_selection", "test_metrics"])].copy()
-    if frame.empty:
-        return None
-
-    frame["checkpoint_epoch"] = pd.to_numeric(frame["checkpoint_epoch"], errors="coerce")
-    final_epoch = int(frame["checkpoint_epoch"].dropna().max())
-    frame = frame[frame["checkpoint_epoch"].eq(final_epoch)].copy()
-
-    meta = extract_run_metadata(frame, artifact_run_dir)
-    frame["artifact_batch_dir"] = str(artifact_run_dir.parent)
-    frame["artifact_run_dir"] = str(artifact_run_dir)
-    frame["raw_run_dir"] = summary.get("source_run_dir")
-    for key, value in meta.items():
-        frame[key] = value
-    return frame
-
-
-def load_batches(artifact_root: Path) -> pd.DataFrame:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--artifact-root", type=Path, default=ARTIFACT_ROOT, help="Root directory containing benchmark artifacts.")
+    parser.add_argument("--report-root", type=Path, default=REPORT_ROOT, help="Output directory for CSV/Markdown/PNG reports.")
+    parser.add_argument("--bench-config-root", type=Path, default=BENCH_CONFIG_ROOT, help="Output directory for generated benchmark configs.")
+    parser.add_argument("--skip-reports", action="store_true", help="Do not write CSV/Markdown/PNG reports.")
+    parser.add_argument("--skip-configs", action="store_true", help="Do not write benchmark configs.")
+    args = parser.parse_args()
     frames: list[pd.DataFrame] = []
     for family in FAMILY_SPECS:
-        batch_dir = discover_family_batch(artifact_root, family)
+        batch_dir = discover_family_batch(args.artifact_root, family)
         for artifact_run_dir in sorted(path for path in batch_dir.iterdir() if path.is_dir()):
-            loaded = load_artifact_run(artifact_run_dir)
-            if loaded is not None:
-                frames.append(loaded)
+            scalars_path = artifact_run_dir / "scalars.csv.gz"
+            if not scalars_path.exists():
+                continue
+
+            summary_path = artifact_run_dir / "summary.yaml"
+            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+            summary = summary or {}
+            frame = pd.read_csv(scalars_path)
+            frame = frame[frame["source"].isin(["pilot_selection", "test_metrics"])].copy()
+            if frame.empty:
+                continue
+
+            frame["checkpoint_epoch"] = pd.to_numeric(frame["checkpoint_epoch"], errors="coerce")
+            final_epoch = int(frame["checkpoint_epoch"].dropna().max())
+            frame = frame[frame["checkpoint_epoch"].eq(final_epoch)].copy()
+
+            run_tokens = artifact_run_dir.name.split("__")
+            dataset_preset = first_non_null(frame, "dataset_preset", run_tokens[1] if len(run_tokens) > 1 else "dataset")
+            dataset_name = first_non_null(frame, "dataset_name", dataset_preset)
+            model_preset = first_non_null(frame, "model_preset", run_tokens[3] if len(run_tokens) > 3 else "model")
+            train_preset = first_non_null(frame, "train_preset", run_tokens[4] if len(run_tokens) > 4 else "train")
+            inferred_model_name = str(model_preset)
+            for ordered_model_name in MODEL_ORDER:
+                if inferred_model_name.startswith(ordered_model_name):
+                    inferred_model_name = ordered_model_name
+                    break
+            model_name = first_non_null(frame, "model_name", inferred_model_name)
+            token = str(train_preset).removeprefix("pilot_lr")
+            match = re.fullmatch(r"(\d+)e(\d+)", token)
+            if match:
+                compact_lr = float(f"{match.group(1)}e-{match.group(2)}")
+            else:
+                try:
+                    compact_lr = float("nan") if token is None else float(token)
+                except (TypeError, ValueError):
+                    compact_lr = float("nan")
+            train_lr_value = first_non_null(frame, "train_lr", compact_lr)
+            try:
+                train_lr = float("nan") if train_lr_value is None else float(train_lr_value)
+            except (TypeError, ValueError):
+                train_lr = float("nan")
+            setting_parts = [str(model_preset), str(train_preset)]
+            if pd.notna(train_lr):
+                setting_parts.append(f"lr={train_lr:.3g}")
+
+            batch_name = artifact_run_dir.parent.name.lower()
+            if "synth" in batch_name or "alphastable" in batch_name:
+                bench_name = "synth"
+            elif "image" in batch_name:
+                bench_name = "image"
+            else:
+                raise ValueError(f"Could not infer family from batch dir: {artifact_run_dir.parent}")
+
+            frame["artifact_batch_dir"] = str(artifact_run_dir.parent)
+            frame["artifact_run_dir"] = str(artifact_run_dir)
+            frame["raw_run_dir"] = summary.get("source_run_dir")
+            frame["bench_name"] = bench_name
+            frame["dataset_preset"] = dataset_preset
+            frame["dataset_name"] = dataset_name
+            frame["dataset_slug"] = DATASET_SLUGS.get(str(dataset_preset), str(dataset_preset))
+            frame["model_name"] = model_name
+            frame["model_label"] = first_non_null(frame, "model_label", MODEL_LABELS.get(model_name, model_name))
+            frame["model_preset"] = model_preset
+            frame["train_preset"] = train_preset
+            frame["train_lr"] = train_lr
+            frame["setting_key"] = f"{model_preset}__{train_preset}"
+            frame["setting_label"] = " | ".join(setting_parts)
+            frames.append(frame)
+
     if not frames:
-        raise FileNotFoundError(f"No evaluated pilot runs with scalars.csv.gz found under {artifact_root}.")
-    frame = pd.concat(frames, ignore_index=True)
-    frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
-    frame["eval_repeat_idx"] = pd.to_numeric(frame.get("eval_repeat_idx"), errors="coerce")
-    return frame
+        raise FileNotFoundError(f"No evaluated pilot runs with scalars.csv.gz found under {args.artifact_root}.")
 
+    pilot_frame = pd.concat(frames, ignore_index=True)
+    pilot_frame["value"] = pd.to_numeric(pilot_frame["value"], errors="coerce")
+    pilot_frame["eval_repeat_idx"] = pd.to_numeric(pilot_frame.get("eval_repeat_idx"), errors="coerce")
 
-def summarize_settings(frame: pd.DataFrame) -> pd.DataFrame:
     group_cols = [
         "bench_name",
         "dataset_name",
@@ -234,19 +187,14 @@ def summarize_settings(frame: pd.DataFrame) -> pd.DataFrame:
         "setting_label",
         "metric_name",
     ]
-    summary = (
-        frame.groupby(group_cols, dropna=False)["value"]
-        .agg(mean="mean", median="median", std=lambda s: float(s.std(ddof=0)), n="size")
+    setting_summary = (
+        pilot_frame.groupby(group_cols, dropna=False)["value"]
+        .agg(mean="mean", median="median", std=lambda series: float(series.std(ddof=0)), n="size")
         .reset_index()
     )
-    summary["std"] = summary["std"].fillna(0.0)
-    return summary
+    setting_summary["std"] = setting_summary["std"].fillna(0.0)
 
-
-def rank_settings(setting_summary: pd.DataFrame) -> tuple[pd.DataFrame, dict[tuple[str, str, str], pd.DataFrame]]:
     recommendations: list[dict[str, Any]] = []
-    pivot_tables: dict[tuple[str, str, str], pd.DataFrame] = {}
-
     meta_cols = [
         "setting_key",
         "setting_label",
@@ -255,7 +203,6 @@ def rank_settings(setting_summary: pd.DataFrame) -> tuple[pd.DataFrame, dict[tup
         "train_preset",
         "train_lr",
     ]
-
     for (bench_name, dataset_name, model_name), group in setting_summary.groupby(["bench_name", "dataset_name", "model_name"], dropna=False):
         meta = group[meta_cols].drop_duplicates(subset=["setting_key"]).reset_index(drop=True)
         score_matrix = group.pivot_table(index="setting_key", columns="metric_name", values="mean", aggfunc="first")
@@ -300,190 +247,143 @@ def rank_settings(setting_summary: pd.DataFrame) -> tuple[pd.DataFrame, dict[tup
                 "artifact_batch_dir": group["artifact_batch_dir"].iloc[0] if "artifact_batch_dir" in group.columns else None,
             }
         )
-        pivot_tables[(bench_name, dataset_name, model_name)] = ranked
 
     recommendations_df = pd.DataFrame(recommendations)
-    if recommendations_df.empty:
-        return recommendations_df, pivot_tables
-    recommendations_df = recommendations_df.sort_values(["bench_name", "dataset_slug", "model_name"]).reset_index(drop=True)
-    return recommendations_df, pivot_tables
-
-
-def render_markdown_table(frame: pd.DataFrame) -> str:
-    columns = [
-        "bench_name",
-        "dataset_slug",
-        "model_name",
-        "selected_model_preset",
-        "selected_pilot_train_preset",
-        "selected_lr",
-        "selection_metric",
-        "selection_score",
-    ]
-    display = frame[columns].copy()
-    display["selected_lr"] = display["selected_lr"].map(lambda value: f"{value:.4g}")
-    display["selection_score"] = display["selection_score"].map(lambda value: f"{value:.6g}")
-    header = "| " + " | ".join(columns) + " |"
-    separator = "| " + " | ".join(["---"] * len(columns)) + " |"
-    rows = ["| " + " | ".join(str(row[col]) for col in columns) + " |" for _, row in display.iterrows()]
-    return "\n".join([header, separator, *rows]) + "\n"
-
-
-def plot_summary(frame: pd.DataFrame, output_path: Path) -> None:
-    families = ["synth", "real", "image"]
-    fig, axes = plt.subplots(len(families), 1, figsize=(15, 10), constrained_layout=True)
-    axes = [axes] if len(families) == 1 else list(axes)
-
-    for ax, family in zip(axes, families):
-        family_frame = frame[frame["bench_name"].eq(family)].copy()
-        datasets = sorted(family_frame["dataset_slug"].unique().tolist())
-        models = [model for model in MODEL_ORDER if model in family_frame["model_name"].unique()]
-        score_matrix = np.full((len(datasets), len(models)), np.nan)
-
-        for row in family_frame.itertuples(index=False):
-            y_idx = datasets.index(row.dataset_slug)
-            x_idx = models.index(row.model_name)
-            score_matrix[y_idx, x_idx] = row.selection_score
-
-        image = ax.imshow(score_matrix, aspect="auto", cmap="viridis_r")
-        ax.set_xticks(range(len(models)), [MODEL_LABELS.get(model, model) for model in models], rotation=20, ha="right")
-        ax.set_yticks(range(len(datasets)), datasets)
-        ax.set_title(f"{family} pilot winners")
-
-        for row in family_frame.itertuples(index=False):
-            y_idx = datasets.index(row.dataset_slug)
-            x_idx = models.index(row.model_name)
-            annotation = f"{row.selected_model_preset}\n{row.selected_pilot_train_preset}"
-            ax.text(x_idx, y_idx, annotation, ha="center", va="center", fontsize=8, color="black")
-
-        fig.colorbar(
-            image,
-            ax=ax,
-            fraction=0.025,
-            pad=0.01,
-            label="Selected validation inner loss",
-        )
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-
-
-def clone_single_entry(config: dict[str, Any], section_name: str, entry_name: str) -> dict[str, Any]:
-    section = copy.deepcopy(config[section_name])
-    if entry_name not in section:
-        raise KeyError(f"Missing {section_name}.{entry_name} in template config.")
-    return {entry_name: section[entry_name]}
-
-
-def selected_train_name(lr: float) -> str:
-    return "selected"
-
-
-def build_bench_config(row: pd.Series) -> dict[str, Any]:
-    family = str(row["bench_name"])
-    family_spec = FAMILY_SPECS[family]
-    pilot_config = load_yaml(family_spec["pilot_config"])
-    bench_template = load_yaml(family_spec["bench_template"])
-
-    dataset_preset = str(row["dataset_preset"])
-    dataset_slug = str(row["dataset_slug"])
-    model_name = str(row["model_name"])
-    model_preset = str(row["selected_model_preset"])
-    train_preset = str(row["selected_pilot_train_preset"])
-    train_lr = float(row["selected_lr"])
-
-    network_name = str(bench_template["sweep"]["networks"][0])
-    final_train_name = selected_train_name(train_lr)
-    final_train_cfg = copy.deepcopy(bench_template["trains"][bench_template["sweep"]["trains"][0]])
-    final_train_cfg["lr"] = train_lr
-    final_train_cfg.update(DATASET_TRAIN_OVERRIDES.get(dataset_preset, {}))
-
-    run_name = f"bench_{family}__{dataset_slug}__{model_name}"
-    return {
-        "run": {
-            **copy.deepcopy(bench_template["run"]),
-            "name": run_name,
-        },
-        "selection": {
-            "dataset_slug": dataset_slug,
-            "selected_model_preset": model_preset,
-            "selected_pilot_train_preset": train_preset,
-            "selected_lr": train_lr,
-            "selection_metric": str(row["selection_metric"]),
-            "selection_score": float(row["selection_score"]),
-            "source_artifact_batch_dir": str(row["artifact_batch_dir"]),
-        },
-        "sweep": {
-            "datasets": [dataset_preset],
-            "networks": [network_name],
-            "models": [model_name],
-            "trains": [final_train_name],
-        },
-        "datasets": clone_single_entry(bench_template, "datasets", dataset_preset),
-        "networks": clone_single_entry(bench_template, "networks", network_name),
-        "models": {
-            model_name: copy.deepcopy(pilot_config["models"][model_preset]),
-        },
-        "trains": {
-            final_train_name: final_train_cfg,
-        },
-        "save": copy.deepcopy(bench_template["save"]),
-    }
-
-
-def write_yaml(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(payload, handle, sort_keys=False)
-
-
-def write_reports(recommendations_df: pd.DataFrame, report_root: Path) -> None:
-    report_root.mkdir(parents=True, exist_ok=True)
-    csv_path = report_root / "pilot_best_settings.csv"
-    md_path = report_root / "pilot_best_settings.md"
-    png_path = report_root / "pilot_summary.png"
-
-    recommendations_df.to_csv(csv_path, index=False)
-    md_contents = "# Pilot Best Settings\n\n" + render_markdown_table(recommendations_df)
-    md_path.write_text(md_contents, encoding="utf-8")
-    plot_summary(recommendations_df, png_path)
-
-
-def clear_existing_bench_configs(bench_config_root: Path) -> None:
-    if not bench_config_root.exists():
-        return
-    for path in sorted(bench_config_root.rglob("*.yaml"), reverse=True):
-        path.unlink()
-    for path in sorted((path for path in bench_config_root.rglob("*") if path.is_dir()), reverse=True):
-        if path != bench_config_root:
-            path.rmdir()
-
-
-def write_bench_configs(recommendations_df: pd.DataFrame, bench_config_root: Path) -> None:
-    clear_existing_bench_configs(bench_config_root)
-    bench_config_root.mkdir(parents=True, exist_ok=True)
-    for _, row in recommendations_df.iterrows():
-        family = str(row["bench_name"])
-        dataset_slug = str(row["dataset_slug"])
-        model_name = str(row["model_name"])
-        config = build_bench_config(row)
-        output_path = bench_config_root / family / dataset_slug / f"{model_name}.yaml"
-        write_yaml(output_path, config)
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    pilot_frame = load_batches(args.artifact_root)
-    setting_summary = summarize_settings(pilot_frame)
-    recommendations_df, _ = rank_settings(setting_summary)
+    if not recommendations_df.empty:
+        recommendations_df = recommendations_df.sort_values(["bench_name", "dataset_slug", "model_name"]).reset_index(drop=True)
     if recommendations_df.empty:
         raise RuntimeError("No usable pilot recommendations were produced.")
 
     if not args.skip_reports:
-        write_reports(recommendations_df, args.report_root)
+        args.report_root.mkdir(parents=True, exist_ok=True)
+        csv_path = args.report_root / "pilot_best_settings.csv"
+        md_path = args.report_root / "pilot_best_settings.md"
+        png_path = args.report_root / "pilot_summary.png"
+
+        recommendations_df.to_csv(csv_path, index=False)
+        table_columns = [
+            "bench_name",
+            "dataset_slug",
+            "model_name",
+            "selected_model_preset",
+            "selected_pilot_train_preset",
+            "selected_lr",
+            "selection_metric",
+            "selection_score",
+        ]
+        display = recommendations_df[table_columns].copy()
+        display["selected_lr"] = display["selected_lr"].map(lambda value: f"{value:.4g}")
+        display["selection_score"] = display["selection_score"].map(lambda value: f"{value:.6g}")
+        header = "| " + " | ".join(table_columns) + " |"
+        separator = "| " + " | ".join(["---"] * len(table_columns)) + " |"
+        rows = ["| " + " | ".join(str(row[col]) for col in table_columns) + " |" for _, row in display.iterrows()]
+        md_path.write_text("# Pilot Best Settings\n\n" + "\n".join([header, separator, *rows]) + "\n", encoding="utf-8")
+
+        families = ["synth", "image"]
+        fig, axes = plt.subplots(len(families), 1, figsize=(15, 10), constrained_layout=True)
+        axes = [axes] if len(families) == 1 else list(axes)
+        for ax, family in zip(axes, families):
+            family_frame = recommendations_df[recommendations_df["bench_name"].eq(family)].copy()
+            datasets = sorted(family_frame["dataset_slug"].unique().tolist())
+            models = [model for model in MODEL_ORDER if model in family_frame["model_name"].unique()]
+            score_matrix = np.full((len(datasets), len(models)), np.nan)
+
+            for row in family_frame.itertuples(index=False):
+                y_idx = datasets.index(row.dataset_slug)
+                x_idx = models.index(row.model_name)
+                score_matrix[y_idx, x_idx] = row.selection_score
+
+            image = ax.imshow(score_matrix, aspect="auto", cmap="viridis_r")
+            ax.set_xticks(range(len(models)), [MODEL_LABELS.get(model, model) for model in models], rotation=20, ha="right")
+            ax.set_yticks(range(len(datasets)), datasets)
+            ax.set_title(f"{family} pilot winners")
+
+            for row in family_frame.itertuples(index=False):
+                y_idx = datasets.index(row.dataset_slug)
+                x_idx = models.index(row.model_name)
+                annotation = f"{row.selected_model_preset}\n{row.selected_pilot_train_preset}"
+                ax.text(x_idx, y_idx, annotation, ha="center", va="center", fontsize=8, color="black")
+
+            fig.colorbar(
+                image,
+                ax=ax,
+                fraction=0.025,
+                pad=0.01,
+                label="Selected validation inner loss",
+            )
+
+        fig.savefig(png_path, dpi=200)
+        plt.close(fig)
     if not args.skip_configs:
-        write_bench_configs(recommendations_df, args.bench_config_root)
+        if args.bench_config_root.exists():
+            for path in sorted(args.bench_config_root.rglob("*.yaml"), reverse=True):
+                path.unlink()
+            for path in sorted((path for path in args.bench_config_root.rglob("*") if path.is_dir()), reverse=True):
+                if path != args.bench_config_root:
+                    path.rmdir()
+
+        args.bench_config_root.mkdir(parents=True, exist_ok=True)
+        for _, row in recommendations_df.iterrows():
+            family = str(row["bench_name"])
+            family_spec = FAMILY_SPECS[family]
+            pilot_config = load_yaml(family_spec["pilot_config"])
+            bench_template = load_yaml(family_spec["bench_template"])
+
+            dataset_preset = str(row["dataset_preset"])
+            dataset_slug = str(row["dataset_slug"])
+            model_name = str(row["model_name"])
+            model_preset = str(row["selected_model_preset"])
+            train_preset = str(row["selected_pilot_train_preset"])
+            train_lr = float(row["selected_lr"])
+
+            network_name = str(bench_template["sweep"]["networks"][0])
+            final_train_name = "selected"
+            final_train_cfg = copy.deepcopy(bench_template["trains"][bench_template["sweep"]["trains"][0]])
+            final_train_cfg["lr"] = train_lr
+            final_train_cfg.update(DATASET_TRAIN_OVERRIDES.get(dataset_preset, {}))
+
+            for section_name, entry_name in (("datasets", dataset_preset), ("networks", network_name)):
+                if entry_name not in bench_template[section_name]:
+                    raise KeyError(f"Missing {section_name}.{entry_name} in template config.")
+
+            config = {
+                "run": {
+                    **copy.deepcopy(bench_template["run"]),
+                    "name": f"bench_{family}__{dataset_slug}__{model_name}",
+                },
+                "selection": {
+                    "dataset_slug": dataset_slug,
+                    "selected_model_preset": model_preset,
+                    "selected_pilot_train_preset": train_preset,
+                    "selected_lr": train_lr,
+                    "selection_metric": str(row["selection_metric"]),
+                    "selection_score": float(row["selection_score"]),
+                    "source_artifact_batch_dir": str(row["artifact_batch_dir"]),
+                },
+                "sweep": {
+                    "datasets": [dataset_preset],
+                    "networks": [network_name],
+                    "models": [model_name],
+                    "trains": [final_train_name],
+                },
+                "datasets": {
+                    dataset_preset: copy.deepcopy(bench_template["datasets"][dataset_preset]),
+                },
+                "networks": {
+                    network_name: copy.deepcopy(bench_template["networks"][network_name]),
+                },
+                "models": {
+                    model_name: copy.deepcopy(pilot_config["models"][model_preset]),
+                },
+                "trains": {
+                    final_train_name: final_train_cfg,
+                },
+                "save": copy.deepcopy(bench_template["save"]),
+            }
+            output_path = args.bench_config_root / family / dataset_slug / f"{model_name}.yaml"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("w", encoding="utf-8") as handle:
+                yaml.safe_dump(config, handle, sort_keys=False)
 
     print(f"Loaded {pilot_frame['artifact_run_dir'].nunique()} evaluated pilot runs.")
     print(f"Wrote {len(recommendations_df)} per-dataset/model selections.")

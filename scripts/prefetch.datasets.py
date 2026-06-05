@@ -14,7 +14,6 @@ for path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
 
 from benchmarks.utils import load_yaml, require_section, select_entries  # noqa: E402
 
-
 # Must mirror benchmarks/_real_data_cache.CACHE_VERSION. Tested for equality.
 CACHE_VERSION = 1
 
@@ -53,6 +52,8 @@ def parse_args() -> argparse.Namespace:
 def _expand_config_inputs(paths: list[Path]) -> list[Path]:
     expanded: list[Path] = []
     for path in paths:
+        if not path.exists() and not path.suffix:
+            continue
         if path.is_dir():
             expanded.extend(sorted(path.rglob("*.yaml")))
         else:
@@ -230,6 +231,7 @@ def _run_build(args, tasks: list, root: Path) -> int:
 
 
 if __name__ == "__main__":
+
     args = parse_args()
     root = _resolve_cache_root(args.cache_root)
     tasks = _collect_yaml_tasks(args)

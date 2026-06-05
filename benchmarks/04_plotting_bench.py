@@ -1,22 +1,18 @@
 """Generate per-dataset benchmark tables and figures from current eval artifacts."""
 
-from __future__ import annotations
-
 import argparse
 from pathlib import Path
 import sys
-
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 for _path in (REPO_ROOT, REPO_ROOT / "src"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from labkit.report import PRETTY_RCPARAMS, format_mean_std_latex  # noqa: E402
-
+from labkit.report import PRETTY_RCPARAMS, format_mean_std_latex                                      # noqa
 
 ARTIFACT_ROOT = REPO_ROOT / "benchmarks" / "artifacts"
 TABLE_ROOT = REPO_ROOT / "benchmarks" / "tables"
@@ -41,34 +37,59 @@ LINE_WIDTH = 2.8
 DATASET_LABELS = {
     "alpha_stable_target": "Alpha-stable iso.",
     "alpha_stable_mixture_target": "Alpha-stable mix.",
-    "wildfires": "Wildfires",
     "cifar100_lt": "CIFAR100-LT",
     "hrrr": "HRRR",
     "imagenet_lt": "ImageNet-LT",
     "lvis": "LVIS",
 }
+DATASET_SLUG_ALIASES = {
+    "alpha_stable_target": "alpha_stable_iso",
+    "alpha_stable_mixture_target": "alpha_stable_mix",
+}
 
 PERFORMANCE_TABLE_METRICS = [
     "MMD_RBF",
-    "TCE(90%)",
-    "TCE(95%)",
-    "TCE(99%)",
-    "TCE(99.9%)",
+    "TCE(90)",
+    "TCE(99)",
+    "TCE(99,9)",
+    "TCE(99,99)",
 ]
+TCE_QUANTILE_SPECS = [
+    ("TCE(90)", 90.0, "90", ["TCE(90)", "TCE(90%)"]),
+    ("TCE(99)", 99.0, "99", ["TCE(99)", "TCE(99%)"]),
+    ("TCE(99,9)", 99.9, "99,9", ["TCE(99,9)", "TCE(99.9)", "TCE(99.9%)"]),
+    ("TCE(99,99)", 99.99, "99,99", ["TCE(99,99)", "TCE(99.99)", "TCE(99.99%)"]),
+]
+TCE_METRICS = [name for name, _, _, _ in TCE_QUANTILE_SPECS]
+TCE_QUANTILES = {name: quantile for name, quantile, _, _ in TCE_QUANTILE_SPECS}
+TCE_TICK_LABELS = {name: tick_label for name, _, tick_label, _ in TCE_QUANTILE_SPECS}
+TCE_METRIC_ALIASES = {
+    alias: name
+    for name, _, _, aliases in TCE_QUANTILE_SPECS
+    for alias in aliases
+}
 CLASS_RECOVERY_DATASETS = ["cifar100_lt", "imagenet_lt"]
 CLASS_RECOVERY_METRICS = [
     ("CLASS_RECOVERY_INDEX", True),
     ("CLASS_HIST_TV", False),
 ]
-CURVE_METRICS = PERFORMANCE_TABLE_METRICS
 TRAIN_METRICS = ["training_loss", "training_loss_std", "grad_norm_epoch"]
+TEST_VS_TEST_SOURCE = "test_vs_test_metrics"
+STALE_DATASET_FIGURE_FILENAMES = [
+    "mmd_rbf",
+    "tce_90",
+    "tce_95",
+    "tce_99",
+    "tce_999",
+    "tce_9999",
+]
 
 METRIC_LABELS = {
     "MMD_RBF": "MMD RBF",
-    "TCE(90%)": "TCE(90%)",
-    "TCE(95%)": "TCE(95%)",
-    "TCE(99%)": "TCE(99%)",
-    "TCE(99.9%)": "TCE(99.9%)",
+    "TCE(90)": "TCE(90)",
+    "TCE(99)": "TCE(99)",
+    "TCE(99,9)": "TCE(99,9)",
+    "TCE(99,99)": "TCE(99,99)",
     "CLASS_RECOVERY_INDEX": "Class Recovery",
     "CLASS_HIST_TV": "Class Hist. TV",
     "training_loss": "Training Loss",
@@ -77,44 +98,16 @@ METRIC_LABELS = {
 }
 METRIC_FILENAMES = {
     "MMD_RBF": "mmd_rbf",
-    "TCE(90%)": "tce_90",
-    "TCE(95%)": "tce_95",
-    "TCE(99%)": "tce_99",
-    "TCE(99.9%)": "tce_999",
+    "TCE(90)": "tce_90",
+    "TCE(99)": "tce_99",
+    "TCE(99,9)": "tce_999",
+    "TCE(99,99)": "tce_9999",
     "CLASS_RECOVERY_INDEX": "class_recovery",
     "CLASS_HIST_TV": "class_hist_tv",
     "training_loss": "training_loss",
     "training_loss_std": "training_loss_std",
     "grad_norm_epoch": "grad_norm",
 }
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render benchmark tables and figures from eval artifacts.")
-    parser.add_argument("--artifact-root", type=Path, default=ARTIFACT_ROOT)
-    parser.add_argument("--table-root", type=Path, default=TABLE_ROOT)
-    parser.add_argument("--figure-root", type=Path, default=FIGURE_ROOT)
-    parser.add_argument("--datasets", nargs="*", default=None, help="Optional dataset presets to render.")
-    return parser.parse_args()
-
-
-def ordered_labels(labels) -> list[str]:
-    labels = list(dict.fromkeys(labels))
-    return [label for label in PREFERRED_LABELS if label in labels] + sorted(
-        label for label in labels if label not in PREFERRED_LABELS
-    )
-
-
-def dataset_title(dataset_name: str) -> str:
-    return DATASET_LABELS.get(dataset_name, dataset_name.replace("_", " "))
-
-
-def dataset_slug(dataset_name: str) -> str:
-    aliases = {
-        "alpha_stable_target": "alpha_stable_iso",
-        "alpha_stable_mixture_target": "alpha_stable_mix",
-    }
-    return aliases.get(dataset_name, dataset_name)
 
 
 def discover_eval_batches(artifact_root: Path) -> dict[str, list[Path]]:
@@ -140,25 +133,20 @@ def discover_eval_batches(artifact_root: Path) -> dict[str, list[Path]]:
     return dataset_batches
 
 
-def load_batch_scalars(batch_dir: Path) -> pd.DataFrame:
-    frames = []
-    for run_dir in sorted(path for path in batch_dir.iterdir() if path.is_dir()):
-        scalars_path = run_dir / "scalars.csv.gz"
-        if scalars_path.exists():
-            frames.append(pd.read_csv(scalars_path))
-    if not frames:
-        raise FileNotFoundError(f"No scalars.csv.gz found under {batch_dir}")
-    frame = pd.concat(frames, ignore_index=True)
-    for column in ["dataset_alpha", "model_alpha", "value", "checkpoint_epoch", "epoch"]:
-        if column in frame.columns:
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    return frame
-
-
 def load_dataset_scalars(batch_dirs: list[Path]) -> pd.DataFrame:
     frames = []
     for batch_dir in batch_dirs:
-        frame = load_batch_scalars(batch_dir)
+        batch_frames = []
+        for run_dir in sorted(path for path in batch_dir.iterdir() if path.is_dir()):
+            scalars_path = run_dir / "scalars.csv.gz"
+            if scalars_path.exists():
+                batch_frames.append(pd.read_csv(scalars_path))
+        if not batch_frames:
+            raise FileNotFoundError(f"No scalars.csv.gz found under {batch_dir}")
+        frame = pd.concat(batch_frames, ignore_index=True)
+        for column in ["dataset_alpha", "model_alpha", "value", "checkpoint_epoch", "epoch"]:
+            if column in frame.columns:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
         frame["eval_batch_dir"] = batch_dir.name
         frames.append(frame)
     frame = pd.concat(frames, ignore_index=True)
@@ -175,106 +163,6 @@ def summarize_source_metrics(frame: pd.DataFrame, source: str, group_cols: list[
     )
     summary["std"] = summary["std"].fillna(0.0)
     return summary
-
-
-def best_parameter_rows(summary: pd.DataFrame, metric_name: str, fixed_cols: list[str], *, higher_is_better: bool = False) -> pd.DataFrame:
-    sub = summary[summary["metric_name"].eq(metric_name)].dropna(subset=["median"]).copy()
-    if sub.empty:
-        return sub
-    rows = []
-    for _, group in sub.groupby(fixed_cols, dropna=False):
-        if "model_alpha" in group.columns and not group["model_alpha"].isna().all():
-            selected = group.nlargest(1, "median") if higher_is_better else group.nsmallest(1, "median")
-            rows.append(selected.iloc[0].to_dict())
-        else:
-            rows.append(group.iloc[0].to_dict())
-    return pd.DataFrame(rows)
-
-
-def build_metric_table(summary: pd.DataFrame, metric_names: list[str], row_labels: list[str]) -> pd.DataFrame:
-    table = pd.DataFrame("NA", index=row_labels, columns=[METRIC_LABELS[name] for name in metric_names], dtype=object)
-    for metric_name in metric_names:
-        winners = best_parameter_rows(summary, metric_name, ["model_label"])
-        if winners.empty:
-            continue
-        best_label = winners.loc[winners["median"].idxmin(), "model_label"]
-        col_name = METRIC_LABELS[metric_name]
-        for _, row in winners.iterrows():
-            caption = ""
-            if not pd.isna(row.get("model_alpha")):
-                caption = f"a={float(row['model_alpha']):.3g}"
-            value = float(row["median"])
-            table.loc[row["model_label"], col_name] = format_mean_std_latex(
-                value,
-                float(row["std"]),
-                caption=caption,
-                bold=row["model_label"] == best_label,
-            )
-    return table
-
-
-def dataframe_to_latex_table(frame: pd.DataFrame, *, caption: str, label: str) -> str:
-    align = "l" + "c" * len(frame.columns)
-    lines = [
-        "\\begin{table}[t]",
-        "\\centering",
-        f"\\caption{{{caption}}}",
-        f"\\label{{{label}}}",
-        f"\\begin{{tabular}}{{{align}}}",
-        "\\toprule",
-        "Model & " + " & ".join(frame.columns) + " \\\\",
-        "\\midrule",
-    ]
-    for row_label, row in frame.iterrows():
-        lines.append(f"{row_label} & " + " & ".join(str(value) for value in row.values) + " \\\\")
-    lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}", ""])
-    return "\n".join(lines)
-
-
-def save_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
-def save_metric_curve(
-    summary: pd.DataFrame,
-    *,
-    metric_name: str,
-    x_key: str,
-    dataset_name: str,
-    output_path: Path,
-    ylabel: str,
-    log_scale: bool = True,
-) -> None:
-    models = ordered_labels(summary["model_label"].dropna().unique())
-    fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for model_label in models:
-        curve = summary[(summary["metric_name"].eq(metric_name)) & (summary["model_label"].eq(model_label))].sort_values(x_key)
-        if curve.empty:
-            continue
-        ax.plot(
-            curve[x_key],
-            curve["median"],
-            linewidth=LINE_WIDTH,
-            marker="o",
-            markersize=3.5,
-            label=model_label,
-            alpha=0.8,
-            color=MODEL_COLORS.get(model_label, "tab:gray"),
-        )
-    ax.set_title(f"{dataset_title(dataset_name)} | {ylabel}")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel(ylabel)
-    if log_scale:
-        ax.set_yscale("log")
-    ax.grid(alpha=0.2, which="both")
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(2, len(labels)), frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.9))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
 
 
 def final_checkpoint_rows(scalars: pd.DataFrame) -> pd.DataFrame:
@@ -309,9 +197,12 @@ def render_image_class_recovery_table(dataset_batches: dict[str, list[Path]], ta
         return
 
     summary = pd.concat(summaries, ignore_index=True)
-    row_labels = ordered_labels(summary["model_label"].dropna().unique())
+    row_labels = list(dict.fromkeys(summary["model_label"].dropna().unique()))
+    row_labels = [label for label in PREFERRED_LABELS if label in row_labels] + sorted(
+        label for label in row_labels if label not in PREFERRED_LABELS
+    )
     col_names = [
-        f"{dataset_title(dataset_name)} {METRIC_LABELS[metric_name]}"
+        f"{DATASET_LABELS.get(dataset_name, dataset_name.replace('_', ' '))} {METRIC_LABELS[metric_name]}"
         for dataset_name in CLASS_RECOVERY_DATASETS
         if dataset_name in set(summary["dataset_preset"])
         for metric_name, _ in CLASS_RECOVERY_METRICS
@@ -323,17 +214,23 @@ def render_image_class_recovery_table(dataset_batches: dict[str, list[Path]], ta
         if dataset_summary.empty:
             continue
         for metric_name, higher_is_better in CLASS_RECOVERY_METRICS:
-            winners = best_parameter_rows(
-                dataset_summary,
-                metric_name,
-                ["model_label"],
-                higher_is_better=higher_is_better,
-            )
+            sub = dataset_summary[dataset_summary["metric_name"].eq(metric_name)].dropna(subset=["median"]).copy()
+            if sub.empty:
+                winners = sub
+            else:
+                rows = []
+                for _, group in sub.groupby(["model_label"], dropna=False):
+                    if "model_alpha" in group.columns and not group["model_alpha"].isna().all():
+                        selected = group.nlargest(1, "median") if higher_is_better else group.nsmallest(1, "median")
+                        rows.append(selected.iloc[0].to_dict())
+                    else:
+                        rows.append(group.iloc[0].to_dict())
+                winners = pd.DataFrame(rows)
             if winners.empty:
                 continue
             best_idx = winners["median"].idxmax() if higher_is_better else winners["median"].idxmin()
             best_label = winners.loc[best_idx, "model_label"]
-            col_name = f"{dataset_title(dataset_name)} {METRIC_LABELS[metric_name]}"
+            col_name = f"{DATASET_LABELS.get(dataset_name, dataset_name.replace('_', ' '))} {METRIC_LABELS[metric_name]}"
             for _, row in winners.iterrows():
                 caption = ""
                 if not pd.isna(row.get("model_alpha")):
@@ -345,12 +242,23 @@ def render_image_class_recovery_table(dataset_batches: dict[str, list[Path]], ta
                     bold=row["model_label"] == best_label,
                 )
 
-    tex = dataframe_to_latex_table(
-        table,
-        caption="Image class recovery and class-histogram total variation on labeled image benchmarks. Higher is better for recovery; lower is better for TV.",
-        label="tab:bench-image-class-recovery",
-    )
-    save_text(table_root / "image_class_recovery.tex", tex)
+    align = "l" + "c" * len(table.columns)
+    lines = [
+        "\\begin{table}[t]",
+        "\\centering",
+        "\\caption{Image class recovery and class-histogram total variation on labeled image benchmarks. Higher is better for recovery; lower is better for TV.}",
+        "\\label{tab:bench-image-class-recovery}",
+        f"\\begin{{tabular}}{{{align}}}",
+        "\\toprule",
+        "Model & " + " & ".join(table.columns) + " \\\\",
+        "\\midrule",
+    ]
+    for row_label, row in table.iterrows():
+        lines.append(f"{row_label} & " + " & ".join(str(value) for value in row.values) + " \\\\")
+    lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}", ""])
+    table_path = table_root / "image_class_recovery.tex"
+    table_path.parent.mkdir(parents=True, exist_ok=True)
+    table_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def render_dataset(
@@ -361,42 +269,184 @@ def render_dataset(
     figure_root: Path,
 ) -> None:
     scalars = load_dataset_scalars(batch_dirs)
-    row_labels = ordered_labels(scalars["model_label"].dropna().unique())
+    dataset_slug = DATASET_SLUG_ALIASES.get(dataset_name, dataset_name)
+    dataset_label = DATASET_LABELS.get(dataset_name, dataset_name.replace("_", " "))
+    stale_performance_table = table_root / f"{dataset_slug}__performance.tex"
+    stale_performance_table.unlink(missing_ok=True)
+    for filename_stem in STALE_DATASET_FIGURE_FILENAMES:
+        (figure_root / f"{dataset_slug}__{filename_stem}.pdf").unlink(missing_ok=True)
 
-    perf_summary = summarize_source_metrics(scalars, "test_metrics", ["model_label", "model_alpha"])
-    perf_table = build_metric_table(perf_summary, PERFORMANCE_TABLE_METRICS, row_labels)
-    perf_tex = dataframe_to_latex_table(
-        perf_table,
-        caption=f"{dataset_title(dataset_name)} benchmark performance. Lower is better for every metric.",
-        label=f"tab:bench-{dataset_slug(dataset_name)}-performance",
+    final_scalars = final_checkpoint_rows(scalars)
+    test_mask = final_scalars["source"].eq("test_metrics")
+    metric_mask = final_scalars["metric_name"].eq("MMD_RBF")
+    metric_rows = final_scalars[test_mask & metric_mask]
+    labels = list(dict.fromkeys(metric_rows["model_label"].dropna().unique()))
+    labels = [label for label in PREFERRED_LABELS if label in labels] + sorted(
+        label for label in labels if label not in PREFERRED_LABELS
     )
-    save_text(table_root / f"{dataset_slug(dataset_name)}__performance.tex", perf_tex)
-
-    test_evolution = summarize_source_metrics(scalars, "test_metrics", ["checkpoint_epoch", "model_label"])
-    for metric_name in CURVE_METRICS:
-        save_metric_curve(
-            test_evolution,
-            metric_name=metric_name,
-            x_key="checkpoint_epoch",
-            dataset_name=dataset_name,
-            output_path=figure_root / f"{dataset_slug(dataset_name)}__{METRIC_FILENAMES[metric_name]}.pdf",
-            ylabel=METRIC_LABELS[metric_name],
+    groups = []
+    kept_labels = []
+    for model_label in labels:
+        values = pd.to_numeric(metric_rows[metric_rows["model_label"].eq(model_label)]["value"], errors="coerce").to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+        groups.append(values)
+        kept_labels.append(model_label)
+    if groups:
+        fig_width = max(4.8, 1.0 + 0.75 * len(kept_labels))
+        fig, ax = plt.subplots(figsize=(fig_width, 3.2))
+        box = ax.boxplot(
+            groups,
+            patch_artist=True,
+            showmeans=True,
+            meanprops={"marker": "D", "markersize": 3.5, "markerfacecolor": "white", "markeredgecolor": "#333333"},
+            medianprops={"color": "#222222", "linewidth": 1.4},
+            boxprops={"linewidth": 1.2},
+            whiskerprops={"linewidth": 1.0},
+            capprops={"linewidth": 1.0},
+            flierprops={"marker": "o", "markersize": 2.5, "alpha": 0.45},
         )
+        for patch, model_label in zip(box["boxes"], kept_labels):
+            patch.set_facecolor(MODEL_COLORS.get(model_label, "tab:gray"))
+            patch.set_alpha(0.35)
+        ax.set_xticks(range(1, len(kept_labels) + 1), kept_labels)
+
+        baseline = None
+        if "source" in final_scalars.columns:
+            baseline_mask = final_scalars["source"].eq(TEST_VS_TEST_SOURCE)
+            baseline_metric_mask = final_scalars["metric_name"].eq("MMD_RBF")
+            baseline_values = pd.to_numeric(final_scalars[baseline_mask & baseline_metric_mask]["value"], errors="coerce").to_numpy(dtype=float)
+            baseline_values = baseline_values[np.isfinite(baseline_values)]
+            if baseline_values.size:
+                baseline = float(np.median(baseline_values))
+        if baseline is not None:
+            ax.axhline(
+                baseline,
+                color="#777777",
+                linestyle=":",
+                linewidth=1.8,
+                label="test-vs-test",
+            )
+            ax.legend(loc="best")
+
+        ax.set_title(f"{dataset_label} | MMD RBF")
+        ax.set_ylabel("MMD RBF")
+        ax.tick_params(axis="x", rotation=25)
+        ax.grid(alpha=0.2, axis="y")
+        fig.tight_layout()
+        output_path = figure_root / f"{dataset_slug}__mmd_rbf_boxplot.pdf"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, bbox_inches="tight")
+        plt.close(fig)
+
+    tce_scalars = final_scalars
+    if "metric_name" in tce_scalars.columns:
+        tce_scalars = tce_scalars.copy()
+        tce_scalars["metric_name"] = tce_scalars["metric_name"].map(lambda name: TCE_METRIC_ALIASES.get(name, name))
+    summary = summarize_source_metrics(tce_scalars, "test_metrics", ["model_label"])
+    summary = summary[summary["metric_name"].isin(TCE_METRICS)].copy()
+    if not summary.empty:
+        models = list(dict.fromkeys(summary["model_label"].dropna().unique()))
+        models = [label for label in PREFERRED_LABELS if label in models] + sorted(
+            label for label in models if label not in PREFERRED_LABELS
+        )
+        fig, ax = plt.subplots(figsize=(4.8, 3.2))
+        for model_label in models:
+            rows = summary[summary["model_label"].eq(model_label)].set_index("metric_name")
+            xs = []
+            means = []
+            lowers = []
+            uppers = []
+            for metric_name in TCE_METRICS:
+                if metric_name not in rows.index:
+                    continue
+                row = rows.loc[metric_name]
+                mean = float(row["mean"])
+                std = float(row["std"])
+                if not np.isfinite(mean):
+                    continue
+                xs.append(TCE_QUANTILES[metric_name])
+                means.append(mean)
+                lowers.append(max(0.0, mean - std) if np.isfinite(std) else mean)
+                uppers.append(mean + std if np.isfinite(std) else mean)
+            if not xs:
+                continue
+
+            color = MODEL_COLORS.get(model_label, "tab:gray")
+            ax.fill_between(xs, lowers, uppers, color=color, alpha=0.16, linewidth=0)
+            ax.plot(
+                xs,
+                means,
+                linewidth=LINE_WIDTH,
+                marker="o",
+                markersize=3.5,
+                label=model_label,
+                color=color,
+                alpha=0.85,
+            )
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.set_title(f"{dataset_label} | Tail coverage error")
+            ax.set_xlabel("Tail quantile (%)")
+            ax.set_ylabel("TCE")
+            ax.set_xticks([TCE_QUANTILES[name] for name in TCE_METRICS])
+            ax.set_xticklabels([TCE_TICK_LABELS[name] for name in TCE_METRICS])
+            ax.grid(alpha=0.2, which="both")
+            fig.legend(handles, labels, loc="upper center", ncol=min(2, len(labels)), frameon=False)
+            fig.tight_layout(rect=(0, 0, 1, 0.9))
+            output_path = figure_root / f"{dataset_slug}__tce_quantiles.pdf"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_path, bbox_inches="tight")
+        plt.close(fig)
 
     train_evolution = summarize_source_metrics(scalars, "train_stats", ["epoch", "model_label"])
     for metric_name in TRAIN_METRICS:
-        save_metric_curve(
-            train_evolution,
-            metric_name=metric_name,
-            x_key="epoch",
-            dataset_name=dataset_name,
-            output_path=figure_root / f"{dataset_slug(dataset_name)}__{METRIC_FILENAMES[metric_name]}.pdf",
-            ylabel=METRIC_LABELS[metric_name],
+        models = list(dict.fromkeys(train_evolution["model_label"].dropna().unique()))
+        models = [label for label in PREFERRED_LABELS if label in models] + sorted(
+            label for label in models if label not in PREFERRED_LABELS
         )
+        fig, ax = plt.subplots(figsize=(4.8, 3.2))
+        for model_label in models:
+            train_metric_mask = train_evolution["metric_name"].eq(metric_name)
+            train_model_mask = train_evolution["model_label"].eq(model_label)
+            curve = train_evolution[train_metric_mask & train_model_mask].sort_values("epoch")
+            if curve.empty:
+                continue
+            ax.plot(
+                curve["epoch"],
+                curve["median"],
+                linewidth=LINE_WIDTH,
+                marker="o",
+                markersize=3.5,
+                label=model_label,
+                alpha=0.8,
+                color=MODEL_COLORS.get(model_label, "tab:gray"),
+            )
+        ax.set_title(f"{dataset_label} | {METRIC_LABELS[metric_name]}")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(METRIC_LABELS[metric_name])
+        ax.set_yscale("log")
+        ax.grid(alpha=0.2, which="both")
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper center", ncol=min(2, len(labels)), frameon=False)
+        fig.tight_layout(rect=(0, 0, 1, 0.9))
+        output_path = figure_root / f"{dataset_slug}__{METRIC_FILENAMES[metric_name]}.pdf"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, bbox_inches="tight")
+        plt.close(fig)
 
 
 if __name__ == "__main__":
-    args = parse_args()
+
+    parser = argparse.ArgumentParser(description="Render benchmark tables and figures from eval artifacts.")
+    parser.add_argument("--artifact-root", type=Path, default=ARTIFACT_ROOT)
+    parser.add_argument("--table-root", type=Path, default=TABLE_ROOT)
+    parser.add_argument("--figure-root", type=Path, default=FIGURE_ROOT)
+    parser.add_argument("--datasets", nargs="*", default=None, help="Optional dataset presets to render.")
+    args = parser.parse_args()
     plt.rcParams.update(PRETTY_RCPARAMS)
     dataset_batches = discover_eval_batches(args.artifact_root)
     selected_datasets = list(args.datasets) if args.datasets else sorted(dataset_batches)
