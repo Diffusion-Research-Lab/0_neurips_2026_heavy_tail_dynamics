@@ -64,6 +64,30 @@ def test_diffusers_image_models_import_and_unet_model_smoke():
     assert y.shape == x.shape
 
 
+def test_unet_model_accepts_benchmark_config_keys():
+    model = UNetModel(
+        sample_size=16,
+        n_steps=8,
+        in_channels=3,
+        out_channels=3,
+        model_channels=8,
+        num_res_blocks=1,
+        attention_resolutions=(4,),
+        dropout=0.1,
+        channel_mult=(1, 2, 2),
+        conv_resample=True,
+        dims=2,
+        num_heads=2,
+        use_scale_shift_norm=True,
+        norm_num_groups=1,
+    )
+    x = torch.randn(2, 3, 16, 16)
+    t = torch.tensor([[0.0], [1.0]])
+    y = model(x, t)
+
+    assert y.shape == x.shape
+
+
 # --- Base._check_t validation ---
 
 def test_check_t_rejects_bool():

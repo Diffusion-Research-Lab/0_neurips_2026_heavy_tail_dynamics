@@ -115,18 +115,53 @@ class UNetModel(nn.Module):
         in_channels: int = 3,
         out_channels: int | None = None,
         width: int = 64,
+        model_channels: int | None = None,
         channel_mult: tuple[int, ...] = (1, 2, 4),
         layers_per_block: int = 2,
+        num_res_blocks: int | None = None,
         norm_num_groups: int = 8,
         attention: bool = True,
+        attention_resolutions: tuple[int, ...] | None = None,
+        num_heads: int | None = None,
+        conv_resample: bool = True,
+        dims: int = 2,
+        use_scale_shift_norm: bool = False,
         **kwargs,
     ):
         super().__init__()
 
+        if dims != 2:
+            raise ValueError(f"UNetModel only supports dims=2, got {dims}.")
+        if not conv_resample:
+            raise ValueError("UNetModel only supports conv_resample=True.")
+        if model_channels is not None:
+            width = int(model_channels)
+        if num_res_blocks is not None:
+            layers_per_block = int(num_res_blocks)
+
         out_channels = in_channels if out_channels is None else out_channels
         channels = tuple(width * m for m in channel_mult)
-        down_block = "AttnDownBlock2D" if attention else "DownBlock2D"
-        up_block = "AttnUpBlock2D" if attention else "UpBlock2D"
+        if attention and attention_resolutions is not None:
+            attention_set = {int(value) for value in attention_resolutions}
+            down_block_types = tuple(
+                "AttnDownBlock2D" if 2 ** index in attention_set else "DownBlock2D"
+                for index in range(len(channels))
+            )
+        elif attention:
+            down_block_types = ("DownBlock2D",) + ("AttnDownBlock2D",) * (len(channels) - 1)
+        else:
+            down_block_types = ("DownBlock2D",) * len(channels)
+
+        up_block_types = tuple(
+            "AttnUpBlock2D" if block == "AttnDownBlock2D" else "UpBlock2D"
+            for block in reversed(down_block_types)
+        )
+        if num_heads is not None:
+            attention_channels = [channel for block, channel in zip(down_block_types, channels) if block == "AttnDownBlock2D"]
+            head_channels = attention_channels[0] if attention_channels else channels[0]
+            kwargs.setdefault("attention_head_dim", max(head_channels // int(num_heads), 1))
+        if use_scale_shift_norm:
+            kwargs.setdefault("resnet_time_scale_shift", "scale_shift")
 
         self.num_train_timesteps = int(n_steps)
         self.model = UNet2DModel(
@@ -135,8 +170,8 @@ class UNetModel(nn.Module):
             out_channels=out_channels,
             block_out_channels=channels,
             layers_per_block=layers_per_block,
-            down_block_types=("DownBlock2D",) + (down_block,) * (len(channels) - 1),
-            up_block_types=(up_block,) * (len(channels) - 1) + ("UpBlock2D",),
+            down_block_types=down_block_types,
+            up_block_types=up_block_types,
             norm_num_groups=norm_num_groups,
             num_train_timesteps=n_steps,
             **kwargs,
