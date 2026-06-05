@@ -15,7 +15,7 @@ from datakit import (
 )
 from datakit._dataset import (
     DatasetPayload,
-    _load_cifar100_lt, _load_hrrr, _load_imagenet_lt, _load_lvis, _load_wildfires,
+    _load_cifar100_lt, _load_hrrr, _load_imagenet_lt, _load_lvis,
     _resolve_real_data_home, _standardize_split_arrays,
     _resolve_dataset, split_sample_indices,
 )
@@ -86,16 +86,6 @@ def test_resolve_real_data_home_uses_home_when_work_is_missing(tmp_path, monkeyp
     resolved = _resolve_real_data_home()
 
     assert resolved == home_root / ".cache" / "flowbench_data"
-
-
-def test_load_wildfires_uses_cached_file(tmp_path):
-    data_home = tmp_path / "powerlaws"
-    data_home.mkdir()
-    (data_home / "fires.txt").write_text("10\n20\n", encoding="utf-8")
-
-    frame = _load_wildfires(data_home=data_home)
-
-    assert list(frame["acres_burned"]) == [10.0, 20.0]
 
 
 def test_load_hrrr_reads_fixed_work_file_and_drops_nonfinite_samples(tmp_path, monkeypatch):
@@ -986,13 +976,3 @@ def test_loader_kwargs_for_imagenet_lt_sets_defaults(tmp_path):
     assert kwargs["data_home"] == str(tmp_path / "raw" / "imagenet_lt")
     assert kwargs["imagenet_root"] == "/lustre/fswork/dataset/imagenet"
     assert kwargs["cache_dir"] == str(tmp_path / "processed" / "_image_loader" / "imagenet_lt")
-
-
-# ---------------------------------------------------------------------------
-# Offline-strict guards (compute-node safety)
-# ---------------------------------------------------------------------------
-
-
-def test_wildfires_loader_raises_clear_offline_error_when_file_missing(tmp_path):
-    with pytest.raises(RuntimeError, match=r"python -m datakit init wildfires"):
-        _load_wildfires(data_home=tmp_path / "powerlaws")

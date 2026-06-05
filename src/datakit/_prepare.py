@@ -6,12 +6,9 @@ from importlib.resources import files
 from pathlib import Path
 import shutil
 from typing import Callable
-from urllib.request import urlretrieve
-
 
 _CIFAR100_SOURCE = Path("/lustre/fsmisc/dataset/cifar-100-python")
 _IMAGENET_SOURCE = Path("/lustre/fswork/dataset/imagenet")
-_WILDFIRES_URL = "https://aaronclauset.github.io/powerlaws/data/fires.txt"
 
 
 def _default_root(dataset: str, subdir: str) -> Path:
@@ -67,25 +64,6 @@ def prepare_imagenet_lt(root: str | Path | None = None, source: str | Path | Non
     print("[datakit] imagenet_lt done", flush=True)
 
 
-def prepare_wildfires(root: str | Path | None = None) -> None:
-    root_path = Path(root).expanduser() if root is not None else _default_root("wildfires", "powerlaws")
-    root_path.mkdir(parents=True, exist_ok=True)
-    target = root_path / "fires.txt"
-    if target.is_file() and target.stat().st_size > 0:
-        print(f"[datakit] wildfires already present: {target}", flush=True)
-        return
-
-    tmp_target = target.with_suffix(".txt.tmp")
-    print(f"[datakit] downloading {_WILDFIRES_URL} -> {target}", flush=True)
-    try:
-        urlretrieve(_WILDFIRES_URL, str(tmp_target))
-        tmp_target.replace(target)
-    finally:
-        if tmp_target.exists():
-            tmp_target.unlink()
-    print("[datakit] wildfires done", flush=True)
-
-
 def _add_common_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", type=Path, default=None)
     parser.add_argument("--source", type=Path, default=None)
@@ -100,14 +78,10 @@ def run_cli(argv: list[str] | None = None) -> int:
     commands: dict[str, Callable[..., None]] = {
         "cifar100_lt": prepare_cifar100_lt,
         "imagenet_lt": prepare_imagenet_lt,
-        "wildfires": prepare_wildfires,
     }
     for name, command in commands.items():
         dataset_parser = init_subparsers.add_parser(name)
-        if name == "wildfires":
-            dataset_parser.add_argument("--root", type=Path, default=None)
-        else:
-            _add_common_source_args(dataset_parser)
+        _add_common_source_args(dataset_parser)
         dataset_parser.set_defaults(func=command)
 
     args = parser.parse_args(argv)

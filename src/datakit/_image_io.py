@@ -2,11 +2,9 @@
 
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 from PIL import Image
 import torch
-
 
 _IMAGE_LOADERS_USING_MAX_SAMPLES = frozenset({"lvis", "cifar100_lt", "imagenet_lt"})
 

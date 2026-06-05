@@ -1,6 +1,9 @@
 """Tests for datakit raw-data staging helpers."""
 
-from datakit._prepare import prepare_cifar100_lt, prepare_imagenet_lt, prepare_wildfires
+import os
+import subprocess
+import sys
+from datakit._prepare import prepare_cifar100_lt, prepare_imagenet_lt
 
 
 def test_prepare_cifar100_lt_symlinks_source(tmp_path):
@@ -26,12 +29,23 @@ def test_prepare_imagenet_lt_copies_annotations_and_symlinks_source(tmp_path):
     assert (root / "imagenet").exists()
 
 
-def test_prepare_wildfires_keeps_existing_file(tmp_path):
-    root = tmp_path / "powerlaws"
-    root.mkdir()
-    target = root / "fires.txt"
-    target.write_text("1\n2\n", encoding="utf-8")
-
-    prepare_wildfires(root=root)
-
-    assert target.read_text(encoding="utf-8") == "1\n2\n"
+def test_datakit_module_cli_does_not_import_torch():
+    code = (
+        "import builtins, runpy, sys\n"
+        "_orig_import = builtins.__import__\n"
+        "def guard(name, *args, **kwargs):\n"
+        "    if name == 'torch' or name.startswith('torch.'):\n"
+        "        raise RuntimeError(f'torch import attempted via {name!r}')\n"
+        "    return _orig_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = guard\n"
+        "sys.argv = ['datakit', '--help']\n"
+        "runpy.run_module('datakit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

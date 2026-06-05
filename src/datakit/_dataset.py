@@ -391,31 +391,6 @@ def _build_return_metadata(
     }
 
 
-def _strict_offline_text_file(path: Path, *, init_hint: str) -> Path:
-    if not path.is_file():
-        raise RuntimeError(
-            f"Required raw file not found: {path}. "
-            f"Compute nodes have no internet; pre-stage on the login node by running:\n  {init_hint}"
-        )
-    return path
-
-
-def _load_wildfires(**kwargs: Any) -> pd.DataFrame:
-    data_home = kwargs.pop("data_home", _resolve_real_data_home() / "powerlaws")
-    if kwargs:
-        unexpected = ", ".join(sorted(kwargs))
-        raise TypeError(f"Unexpected wildfire loader kwargs: {unexpected}.")
-    source = _strict_offline_text_file(
-        Path(data_home).expanduser() / "fires.txt",
-        init_hint="python -m datakit init wildfires",
-    )
-    frame = pd.read_csv(source, header=None, sep=r"\s+")
-    if frame.shape[1] == 1:
-        return pd.DataFrame({"acres_burned": frame.iloc[:, 0].astype(float)})
-    frame.columns = [f"x{i}" for i in range(frame.shape[1] - 1)] + ["acres_burned"]
-    return frame.astype(float)
-
-
 def _bool_kwarg(value: Any, *, name: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -811,13 +786,6 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
 
 
 REAL_DATASETS: dict[str, DatasetEntry] = {
-    "wildfires": _real_entry(
-        "wildfires",
-        _load_wildfires,
-        description="U.S. wildfire sizes in acres.",
-        tail_index_alpha=(1.1, 1.8),
-        dim=1,
-    ),
     "lvis": _real_entry(
         "lvis",
         _load_lvis,

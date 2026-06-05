@@ -3,9 +3,7 @@
 import os
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 
 _IMAGENET_LT_SPLIT_FILES = {
     "train": "ImageNet_LT_train.txt",

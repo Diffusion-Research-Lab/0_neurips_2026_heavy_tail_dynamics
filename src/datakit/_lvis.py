@@ -4,9 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 
 _LVIS_ANNOTATION_FILES: dict[str, tuple[str, ...]] = {
     "train": ("lvis_v1_train.json", "lvis_v0.5_train.json"),

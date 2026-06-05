@@ -4,9 +4,7 @@ import os
 import pickle
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 
 _CIFAR100_NUM_CLASSES = 100
 _CIFAR100_IMAGE_HW = 32
