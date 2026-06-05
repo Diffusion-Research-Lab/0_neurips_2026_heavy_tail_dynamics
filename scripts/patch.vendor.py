@@ -39,6 +39,7 @@ def patch_dlpm(vendor_root: Path) -> list[Path]:
 
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(description="Apply local Flowbench patches to vendored dependencies.")
     parser.add_argument(
         "--vendor-root",

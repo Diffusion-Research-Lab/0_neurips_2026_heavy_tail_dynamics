@@ -12,6 +12,7 @@ from hmmlearn.hmm import GaussianHMM
 from ._abs import DDPMAbstract
 from .diffusion import DLPMEps, DDPMV, DDPMX0
 from .flow_matching import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+
 __all__ = [
     "model_est_err_curve",
     "model_est_jacobian_spectral_curve",
