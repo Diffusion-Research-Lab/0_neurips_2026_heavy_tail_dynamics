@@ -1,6 +1,7 @@
 """Neural networks for vector and image generative models."""
 
 import math
+from typing import Literal
 import torch
 import torch.nn as nn
 from diffusers import Transformer2DModel, UNet2DModel
@@ -106,7 +107,9 @@ class MLPModel(nn.Module):
 
 
 class UNetModel(nn.Module):
-    """Thin adapter around diffusers.UNet2DModel."""
+    """
+    Thin adapter around diffusers.UNet2DModel.
+    """
 
     def __init__(
         self,
@@ -183,7 +186,9 @@ class UNetModel(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    """Thin adapter around diffusers.Transformer2DModel."""
+    """
+    Thin adapter around diffusers.Transformer2DModel.
+    """
 
     def __init__(
         self,
@@ -191,31 +196,150 @@ class TransformerModel(nn.Module):
         n_steps: int,
         in_channels: int = 3,
         out_channels: int | None = None,
-        num_layers: int = 4,
-        num_attention_heads: int = 4,
+        num_layers: int = 12,
+        num_attention_heads: int = 6,
         attention_head_dim: int = 64,
-        norm_num_groups: int = 1,
+        dropout: float = 0.0,
+        patch_size: int = 4,
+        norm_num_groups: int = 32,
+        attention_bias: bool = True,
+        activation_fn: str = "gelu-approximate",
+        norm_type: str = "ada_norm_single",
+        norm_elementwise_affine: bool = False,
+        timestep_mode: Literal["discrete", "continuous"] = "continuous",
+        validate_timestep_range: bool = False,
         **kwargs,
     ):
         super().__init__()
 
+        if isinstance(sample_size, tuple):
+            if len(sample_size) != 2:
+                raise ValueError(f"sample_size must be an int or (height, width), got {sample_size}.")
+            height, width = (int(sample_size[0]), int(sample_size[1]))
+        else:
+            height = width = int(sample_size)
+        patch_size = int(patch_size)
+        if height != width:
+            raise ValueError(
+                "Transformer2DModel patched inputs in this Diffusers version require square images; "
+                f"got sample_size={(height, width)}."
+            )
+        if height % patch_size != 0 or width % patch_size != 0:
+            raise ValueError(f"sample_size={(height, width)} must be divisible by patch_size={patch_size}.")
+        if timestep_mode not in {"discrete", "continuous"}:
+            raise ValueError("timestep_mode must be 'discrete' or 'continuous'.")
+        if norm_type != "ada_norm_single":
+            raise ValueError("TransformerModel is unconditional and requires norm_type='ada_norm_single'.")
+        if "num_classes" in kwargs:
+            raise ValueError("TransformerModel is unconditional; num_classes/class conditioning is not supported.")
+        if "num_embeds_ada_norm" in kwargs:
+            raise ValueError("TransformerModel uses ada_norm_single timestep conditioning without class embeddings.")
+        cross_attention_dim = kwargs.pop("cross_attention_dim", None)
+        caption_channels = kwargs.pop("caption_channels", None)
+        use_additional_conditions = bool(kwargs.pop("use_additional_conditions", False))
+        if cross_attention_dim is not None:
+            raise ValueError("TransformerModel is self-attention-only; cross_attention_dim must be None.")
+        if caption_channels is not None:
+            raise ValueError("TransformerModel is unconditional; caption_channels must be None.")
+        if use_additional_conditions:
+            raise ValueError("TransformerModel is unconditional; use_additional_conditions must be False.")
+        if bool(kwargs.pop("only_cross_attention", False)):
+            raise ValueError("TransformerModel is self-attention-only; only_cross_attention must be False.")
+        if bool(kwargs.pop("double_self_attention", False)):
+            raise ValueError("TransformerModel uses the standard single self-attention block per transformer layer.")
+
+        out_channels = in_channels if out_channels is None else out_channels
+        n_steps = int(n_steps)
+        if n_steps < 1:
+            raise ValueError(f"n_steps must be >= 1, got {n_steps}.")
+        self.sample_size = (height, width)
+        self.patch_size = patch_size
+        self.in_channels = int(in_channels)
+        self.out_channels = int(out_channels)
         self.num_train_timesteps = int(n_steps)
+        self.timestep_mode = timestep_mode
+        self.validate_timestep_range = bool(validate_timestep_range)
         self.model = Transformer2DModel(
-            sample_size=sample_size,
-            in_channels=in_channels,
-            out_channels=in_channels if out_channels is None else out_channels,
+            sample_size=height,
+            patch_size=patch_size,
+            in_channels=self.in_channels,
+            out_channels=self.out_channels,
             num_layers=num_layers,
             num_attention_heads=num_attention_heads,
             attention_head_dim=attention_head_dim,
+            dropout=dropout,
             norm_num_groups=norm_num_groups,
-            norm_type="ada_norm",
-            num_embeds_ada_norm=n_steps,
+            attention_bias=attention_bias,
+            activation_fn=activation_fn,
+            cross_attention_dim=None,
+            caption_channels=None,
+            use_additional_conditions=False,
+            norm_type=norm_type,
+            norm_elementwise_affine=norm_elementwise_affine,
             **kwargs,
         )
+        self._zero_init_output_projection()
+
+    def _zero_init_output_projection(self) -> None:
+        """Use diffusion-friendly near-zero initial predictions when available."""
+        for attr_name in ("proj_out", "proj_out_2"):
+            projection = getattr(self.model, attr_name, None)
+            if isinstance(projection, nn.Linear):
+                nn.init.zeros_(projection.weight)
+                if projection.bias is not None:
+                    nn.init.zeros_(projection.bias)
+
+    def _prepare_timesteps(self, t: torch.Tensor, batch_size: int, device: torch.device) -> torch.Tensor:
+        if not torch.is_tensor(t):
+            t = torch.as_tensor(t, device=device)
+        else:
+            t = t.to(device=device)
+
+        if t.ndim == 0:
+            t = t.reshape(1)
+        elif t.ndim == 1:
+            pass
+        elif t.ndim == 2 and t.shape[1] == 1:
+            t = t.reshape(-1)
+        else:
+            raise ValueError(f"Expected t with shape [], [1], [B], or [B, 1], got {tuple(t.shape)}.")
+
+        if t.numel() == 1:
+            t = t.expand(batch_size)
+        if t.numel() != batch_size:
+            raise ValueError(f"Expected {batch_size} timesteps, got {t.numel()}.")
+
+        if self.timestep_mode == "discrete":
+            if torch.is_floating_point(t):
+                raise TypeError("timestep_mode='discrete' expects integer scheduler indices, not floating timesteps.")
+            t = t.to(dtype=torch.long)
+            if self.validate_timestep_range and torch.any((t < 0) | (t >= self.num_train_timesteps)):
+                raise ValueError(f"Discrete timesteps must lie in [0, {self.num_train_timesteps - 1}].")
+            return t
+
+        if not torch.is_floating_point(t):
+            t = t.to(dtype=torch.get_default_dtype())
+        return t
+
+    def _validate_input_shape(self, x: torch.Tensor) -> None:
+        if x.ndim != 4:
+            raise ValueError(f"Expected x with shape [B, C, H, W], got {tuple(x.shape)}.")
+        _, channels, height, width = x.shape
+        if channels != self.in_channels:
+            raise ValueError(f"Expected {self.in_channels} input channels, got {channels}.")
+        if (height, width) != self.sample_size:
+            raise ValueError(f"Expected spatial shape {self.sample_size}, got {(height, width)}.")
+        if height % self.patch_size != 0 or width % self.patch_size != 0:
+            raise ValueError(f"Spatial shape {(height, width)} must be divisible by patch_size={self.patch_size}.")
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        t = _diffusers_timesteps(t=t, batch_size=x.shape[0], num_train_timesteps=self.num_train_timesteps, discrete=True, device=x.device)
-        return self.model(x, timestep=t).sample
+        self._validate_input_shape(x)
+        timestep = self._prepare_timesteps(t=t, batch_size=x.shape[0], device=x.device)
+        y = self.model(x, timestep=timestep).sample
+        expected_shape = (x.shape[0], self.out_channels, x.shape[2], x.shape[3])
+        if tuple(y.shape) != expected_shape:
+            raise ValueError(f"Expected output shape {expected_shape}, got {tuple(y.shape)}.")
+        return y
 
 
 __all__ = [

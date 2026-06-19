@@ -5,7 +5,6 @@ import os
 from importlib.resources import files
 from pathlib import Path
 import shutil
-from typing import Callable
 
 _CIFAR100_SOURCE = Path("/lustre/fsmisc/dataset/cifar-100-python")
 _IMAGENET_SOURCE = Path("/lustre/fswork/dataset/imagenet")
@@ -64,24 +63,20 @@ def prepare_imagenet_lt(root: str | Path | None = None, source: str | Path | Non
     print("[datakit] imagenet_lt done", flush=True)
 
 
-def _add_common_source_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--root", type=Path, default=None)
-    parser.add_argument("--source", type=Path, default=None)
-
-
 def run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datakit")
     subparsers = parser.add_subparsers(dest="command", required=True)
     init_parser = subparsers.add_parser("init", help="stage raw files for a real dataset")
     init_subparsers = init_parser.add_subparsers(dest="dataset", required=True)
 
-    commands: dict[str, Callable[..., None]] = {
+    commands = {
         "cifar100_lt": prepare_cifar100_lt,
         "imagenet_lt": prepare_imagenet_lt,
     }
     for name, command in commands.items():
         dataset_parser = init_subparsers.add_parser(name)
-        _add_common_source_args(dataset_parser)
+        dataset_parser.add_argument("--root", type=Path, default=None)
+        dataset_parser.add_argument("--source", type=Path, default=None)
         dataset_parser.set_defaults(func=command)
 
     args = parser.parse_args(argv)

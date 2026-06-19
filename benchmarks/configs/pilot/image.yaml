@@ -1,7 +1,7 @@
 run:
   name: pilot_image
   seed: 0
-  dtype: float32
+  dtype: bfloat16
   n_trial: 3
 
 sweep:
@@ -11,19 +11,22 @@ sweep:
     - cifar100_lt
     - imagenet_lt
   networks:
-    - unet
+    - transformer
   models:
-    - gaussian_flow_ot_s1
-    - gaussian_flow_ot_s2
-    - gaussian_flow_linear_s1
-    - gaussian_flow_linear_s2
-    - ddpm_v_s1
-    - ddpm_v_s2
+    - gaussian_flow_linear_euler_s1
+    - gaussian_flow_linear_heun_s1
+    - gaussian_flow_linear_euler_s2
+    - gaussian_flow_linear_heun_s2
+    - ddpm_v_ddpm_s1
+    - ddpm_v_ddim_s1
+    - ddpm_v_ddpm_s2
+    - ddpm_v_ddim_s2
     - dlpm_eps_a17
     - dlpm_eps_a19
-    - tedm_origin_nu25
+    - tedm_origin_nu21
     - tedm_origin_nu30
   trains:
+    - pilot_lr5e5
     - pilot_lr1e4
     - pilot_lr2e4
 
@@ -31,8 +34,6 @@ datasets:
   hrrr:
     kind: real
     name: hrrr
-    params:
-      n_samples: 4096
     split:
       val_size: 0.1
       test_size: 0.1
@@ -59,7 +60,7 @@ datasets:
     params:
       split: train
       image_size: 32
-      imbalance_factor: 20
+      imbalance_factor: 10
       max_samples: 4096
       seed: 0
     split:
@@ -83,59 +84,82 @@ datasets:
       standardize: false
 
 networks:
-  unet:
-    name: unet
+  transformer:
+    name: transformer
     params:
-      model_channels: 32
-      num_res_blocks: 1
-      attention_resolutions:
-        literal: [4]
+      n_steps: 128
+      timestep_mode: continuous
+      patch_size: 4
+      num_layers: 4
+      num_attention_heads: 4
+      attention_head_dim: 64
       dropout: 0.1
-      channel_mult:
-        literal: [1, 2, 2]
-      conv_resample: true
-      dims: 2
-      num_heads: 4
-      use_scale_shift_norm: true
+      attention_bias: true
+      activation_fn: gelu-approximate
+      norm_type: ada_norm_single
+      norm_elementwise_affine: false
+      cross_attention_dim: null
+      caption_channels: null
+      use_additional_conditions: false
 
 models:
-  gaussian_flow_ot_s1:
-    name: gaussian_flow_ot
-    params:
-      n_steps: 128
-      sigma_min: 0.001
-      sigma_max: 1.0
-
-  gaussian_flow_ot_s2:
-    name: gaussian_flow_ot
-    params:
-      n_steps: 128
-      sigma_min: 0.001
-      sigma_max: 2.0
-
-  gaussian_flow_linear_s1:
+  gaussian_flow_linear_euler_s1:
     name: gaussian_flow_linear
     params:
       n_steps: 128
       sigma_max: 1.0
+      sampler: euler
 
-  gaussian_flow_linear_s2:
+  gaussian_flow_linear_heun_s1:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 128
+      sigma_max: 1.0
+      sampler: heun
+
+  gaussian_flow_linear_euler_s2:
     name: gaussian_flow_linear
     params:
       n_steps: 128
       sigma_max: 2.0
+      sampler: euler
 
-  ddpm_v_s1:
+  gaussian_flow_linear_heun_s2:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 128
+      sigma_max: 2.0
+      sampler: heun
+
+  ddpm_v_ddpm_s1:
     name: ddpm_v
     params:
       n_steps: 128
       sigma_max: 1.0
+      sampler: ddpm
 
-  ddpm_v_s2:
+  ddpm_v_ddim_s1:
+    name: ddpm_v
+    params:
+      n_steps: 128
+      sigma_max: 1.0
+      sampler: ddim
+      eta: 0.0
+
+  ddpm_v_ddpm_s2:
     name: ddpm_v
     params:
       n_steps: 128
       sigma_max: 2.0
+      sampler: ddpm
+
+  ddpm_v_ddim_s2:
+    name: ddpm_v
+    params:
+      n_steps: 128
+      sigma_max: 2.0
+      sampler: ddim
+      eta: 0.0
 
   dlpm_eps_a17:
     name: dlpm_eps
@@ -149,11 +173,11 @@ models:
       n_steps: 128
       alpha: 1.9
 
-  tedm_origin_nu25:
+  tedm_origin_nu21:
     name: tedm_origin
     params:
       n_steps: 12
-      nu: 2.5
+      nu: 2.1
       sigma_min: 0.002
       sigma_max: 4.0
 
@@ -166,11 +190,31 @@ models:
       sigma_max: 4.0
 
 trains:
+  pilot_lr5e5:
+    device: cuda
+    data_device: cpu
+    batch_size: 8
+    n_epochs: 16
+    lr: 0.00005
+    pin_memory: true
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.0001
+    grad_clip_norm: 5.0
+    lr_schedule: cosine
+    warmup_steps: 10
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 1
+    ckpt_freq_epochs: 1
+    ckpt_keep_last: 1
+
   pilot_lr1e4:
     device: cuda
+    data_device: cpu
     batch_size: 8
     n_epochs: 16
     lr: 0.0001
+    pin_memory: true
     num_workers: 0
     use_adamw: true
     weight_decay: 0.0001
@@ -184,9 +228,11 @@ trains:
 
   pilot_lr2e4:
     device: cuda
+    data_device: cpu
     batch_size: 8
     n_epochs: 16
     lr: 0.0002
+    pin_memory: true
     num_workers: 0
     use_adamw: true
     weight_decay: 0.0001

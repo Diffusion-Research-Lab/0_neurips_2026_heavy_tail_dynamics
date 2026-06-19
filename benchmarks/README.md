@@ -1,8 +1,6 @@
 ## Benchmarks
 
-Run the steps in order. Wait for each Slurm stage to finish before starting the next one.
-
-Local machine:
+### Local
 
 ```bash
 make send
@@ -10,16 +8,40 @@ ssh jz
 cd "$WORK/src/flowbench"
 ```
 
-Jean Zay login node:
+### Setup
 
 ```bash
 make setup
 make dataset
+```
+
+### Pilot
+
+```bash
 make pilot
 make evaluate-pilot
 make analyze-pilot
+```
+
+### Main
+
+```bash
 make bench
 make evaluate-bench
 make analyze-bench
+```
+
+### ImageNet-LT-128 Vizu
+
+```bash
+make imagenet128-viz-configs
+make dataset DATASETS=imagenet_lt
+make bench-imagenet128-viz
+make visualize-imagenet128
+```
+
+### Shariatian
+
+```bash
 make bench-shariatan
 ```

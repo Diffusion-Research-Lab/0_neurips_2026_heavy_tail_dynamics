@@ -10,10 +10,13 @@ import pytest
 import torch
 import benchmarks._real_data_cache as real_data_cache
 import benchmarks.utils as bench_utils
+from genkit import GaussianFlowEDM
 
 evaluate = importlib.import_module("benchmarks.02_evaluate")
 pilot_analysis = importlib.import_module("benchmarks.03_pilot_analysis")
 plotting_bench = importlib.import_module("benchmarks.04_plotting_bench")
+imagenet128_viz_configs = importlib.import_module("benchmarks.06_make_imagenet128_viz")
+imagenet128_viz = importlib.import_module("benchmarks.07_visualize_imagenet128")
 compute_test_metrics = evaluate.compute_test_metrics
 compute_test_vs_test_metrics = evaluate.compute_test_vs_test_metrics
 sample_generator_in_batches = evaluate.sample_generator_in_batches
@@ -24,6 +27,10 @@ load_yaml = _main.load_yaml
 require_section = _main.require_section
 select_entries = _main.select_entries
 build_dataset = _main.build_dataset
+build_training_dataset = _main.build_training_dataset
+build_network = _main.build_network
+build_model = _main.build_model
+resolve_data_device = _main.resolve_data_device
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _PREFETCH_SCRIPT = _PROJECT_ROOT / "scripts" / "prefetch.datasets.py"
@@ -34,13 +41,32 @@ _PILOT_FIXTURE_BATCHES = {
     "synth": "449824_02_alphastable_pilot_evaluate",
     "image": "449826_08_image_pilot_evaluate",
 }
-_PILOT_FIXTURE_METRICS = ["INNER_LOSS_VAL"]
+_PILOT_MODEL_NAMES = [
+    "gaussian_flow_linear_euler",
+    "gaussian_flow_linear_heun",
+    "ddpm_v_ddpm",
+    "ddpm_v_ddim",
+    "dlpm_eps_a17",
+    "dlpm_eps_a19",
+    "tedm_origin_nu21",
+    "tedm_origin_nu30",
+]
+_PILOT_MODEL_LABELS = {
+    "gaussian_flow_linear_euler": "GF-Linear Euler",
+    "gaussian_flow_linear_heun": "GF-Linear Heun",
+    "ddpm_v_ddpm": "DDPM-V DDPM",
+    "ddpm_v_ddim": "DDPM-V DDIM",
+    "dlpm_eps_a17": "DLPM alpha=1.7",
+    "dlpm_eps_a19": "DLPM alpha=1.9",
+    "tedm_origin_nu21": "TEDM nu=2.1",
+    "tedm_origin_nu30": "TEDM nu=3.0",
+}
 
 
 def _first_model_preset_by_name(models: dict) -> dict[str, str]:
     presets = {}
     for preset_name in models:
-        for model_name in ["gaussian_flow_ot", "gaussian_flow_linear", "ddpm_v", "dlpm_eps", "tedm_origin"]:
+        for model_name in _PILOT_MODEL_NAMES:
             if preset_name.startswith(model_name) and model_name not in presets:
                 presets[model_name] = preset_name
     return presets
@@ -57,32 +83,27 @@ def _write_fake_pilot_eval_artifacts(root: Path) -> None:
         train_preset = config["sweep"]["trains"][0]
         train_lr = float(config["trains"][train_preset]["lr"])
         for dataset_preset in config["sweep"]["datasets"]:
-            for model_rank, model_name in enumerate(["gaussian_flow_ot", "gaussian_flow_linear", "ddpm_v", "dlpm_eps", "tedm_origin"]):
+            for model_rank, model_name in enumerate(_PILOT_MODEL_NAMES):
                 model_preset = model_presets[model_name]
                 run_dir = batch_dir / f"{dataset_rank:03d}__{dataset_preset}__network__{model_preset}__{train_preset}"
                 run_dir.mkdir(parents=True, exist_ok=True)
                 rows = []
-                for metric_rank, metric_name in enumerate(_PILOT_FIXTURE_METRICS):
+                for repeat_idx, offset in [(0, 0.0), (1, 0.05)]:
                     rows.append(
                         {
                             "source": "pilot_selection",
-                            "metric_name": metric_name,
-                            "value": float(1 + dataset_rank + model_rank + metric_rank / 10.0),
+                            "metric_name": "validation_loss",
+                            "value": float(1 + dataset_rank + model_rank + offset),
                             "checkpoint_epoch": 16,
                             "dataset_preset": dataset_preset,
                             "dataset_name": dataset_preset,
                             "model_preset": model_preset,
                             "model_name": model_name,
-                            "model_label": {
-                                "gaussian_flow_ot": "GF-OT",
-                                "gaussian_flow_linear": "GF-Linear",
-                                "ddpm_v": "DDPM-V",
-                                "dlpm_eps": "DLPM",
-                                "tedm_origin": "TEDM-Orig",
-                            }[model_name],
+                            "model_label": _PILOT_MODEL_LABELS[model_name],
                             "train_preset": train_preset,
                             "train_lr": train_lr,
-                            "eval_repeat_idx": 0,
+                            "eval_repeat_idx": repeat_idx,
+                            "epoch": float("nan"),
                         }
                     )
                 pd.DataFrame(rows).to_csv(run_dir / "scalars.csv.gz", index=False, compression="gzip")
@@ -196,6 +217,103 @@ def test_compute_test_vs_test_metrics_computes_mmd_baseline():
     assert warnings == []
 
 
+def test_selection_only_evaluation_estimates_validation_loss(tmp_path):
+    batch_dir = tmp_path / "pilot_synth"
+    run_dir = batch_dir / "001__alpha_stable_target__mlp__gaussian_flow_linear_euler_s2__pilot_lr1e4"
+    run_dir.mkdir(parents=True)
+    network_init = {
+        "name": "mlp",
+        "params": {
+            "width": 8,
+            "depth": 1,
+            "time_dim": 8,
+            "dropout": 0.0,
+            "use_norm": False,
+        },
+    }
+    net, _ = build_network(network_init, torch.zeros(2, 2))
+    torch.save(
+        {
+            "model_init": {
+                "network": network_init,
+                "model": {
+                    "name": "gaussian_flow_linear",
+                    "params": {"n_steps": 4, "sigma_max": 2.0, "sampler": "euler"},
+                },
+                "dtype": "torch.float32",
+                "device": "cpu",
+                "train_shape": [16, 2],
+            },
+            "network_state_dict": net.state_dict(),
+        },
+        run_dir / "checkpoint.pt",
+    )
+    (run_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                "run:",
+                "  dtype: float32",
+                "  trial_idx: 0",
+                "dataset:",
+                "  kind: synthetic",
+                "  name: alpha_stable",
+                "  preset_name: alpha_stable_target",
+                "  params:",
+                "    n_samples: 24",
+                "    alpha: 1.7",
+                "    dim: 2",
+                "  split:",
+                "    val_size: 0.25",
+                "    test_size: 0.25",
+                "    random_state: 0",
+                "    standardize: false",
+                "network:",
+                "  name: mlp",
+                "  preset_name: mlp",
+                "model:",
+                "  name: gaussian_flow_linear",
+                "  preset_name: gaussian_flow_linear_euler_s2",
+                "  params:",
+                "    sigma_max: 2.0",
+                "train:",
+                "  preset_name: pilot_lr1e4",
+                "  n_epochs: 2",
+                "  lr: 0.0001",
+            ]
+        ) + "\n",
+        encoding="utf-8",
+    )
+    pd.DataFrame({"epoch": [1, 2], "training_loss": [4.0, 3.0]}).to_csv(run_dir / "train_stats.csv", index=False)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_PROJECT_ROOT / "benchmarks" / "02_evaluate.py"),
+            "--batch-dir",
+            str(batch_dir),
+            "--selection-only",
+            "--selection-repeats",
+            "2",
+            "--selection-batch-size",
+            "4",
+            "--device",
+            "cpu",
+        ],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": f"{_PROJECT_ROOT}:{_PROJECT_ROOT / 'src'}"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    scalars = pd.read_csv(batch_dir.with_name("pilot_synth_evaluate") / run_dir.name / "scalars.csv.gz")
+    selection = scalars[scalars["source"].eq("pilot_selection")]
+    assert selection["metric_name"].unique().tolist() == ["validation_loss"]
+    assert selection["eval_repeat_idx"].tolist() == [0.0, 1.0]
+    assert torch.isfinite(torch.tensor(selection["value"].tolist())).all().item()
+
+
 def test_image_class_recovery_metrics_count_support_and_histogram(monkeypatch):
     probe = {
         "eligible_classes": torch.tensor([0, 1]),
@@ -301,7 +419,7 @@ def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
         "TCE(99,99)": 0.01,
     }
 
-    for run_idx, (model_label, mmd_value) in enumerate([("GF-OT", 0.12), ("DDPM-V", 0.2)], start=1):
+    for run_idx, (model_label, mmd_value) in enumerate([("GF-Linear", 0.12), ("DDPM-V", 0.2)], start=1):
         run_dir = batch_dir / f"{run_idx:03d}_alpha_stable_target"
         run_dir.mkdir(parents=True)
         rows = []
@@ -434,14 +552,65 @@ def test_plotting_writes_image_class_recovery_table(tmp_path):
     assert "Class Hist. TV" in contents
 
 
-def test_image_bench_unet_config_expands_to_one_network_variant():
+def test_image_bench_transformer_config_expands_to_one_network_variant():
     config = load_yaml(Path("benchmarks/configs/templates/image_bench.yaml"))
-    variants = select_entries("networks", require_section(config, "networks"), ["unet"])
+    variants = select_entries("networks", require_section(config, "networks"), ["transformer"])
 
     assert len(variants) == 1
     params = variants[0]["config"]["params"]
-    assert params["attention_resolutions"] == (4,)
-    assert params["channel_mult"] == (1, 2, 4)
+    assert params["n_steps"] == 256
+    assert params["timestep_mode"] == "continuous"
+    assert params["patch_size"] == 4
+    assert params["num_layers"] == 12
+    assert params["num_attention_heads"] == 6
+    assert params["attention_head_dim"] == 64
+    assert params["norm_type"] == "ada_norm_single"
+    assert params["cross_attention_dim"] is None
+    assert params["caption_channels"] is None
+    assert params["use_additional_conditions"] is False
+
+
+def test_build_network_supports_image_transformer():
+    network_cfg = {
+        "name": "transformer",
+        "params": {
+            "n_steps": 8,
+            "patch_size": 2,
+            "num_layers": 1,
+            "num_attention_heads": 2,
+            "attention_head_dim": 8,
+            "timestep_mode": "continuous",
+        },
+    }
+    net, params = build_network(network_cfg, torch.zeros(2, 3, 8, 8))
+
+    assert net.__class__.__name__ == "TransformerModel"
+    assert params["sample_size"] == 8
+    assert params["in_channels"] == 3
+    assert params["out_channels"] == 3
+
+
+def test_build_network_rejects_nonsquare_image_transformer():
+    network_cfg = {"name": "transformer", "params": {"n_steps": 8, "patch_size": 2}}
+
+    with pytest.raises(ValueError, match="square image data"):
+        build_network(network_cfg, torch.zeros(2, 3, 8, 12))
+
+
+def test_build_model_registers_gaussian_flow_edm():
+    net = torch.nn.Linear(2, 2)
+    model, params = build_model(
+        {"name": "gaussian_flow_edm", "params": {"n_steps": 4, "sigma_max": 1.0}},
+        net,
+        torch.zeros(3, 2),
+        torch.float32,
+        "cpu",
+    )
+
+    assert isinstance(model, GaussianFlowEDM)
+    assert params["dim"] == 2
+    assert params["fdtype"] == torch.float32
+    assert params["device"] == "cpu"
 
 
 def test_pilot_and_template_configs_have_required_sections_and_valid_sweeps():
@@ -457,10 +626,10 @@ def test_pilot_and_template_configs_have_required_sections_and_valid_sweeps():
             assert variants, f"{path.name}: empty {section} sweep"
 
 
-def test_image_pilot_caps_real_datasets_and_uses_native_cifar_resolution():
+def test_image_pilot_caps_image_datasets_and_uncaps_hrrr():
     config = load_yaml(Path("benchmarks/configs/pilot/image.yaml"))
 
-    assert config["datasets"]["hrrr"]["params"]["n_samples"] == 4096
+    assert "params" not in config["datasets"]["hrrr"]
     assert config["datasets"]["lvis"]["params"]["max_samples"] == 4096
     assert config["datasets"]["cifar100_lt"]["params"]["max_samples"] == 4096
     assert config["datasets"]["cifar100_lt"]["params"]["image_size"] == 32
@@ -475,8 +644,62 @@ def test_image_bench_uncaps_image_datasets_and_uses_target_resolutions():
     assert "max_samples" not in config["datasets"]["lvis"]["params"]
     assert "max_samples" not in config["datasets"]["cifar100_lt"]["params"]
     assert "max_samples" not in config["datasets"]["imagenet_lt"]["params"]
-    assert config["datasets"]["cifar100_lt"]["params"]["imbalance_factor"] == 20
+    assert config["datasets"]["cifar100_lt"]["params"]["imbalance_factor"] == 10
     assert "category_frequency" not in config["datasets"]["lvis"]["params"]
+
+
+def test_imagenet128_viz_config_preserves_selected_model_and_uncaps_dataset():
+    source = {
+        "run": {"name": "bench_image__imagenet_lt__ddpm_v", "dtype": "float32", "n_trial": 1},
+        "selection": {"dataset_slug": "imagenet_lt", "selected_lr": 0.0002},
+        "sweep": {"datasets": ["imagenet_lt"], "networks": ["transformer"], "models": ["ddpm_v"], "trains": ["selected"]},
+        "datasets": {
+            "imagenet_lt": {
+                "kind": "real",
+                "name": "imagenet_lt",
+                "params": {"split": "train", "image_size": 64, "max_samples": 4096, "seed": 0},
+                "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
+            },
+        },
+        "networks": {
+            "transformer": {
+                "name": "transformer",
+                "params": {"patch_size": 4, "timestep_mode": "continuous", "sample_size": 64, "in_channels": 3, "out_channels": 3},
+            }
+        },
+        "models": {"ddpm_v": {"name": "ddpm_v", "params": {"n_steps": 128, "sigma_max": 2.0}}},
+        "trains": {"selected": {"device": "cuda", "batch_size": 8, "n_epochs": 128, "lr": 0.0002}},
+        "save": {"root_dir": "benchmarks/artifacts"},
+    }
+
+    config = imagenet128_viz_configs.build_viz_config(source, "ddpm_v")
+
+    assert config["run"]["name"] == "viz_image__imagenet_lt_128__ddpm_v"
+    assert config["sweep"]["datasets"] == ["imagenet_lt_128"]
+    assert config["sweep"]["models"] == ["ddpm_v"]
+    dataset_params = config["datasets"]["imagenet_lt_128"]["params"]
+    assert dataset_params["image_size"] == 128
+    assert "max_samples" not in dataset_params
+    assert "n_samples" not in dataset_params
+    assert config["models"]["ddpm_v"]["params"]["sigma_max"] == 2.0
+    assert config["trains"]["selected"]["lr"] == 0.0002
+    assert "sample_size" not in config["networks"]["transformer"]["params"]
+    assert "in_channels" not in config["networks"]["transformer"]["params"]
+    assert "out_channels" not in config["networks"]["transformer"]["params"]
+
+
+def test_imagenet128_viz_prepare_images_handles_multichannel_and_normalization():
+    x = torch.stack([torch.linspace(-1, 2, steps=4 * 4).reshape(1, 4, 4).repeat(5, 1, 1)])
+
+    clamped = imagenet128_viz.prepare_images(x, mode="clamp")
+    normalized = imagenet128_viz.prepare_images(x, mode="per-image")
+
+    assert clamped.shape == (1, 3, 4, 4)
+    assert normalized.shape == (1, 3, 4, 4)
+    assert float(clamped.min()) == 0.0
+    assert float(clamped.max()) == 1.0
+    assert torch.isclose(normalized.min(), torch.tensor(0.0))
+    assert torch.isclose(normalized.max(), torch.tensor(1.0))
 
 
 def test_nonblank_pilots_try_at_least_two_learning_rates():
@@ -485,17 +708,39 @@ def test_nonblank_pilots_try_at_least_two_learning_rates():
         train_names = list(config["sweep"]["trains"])
         learning_rates = {float(config["trains"][name]["lr"]) for name in train_names}
 
-        assert len(train_names) >= 2
-        assert len(learning_rates) >= 2
+        assert len(train_names) == 3
+        assert len(learning_rates) == 3
         assert "pilot_lr1e3" not in config["trains"]
+
+
+def test_pilot_configs_include_supported_sampler_variants():
+    expected_counts = {"synth.yaml": (6, 6), "image.yaml": (4, 4)}
+    for filename, (n_flow, n_ddpm) in expected_counts.items():
+        config = load_yaml(Path("benchmarks/configs/pilot") / filename)
+        models = config["models"]
+        flow_names = [name for name in config["sweep"]["models"] if models[name]["name"] == "gaussian_flow_linear"]
+        ddpm_names = [name for name in config["sweep"]["models"] if models[name]["name"] == "ddpm_v"]
+
+        assert len(flow_names) == n_flow
+        assert len(ddpm_names) == n_ddpm
+        assert {models[name]["params"]["sampler"] for name in flow_names} == {"euler", "heun"}
+        assert {models[name]["params"]["sampler"] for name in ddpm_names} == {"ddpm", "ddim"}
+        assert all(models[name]["params"].get("eta", 0.0) == 0.0 for name in ddpm_names if models[name]["params"]["sampler"] == "ddim")
+        dlpm_names = [name for name in config["sweep"]["models"] if models[name]["name"] == "dlpm_eps"]
+        tedm_names = [name for name in config["sweep"]["models"] if models[name]["name"] == "tedm_origin"]
+        assert {models[name]["params"]["alpha"] for name in dlpm_names} == {1.7, 1.9}
+        assert {models[name]["params"]["nu"] for name in tedm_names} == {2.1, 3.0}
 
 
 def test_generated_bench_config_tree_is_complete_and_explicit(generated_bench_outputs):
     bench_root = generated_bench_outputs["bench_config_root"]
     bench_configs = sorted(bench_root.rglob("*.yaml"))
-    assert len(bench_configs) == 30
-    assert bench_root / "synth/alpha_stable_iso/tedm_origin.yaml" in bench_configs
-    assert bench_root / "image/lvis/gaussian_flow_ot.yaml" in bench_configs
+    assert len(bench_configs) == 48
+    assert bench_root / "synth/alpha_stable_iso/tedm_origin_nu21.yaml" in bench_configs
+    assert bench_root / "synth/alpha_stable_iso/tedm_origin_nu30.yaml" in bench_configs
+    assert bench_root / "image/lvis/dlpm_eps_a17.yaml" in bench_configs
+    assert bench_root / "image/lvis/dlpm_eps_a19.yaml" in bench_configs
+    assert bench_root / "image/lvis/gaussian_flow_linear_euler.yaml" in bench_configs
 
 
 def test_generated_bench_configs_are_single_dataset_single_model_single_train(generated_bench_outputs):
@@ -513,10 +758,10 @@ def test_generated_bench_configs_are_single_dataset_single_model_single_train(ge
 
 def test_generated_bench_configs_use_template_budgets_but_selected_learning_rates(generated_bench_outputs):
     bench_root = generated_bench_outputs["bench_config_root"]
-    synth_cfg = load_yaml(bench_root / "synth/alpha_stable_iso/gaussian_flow_ot.yaml")
-    image_cfg = load_yaml(bench_root / "image/lvis/tedm_origin.yaml")
-    hrrr_cfg = load_yaml(bench_root / "image/hrrr/ddpm_v.yaml")
-    imagenet_cfg = load_yaml(bench_root / "image/imagenet_lt/dlpm_eps.yaml")
+    synth_cfg = load_yaml(bench_root / "synth/alpha_stable_iso/gaussian_flow_linear_euler.yaml")
+    image_cfg = load_yaml(bench_root / "image/lvis/tedm_origin_nu21.yaml")
+    hrrr_cfg = load_yaml(bench_root / "image/hrrr/ddpm_v_ddpm.yaml")
+    imagenet_cfg = load_yaml(bench_root / "image/imagenet_lt/dlpm_eps_a17.yaml")
 
     synth_train = synth_cfg["trains"][synth_cfg["sweep"]["trains"][0]]
     image_train = image_cfg["trains"][image_cfg["sweep"]["trains"][0]]
@@ -527,12 +772,19 @@ def test_generated_bench_configs_use_template_budgets_but_selected_learning_rate
     assert image_train["n_epochs"] == 128
     assert hrrr_train["n_epochs"] == 128
     assert imagenet_train["n_epochs"] == 128
+    assert image_train["data_device"] == "cpu"
+    assert hrrr_train["data_device"] == "cpu"
+    assert imagenet_train["data_device"] == "cpu"
+    assert image_train["pin_memory"] is True
+    assert hrrr_train["pin_memory"] is True
+    assert imagenet_train["pin_memory"] is True
+    assert "data_device" not in synth_train
     assert synth_train["lr"] == synth_cfg["selection"]["selected_lr"]
     assert image_train["lr"] == image_cfg["selection"]["selected_lr"]
     assert hrrr_train["lr"] == hrrr_cfg["selection"]["selected_lr"]
     assert imagenet_train["lr"] == imagenet_cfg["selection"]["selected_lr"]
-    assert synth_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
-    assert image_cfg["selection"]["selection_metric"] == "INNER_LOSS_VAL"
+    assert synth_cfg["selection"]["selection_metric"] == "validation_loss"
+    assert image_cfg["selection"]["selection_metric"] == "validation_loss"
 
 
 def test_bench_templates_use_expected_trial_counts_and_single_train_preset():
@@ -555,7 +807,7 @@ def test_pilot_analysis_reports_exist_and_match_generated_configs(generated_benc
     assert report_png.is_file()
 
     frame = pd.read_csv(report_csv)
-    assert len(frame) == 30
+    assert len(frame) == 48
     assert sorted(frame["dataset_slug"].unique().tolist()) == [
         "alpha_stable_iso",
         "alpha_stable_mix",
@@ -579,11 +831,26 @@ def test_numbered_benchmark_entrypoints_work_from_outside_repo(tmp_path):
         assert "usage:" in result.stdout
 
 
+def test_resolve_data_device_defaults_to_training_device():
+    assert resolve_data_device({"device": "cuda"}) == "cuda"
+    assert resolve_data_device({"device": "cuda", "data_device": "cpu"}) == "cpu"
+    assert resolve_data_device({}) == "cpu"
+
+
+def test_image_pilot_config_explicitly_stages_heavy_data_on_cpu():
+    config = load_yaml(_CONFIG_IMAGE_PILOT)
+
+    for train_cfg in config["trains"].values():
+        assert train_cfg["device"] == "cuda"
+        assert train_cfg["data_device"] == "cpu"
+        assert train_cfg["pin_memory"] is True
+
+
 def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
     dataset_cfg = {
         "kind": "real",
         "name": "cifar100_lt",
-        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4, "seed": 0},
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 10, "max_samples": 4, "seed": 0},
         "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
     }
 
@@ -603,9 +870,16 @@ def test_preprocessed_real_dataset_cache_roundtrip(tmp_path, monkeypatch):
 
     result = real_data_cache.build_preprocessed_real_dataset(dataset_cfg, torch.float32, data_root=tmp_path)
     x_train, x_val, x_test = real_data_cache.load_preprocessed_real_dataset(dataset_cfg, torch.float32, data_root=tmp_path)
+    x_train_only = real_data_cache.load_preprocessed_real_dataset(
+        dataset_cfg, torch.float32, data_root=tmp_path, splits=("train",),
+    )
+    split_shapes = real_data_cache.load_preprocessed_real_dataset_shapes(dataset_cfg, torch.float32, data_root=tmp_path)
 
     assert result["status"] == "built"
     assert x_train.shape == (2, 3)
+    assert len(x_train_only) == 1
+    assert x_train_only[0].shape == (2, 3)
+    assert split_shapes == {"train": (2, 3), "val": (1, 3), "test": (1, 3)}
     assert x_val.tolist() == [[2.0, 2.0, 2.0]]
     assert x_test.tolist() == [[3.0, 3.0, 3.0]]
 
@@ -614,7 +888,7 @@ def test_slurm_strict_real_dataset_loading_requires_processed_cache(tmp_path, mo
     dataset_cfg = {
         "kind": "real",
         "name": "cifar100_lt",
-        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4, "seed": 0},
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 10, "max_samples": 4, "seed": 0},
         "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
     }
 
@@ -624,6 +898,18 @@ def test_slurm_strict_real_dataset_loading_requires_processed_cache(tmp_path, mo
 
     with pytest.raises(FileNotFoundError, match="Missing preprocessed real dataset cache"):
         build_dataset(dataset_cfg, torch.float32, "cpu")
+
+
+def test_build_training_dataset_uses_train_split_and_cached_shapes(tmp_path, monkeypatch):
+    dataset_cfg = _make_cifar100_lt_cfg()
+    monkeypatch.setenv("FLOWBENCH_DATA", str(tmp_path))
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", _fake_fetch_real_4samples)
+
+    real_data_cache.build_preprocessed_real_dataset(dataset_cfg, torch.float32, data_root=tmp_path)
+    x_train, split_shapes = build_training_dataset(dataset_cfg, torch.float32, "cpu")
+
+    assert x_train.tolist() == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
+    assert split_shapes == {"train": (2, 3), "val": (1, 3), "test": (1, 3)}
 
 
 def test_resolved_config_preserves_run_metadata(tmp_path):
@@ -641,8 +927,7 @@ def test_resolved_config_preserves_run_metadata(tmp_path):
         {"root_dir": "_tmp"},
         2,
         x,
-        x,
-        x,
+        {"train": tuple(x.shape), "val": tuple(x.shape), "test": tuple(x.shape)},
         net,
     )
 
@@ -651,6 +936,9 @@ def test_resolved_config_preserves_run_metadata(tmp_path):
     assert config["run"]["n_trial"] == 3
     assert config["run"]["trial_idx"] == 2
     assert config["run"]["resolved_dtype"] == "torch.float32"
+    assert config["dataset"]["resolved_train_shape"] == [4, 2]
+    assert config["dataset"]["resolved_val_shape"] == [4, 2]
+    assert config["dataset"]["resolved_test_shape"] == [4, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -662,7 +950,7 @@ def _make_cifar100_lt_cfg():
     return {
         "kind": "real",
         "name": "cifar100_lt",
-        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 4, "seed": 0},
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 10, "max_samples": 4, "seed": 0},
         "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
     }
 
@@ -866,23 +1154,23 @@ def test_prefetch_check_only_exits_0_when_cache_valid(tmp_path):
         {
             "kind": "real",
             "name": "cifar100_lt",
-            "params": {"split": "train", "image_size": 32, "imbalance_factor": 20, "max_samples": 4096, "seed": 0},
+            "params": {"split": "train", "image_size": 32, "imbalance_factor": 10, "max_samples": 4096, "seed": 0},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
         },
-        torch.float32,
+        torch.bfloat16,
     )
     cfg = {"kind": "real", "name": "cifar100_lt", "params": cfg_dict["params"], "split": cfg_dict["split"]}
-    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.float32, data_root=tmp_path)
+    cache_path = real_data_cache.real_dataset_cache_path(cfg, torch.bfloat16, data_root=tmp_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.float32)
+    expected_key = real_data_cache.real_dataset_cache_key(cfg, torch.bfloat16)
     torch.save(
         {
             "cache_version": real_data_cache.CACHE_VERSION,
             "cache_key": expected_key,
             "request": {"name": "cifar100_lt"},
-            "x_train": torch.zeros(8, 3, 32, 32),
-            "x_val": torch.zeros(4, 3, 32, 32),
-            "x_test": torch.zeros(4, 3, 32, 32),
+            "x_train": torch.zeros(8, 3, 32, 32, dtype=torch.bfloat16),
+            "x_val": torch.zeros(4, 3, 32, 32, dtype=torch.bfloat16),
+            "x_test": torch.zeros(4, 3, 32, 32, dtype=torch.bfloat16),
         },
         cache_path,
     )
@@ -899,7 +1187,7 @@ def test_prefetch_check_only_exits_2_when_cache_for_other_config(tmp_path):
     other_cfg = {
         "kind": "real",
         "name": "cifar100_lt",
-        "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 99999, "seed": 0},
+        "params": {"split": "train", "image_size": 64, "imbalance_factor": 10, "max_samples": 99999, "seed": 0},
         "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
     }
     other_cache_path = real_data_cache.real_dataset_cache_path(other_cfg, torch.float32, data_root=tmp_path)
@@ -924,7 +1212,7 @@ def test_prefetch_torch_free_cache_key_matches_runtime():
         {
             "kind": "real",
             "name": "cifar100_lt",
-            "params": {"split": "train", "image_size": 64, "imbalance_factor": 20, "max_samples": 256, "seed": 0},
+            "params": {"split": "train", "image_size": 64, "imbalance_factor": 10, "max_samples": 256, "seed": 0},
             "split": {"val_size": 0.1, "test_size": 0.1, "random_state": 0, "standardize": False},
         },
         {
@@ -935,7 +1223,7 @@ def test_prefetch_torch_free_cache_key_matches_runtime():
         },
     ]
     assert prefetch_module.CACHE_VERSION == real_data_cache.CACHE_VERSION
-    for dtype, dtype_str in [(torch.float32, "float32"), (torch.float64, "float64")]:
+    for dtype, dtype_str in [(torch.float32, "float32"), (torch.float64, "float64"), (torch.bfloat16, "bfloat16")]:
         for cfg in cfgs:
             runtime_key = real_data_cache.real_dataset_cache_key(cfg, dtype)
             yaml_key = prefetch_module.cache_key_from_yaml(cfg, dtype_str)

@@ -17,6 +17,7 @@ set -euo pipefail
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 JZ_MODULE="${JZ_MODULE:-pytorch-gpu/py3/2.8.0}"
 DATASET_SCRIPT_REL="scripts/prefetch.datasets.py"
+HRRR_SCRIPT_REL="scripts/ensure_hrrr.py"
 PYTHON_BIN=""
 CLI_OVERWRITE=0
 FORWARD_ARGS=()
@@ -52,6 +53,7 @@ fi
 
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/.venv}"
 DATASET_SCRIPT="${PROJECT_ROOT}/${DATASET_SCRIPT_REL}"
+HRRR_SCRIPT="${PROJECT_ROOT}/${HRRR_SCRIPT_REL}"
 
 if ! command -v module >/dev/null 2>&1; then
   echo "[dataset-slurm] 'module' command is required on Jean Zay." >&2
@@ -94,6 +96,36 @@ echo "SLURM_JOB_ID:  ${SLURM_JOB_ID:-<none>}"
 echo "DATASET_SCRIPT: ${DATASET_SCRIPT}"
 echo "FORWARD_ARGS:  ${FORWARD_ARGS[*]:-<none>}"
 echo "=============================================================================="
+
+NEEDS_HRRR=0
+for ((i = 0; i < ${#FORWARD_ARGS[@]}; i++)); do
+  if [[ "${FORWARD_ARGS[$i]}" == "--only-dataset=hrrr" ]]; then
+    NEEDS_HRRR=1
+  fi
+  if [[ "${FORWARD_ARGS[$i]}" == "--only-dataset" && "${FORWARD_ARGS[$((i + 1))]:-}" == "hrrr" ]]; then
+    NEEDS_HRRR=1
+  fi
+done
+
+if [[ "${NEEDS_HRRR}" -eq 1 ]]; then
+  if [[ ! -f "${HRRR_SCRIPT}" ]]; then
+    echo "[dataset-slurm] Missing HRRR ensure script: ${HRRR_SCRIPT}" >&2
+    exit 1
+  fi
+  HRRR_STATUS="${SLURM_TMPDIR:-/tmp}/hrrr_ensure_${SLURM_JOB_ID:-$$}.json"
+  HRRR_CMD=("${PYTHON_BIN}" "${HRRR_SCRIPT}" --status-file "${HRRR_STATUS}")
+  if [[ -n "${HRRR_MIN_SAMPLES:-}" ]]; then
+    HRRR_CMD+=(--min-samples "${HRRR_MIN_SAMPLES}")
+  fi
+  if [[ -n "${HRRR_MIN_COVERAGE:-}" ]]; then
+    HRRR_CMD+=(--min-coverage "${HRRR_MIN_COVERAGE}")
+  fi
+  echo "[dataset-slurm] ensuring raw HRRR tensor"
+  "${HRRR_CMD[@]}"
+  if grep -q '"status": "built"' "${HRRR_STATUS}"; then
+    CLI_OVERWRITE=1
+  fi
+fi
 
 CMD=("${PYTHON_BIN}" "${DATASET_SCRIPT}")
 if [[ "${CLI_OVERWRITE}" -eq 1 ]]; then

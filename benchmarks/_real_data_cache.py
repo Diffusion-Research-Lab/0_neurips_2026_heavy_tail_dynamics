@@ -8,8 +8,7 @@ from pathlib import Path
 import time
 from typing import Any
 import torch
-from datakit import fetch_real_data
-from datakit._dataset import _resolve_real_data_home
+from datakit._dataset import _resolve_real_data_home, fetch_real_data
 
 CACHE_VERSION = 1
 
@@ -144,7 +143,7 @@ def build_preprocessed_real_dataset(
     name = str(dataset_cfg["name"])
     if cache_path.is_file() and not overwrite:
         try:
-            payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+            payload = torch.load(cache_path, map_location="cpu", weights_only=False, mmap=True)
         except Exception as exc:
             print(
                 f"[REBUILD] {name}: torch.load failed ({type(exc).__name__}: {exc}) -> {cache_path}",
@@ -215,22 +214,53 @@ def load_preprocessed_real_dataset(
     *,
     device: str | torch.device = "cpu",
     data_root: str | Path | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Load one preprocessed real train/val/test tensor triplet."""
+    splits: tuple[str, ...] = ("train", "val", "test"),
+    mmap: bool = True,
+) -> tuple[torch.Tensor, ...]:
+    """Load selected preprocessed real dataset splits."""
     cache_path = real_dataset_cache_path(dataset_cfg, dtype, data_root=data_root)
     if not cache_path.is_file():
         raise FileNotFoundError(
             f"Missing preprocessed real dataset cache: {cache_path}. "
             "Run `make dataset` on Jean Zay before launching Slurm runs."
         )
-    payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False, mmap=mmap)
     ok, reason = _validate_cached_payload(payload, dataset_cfg, dtype)
     if not ok:
         raise RuntimeError(f"Preprocessed real dataset cache invalid ({reason}): {cache_path}")
+    split_keys = {"train": "x_train", "val": "x_val", "test": "x_test"}
+    unknown = sorted(set(splits) - set(split_keys))
+    if unknown:
+        raise ValueError(f"Unknown split(s): {unknown}. Expected any of {sorted(split_keys)}.")
     tensors = tuple(
-        payload[key].to(device=device, dtype=dtype) for key in ("x_train", "x_val", "x_test")
+        payload[split_keys[split]].to(device=device, dtype=dtype) for split in splits
     )
     return tensors  # type: ignore[return-value]
+
+
+def load_preprocessed_real_dataset_shapes(
+    dataset_cfg: dict[str, Any],
+    dtype: torch.dtype,
+    *,
+    data_root: str | Path | None = None,
+    mmap: bool = True,
+) -> dict[str, tuple[int, ...]]:
+    """Return cached split shapes without copying tensor payloads into RAM."""
+    cache_path = real_dataset_cache_path(dataset_cfg, dtype, data_root=data_root)
+    if not cache_path.is_file():
+        raise FileNotFoundError(
+            f"Missing preprocessed real dataset cache: {cache_path}. "
+            "Run `make dataset` on Jean Zay before launching Slurm runs."
+        )
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False, mmap=mmap)
+    ok, reason = _validate_cached_payload(payload, dataset_cfg, dtype)
+    if not ok:
+        raise RuntimeError(f"Preprocessed real dataset cache invalid ({reason}): {cache_path}")
+    return {
+        "train": tuple(payload["x_train"].shape),
+        "val": tuple(payload["x_val"].shape),
+        "test": tuple(payload["x_test"].shape),
+    }
 
 
 def load_preprocessed_real_dataset_metadata(
@@ -246,7 +276,7 @@ def load_preprocessed_real_dataset_metadata(
             f"Missing preprocessed real dataset cache: {cache_path}. "
             "Run `make dataset` on Jean Zay before launching Slurm runs."
         )
-    payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False, mmap=True)
     ok, reason = _validate_cached_payload(payload, dataset_cfg, dtype)
     if not ok:
         raise RuntimeError(f"Preprocessed real dataset cache invalid ({reason}): {cache_path}")

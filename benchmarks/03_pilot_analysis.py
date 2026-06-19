@@ -26,18 +26,36 @@ CONFIG_ROOT = PROJECT_ROOT / "benchmarks" / "configs"
 REPORT_ROOT = PROJECT_ROOT / "benchmarks" / "reports"
 BENCH_CONFIG_ROOT = CONFIG_ROOT / "bench"
 
-PILOT_SELECTION_METRICS = ["INNER_LOSS_VAL", "INNER_LOSS_TRAIN", "INNER_LOSS_TEST"]
+PILOT_SELECTION_METRICS = ["validation_loss"]
 METRIC_LABELS = {
-    "INNER_LOSS_VAL": "Validation inner loss",
-    "INNER_LOSS_TRAIN": "Training inner loss",
-    "INNER_LOSS_TEST": "Test inner loss",
+    "validation_loss": "Validation loss",
 }
-MODEL_ORDER = ["gaussian_flow_ot", "gaussian_flow_linear", "ddpm_v", "dlpm_eps", "tedm_origin"]
+MODEL_ORDER = [
+    "gaussian_flow_linear_euler",
+    "gaussian_flow_linear_heun",
+    "ddpm_v_ddpm",
+    "ddpm_v_ddim",
+    "dlpm_eps_a17",
+    "dlpm_eps_a19",
+    "tedm_origin_nu21",
+    "tedm_origin_nu30",
+    "dlpm_eps",
+    "tedm_origin",
+    "gaussian_flow_linear",
+    "ddpm_v",
+]
 MODEL_LABELS = {
-    "gaussian_flow_ot": "GF-OT",
+    "gaussian_flow_linear_euler": "GF-Linear Euler",
+    "gaussian_flow_linear_heun": "GF-Linear Heun",
     "gaussian_flow_linear": "GF-Linear",
+    "ddpm_v_ddpm": "DDPM-V DDPM",
+    "ddpm_v_ddim": "DDPM-V DDIM",
+    "dlpm_eps_a17": "DLPM alpha=1.7",
+    "dlpm_eps_a19": "DLPM alpha=1.9",
     "ddpm_v": "DDPM-V",
     "dlpm_eps": "DLPM",
+    "tedm_origin_nu21": "TEDM nu=2.1",
+    "tedm_origin_nu30": "TEDM nu=3.0",
     "tedm_origin": "TEDM-Orig",
 }
 DATASET_SLUGS = {
@@ -83,6 +101,13 @@ def first_non_null(frame: pd.DataFrame, column: str, default: Any = np.nan) -> A
     return default if pd.isna(value) else value
 
 
+def infer_model_name(model_preset: str) -> str:
+    for model_name in MODEL_ORDER:
+        if model_preset.startswith(model_name):
+            return model_name
+    return model_preset
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -104,7 +129,7 @@ if __name__ == "__main__":
             summary = yaml.safe_load(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
             summary = summary or {}
             frame = pd.read_csv(scalars_path)
-            frame = frame[frame["source"].isin(["pilot_selection", "test_metrics"])].copy()
+            frame = frame[frame["source"].eq("pilot_selection") & frame["metric_name"].eq("validation_loss")].copy()
             if frame.empty:
                 continue
 
@@ -117,12 +142,7 @@ if __name__ == "__main__":
             dataset_name = first_non_null(frame, "dataset_name", dataset_preset)
             model_preset = first_non_null(frame, "model_preset", run_tokens[3] if len(run_tokens) > 3 else "model")
             train_preset = first_non_null(frame, "train_preset", run_tokens[4] if len(run_tokens) > 4 else "train")
-            inferred_model_name = str(model_preset)
-            for ordered_model_name in MODEL_ORDER:
-                if inferred_model_name.startswith(ordered_model_name):
-                    inferred_model_name = ordered_model_name
-                    break
-            model_name = first_non_null(frame, "model_name", inferred_model_name)
+            model_name = infer_model_name(str(model_preset))
             token = str(train_preset).removeprefix("pilot_lr")
             match = re.fullmatch(r"(\d+)e(\d+)", token)
             if match:
@@ -309,7 +329,7 @@ if __name__ == "__main__":
                 ax=ax,
                 fraction=0.025,
                 pad=0.01,
-                label="Selected validation inner loss",
+                label="Selected validation loss",
             )
 
         fig.savefig(png_path, dpi=200)

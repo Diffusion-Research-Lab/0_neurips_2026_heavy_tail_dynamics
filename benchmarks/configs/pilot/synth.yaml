@@ -11,22 +11,24 @@ sweep:
   networks:
     - mlp_pilot
   models:
-    - gaussian_flow_ot_s2
-    - gaussian_flow_ot_s5
-    - gaussian_flow_ot_s8
-    - gaussian_flow_linear_s2
-    - gaussian_flow_linear_s5
-    - gaussian_flow_linear_s8
-    - ddpm_v_s2
-    - ddpm_v_s5
-    - ddpm_v_s8
-    - dlpm_eps_a15
+    - gaussian_flow_linear_euler_s2
+    - gaussian_flow_linear_heun_s2
+    - gaussian_flow_linear_euler_s5
+    - gaussian_flow_linear_heun_s5
+    - gaussian_flow_linear_euler_s8
+    - gaussian_flow_linear_heun_s8
+    - ddpm_v_ddpm_s2
+    - ddpm_v_ddim_s2
+    - ddpm_v_ddpm_s5
+    - ddpm_v_ddim_s5
+    - ddpm_v_ddpm_s8
+    - ddpm_v_ddim_s8
     - dlpm_eps_a17
     - dlpm_eps_a19
-    - tedm_origin_nu25
     - tedm_origin_nu21
     - tedm_origin_nu30
   trains:
+    - pilot_lr1e4
     - pilot_lr2e4
     - pilot_lr5e4
 
@@ -75,68 +77,92 @@ networks:
       use_norm: true
 
 models:
-  gaussian_flow_ot_s2:
-    name: gaussian_flow_ot
-    params:
-      n_steps: 256
-      sigma_min: 0.001
-      sigma_max: 2.0
-
-  gaussian_flow_ot_s5:
-    name: gaussian_flow_ot
-    params:
-      n_steps: 256
-      sigma_min: 0.001
-      sigma_max: 5.0
-
-  gaussian_flow_ot_s8:
-    name: gaussian_flow_ot
-    params:
-      n_steps: 256
-      sigma_min: 0.001
-      sigma_max: 8.0
-
-  gaussian_flow_linear_s2:
+  gaussian_flow_linear_euler_s2:
     name: gaussian_flow_linear
     params:
       n_steps: 256
       sigma_max: 2.0
+      sampler: euler
 
-  gaussian_flow_linear_s5:
+  gaussian_flow_linear_heun_s2:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 2.0
+      sampler: heun
+
+  gaussian_flow_linear_euler_s5:
     name: gaussian_flow_linear
     params:
       n_steps: 256
       sigma_max: 5.0
+      sampler: euler
 
-  gaussian_flow_linear_s8:
+  gaussian_flow_linear_heun_s5:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 5.0
+      sampler: heun
+
+  gaussian_flow_linear_euler_s8:
     name: gaussian_flow_linear
     params:
       n_steps: 256
       sigma_max: 8.0
+      sampler: euler
 
-  ddpm_v_s2:
+  gaussian_flow_linear_heun_s8:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 256
+      sigma_max: 8.0
+      sampler: heun
+
+  ddpm_v_ddpm_s2:
     name: ddpm_v
     params:
       n_steps: 256
       sigma_max: 2.0
+      sampler: ddpm
 
-  ddpm_v_s5:
+  ddpm_v_ddim_s2:
+    name: ddpm_v
+    params:
+      n_steps: 256
+      sigma_max: 2.0
+      sampler: ddim
+      eta: 0.0
+
+  ddpm_v_ddpm_s5:
     name: ddpm_v
     params:
       n_steps: 256
       sigma_max: 5.0
+      sampler: ddpm
 
-  ddpm_v_s8:
+  ddpm_v_ddim_s5:
+    name: ddpm_v
+    params:
+      n_steps: 256
+      sigma_max: 5.0
+      sampler: ddim
+      eta: 0.0
+
+  ddpm_v_ddpm_s8:
     name: ddpm_v
     params:
       n_steps: 256
       sigma_max: 8.0
+      sampler: ddpm
 
-  dlpm_eps_a15:
-    name: dlpm_eps
+  ddpm_v_ddim_s8:
+    name: ddpm_v
     params:
       n_steps: 256
-      alpha: 1.5
+      sigma_max: 8.0
+      sampler: ddim
+      eta: 0.0
 
   dlpm_eps_a17:
     name: dlpm_eps
@@ -149,14 +175,6 @@ models:
     params:
       n_steps: 256
       alpha: 1.9
-
-  tedm_origin_nu25:
-    name: tedm_origin
-    params:
-      n_steps: 18
-      nu: 2.5
-      sigma_min: 0.005
-      sigma_max: 5.0
 
   tedm_origin_nu21:
     name: tedm_origin
@@ -175,6 +193,22 @@ models:
       sigma_max: 5.0
 
 trains:
+  pilot_lr1e4:
+    device: cuda
+    batch_size: 1024
+    n_epochs: 16
+    lr: 0.0001
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 10
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 8
+    ckpt_freq_epochs: 4
+    ckpt_keep_last: 1
+
   pilot_lr2e4:
     device: cuda
     batch_size: 1024

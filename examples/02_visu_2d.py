@@ -6,7 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from genkit import DDPMV, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT, FlowMatchingOrigin, ScoreSDEOrigin
+from genkit import DDPMV, GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOTLinear, FlowMatchingOrigin, ScoreSDEOrigin
 from genkit.datasets import fetch_synthetic_data
 from genkit.metrics import sliced_wasserstein
 from genkit.nn import MLPModel
@@ -51,10 +51,10 @@ if __name__ == "__main__":
         model = DDPMV
     elif args.model == "gf_linear":
         model = GaussianFlowLinear
+    elif args.model == "gf_ot_linear":
+        model = GaussianFlowOTLinear
     elif args.model == "gf_ddpm":
         model = GaussianFlowDDPM
-    elif args.model == "gf_ot":
-        model = GaussianFlowOT
     elif args.model == "fm_origin":
         model = FlowMatchingOrigin
     elif args.model == "sde_origin":

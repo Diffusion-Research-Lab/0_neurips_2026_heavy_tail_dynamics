@@ -69,6 +69,31 @@ class Base:
             samples = self._sample_source_default(n_samples)
         return samples
 
+    def _resolve_sample_source(
+        self,
+        n_samples: int | None,
+        sample_source: torch.Tensor | None,
+    ) -> tuple[int, torch.Tensor]:
+        """Return the initial samples for an inference sampler."""
+        if sample_source is None:
+            if n_samples is None:
+                raise ValueError("n_samples is required when sample_source is not provided.")
+            n_samples = int(n_samples)
+            return n_samples, self._sample_source(n_samples)
+
+        x = sample_source.to(device=self._device, dtype=self._fdtype)
+        if x.ndim < 1 or tuple(x.shape[1:]) != self._sample_shape:
+            raise ValueError(f"sample_source must have shape (N, *{self._sample_shape}), got {tuple(x.shape)}")
+
+        source_n = int(x.shape[0])
+        if n_samples is None:
+            return source_n, x
+
+        n_samples = int(n_samples)
+        if source_n != n_samples:
+            raise ValueError(f"sample_source has {source_n} samples but n_samples={n_samples}.")
+        return n_samples, x
+
     def _expand_batch_scalar(self, value: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
         """Reshape one scalar per batch item so it broadcasts over sample dimensions."""
         return value.reshape(value.shape[0], *([1] * (like.ndim - 1)))
@@ -186,21 +211,33 @@ class DDPMAbstract(Base):
         """Average DDPM losses over the batch."""
         return loss_values.mean()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _sample(
         self,
-        n_samples: int,
+        n_samples: int | None = None,
         return_trajectory: bool = True,
+        sample_source: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
         """Dispatch to a native DDPM inference sampler."""
         if self._sampler == "ddpm":
-            return sample_ddpm(self, n_samples, return_trajectory=return_trajectory)
-        return sample_ddim(self, n_samples, n_steps=self._sample_steps, eta=self._eta, return_trajectory=return_trajectory)
+            return sample_ddpm(self, n_samples, return_trajectory=return_trajectory, sample_source=sample_source)
+        return sample_ddim(
+            self,
+            n_samples,
+            n_steps=self._sample_steps,
+            eta=self._eta,
+            return_trajectory=return_trajectory,
+            sample_source=sample_source,
+        )
 
-    @torch.no_grad()
-    def sample(self, n_samples: int) -> torch.Tensor:
+    @torch.inference_mode()
+    def sample(
+        self,
+        n_samples: int | None = None,
+        sample_source: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Generate samples by running the reverse DDPM process."""
-        x, _ = self._sample(n_samples, return_trajectory=False)
+        x, _ = self._sample(n_samples, return_trajectory=False, sample_source=sample_source)
         return x
 
 
@@ -269,6 +306,17 @@ class FlowAbstract(Base):
         self._h_init = h_init
         self._h_min = float(h_min)
         self._h_max = float(h_max)
+        self._sample_timesteps = None
+        if self._sampler != "adaptive_heun":
+            self._sample_timesteps = build_flow_timesteps(
+                schedule=self._schedule,
+                n_steps=self._sample_steps,
+                t_min=self._t_min,
+                t_max=self._t_max,
+                device=self._device,
+                dtype=self._fdtype,
+                **self._schedule_kwargs,
+            )
 
     def _t(self, n_samples):
         """Draw random continuous times in the configured training interval."""
@@ -339,16 +387,20 @@ class FlowAbstract(Base):
 
         return x_0, x_1, t
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _sample(
         self,
-        n_samples: int,
+        n_samples: int | None = None,
         return_trajectory: bool = True,
+        sample_source: torch.Tensor | None = None,
+        chunk_size: int | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
         """Dispatch to a flow inference schedule and ODE solver."""
         self._net.eval()
-        x = self._sample_source(n_samples)
+        n_samples, x = self._resolve_sample_source(n_samples, sample_source)
         if self._sampler == "adaptive_heun":
+            if chunk_size is not None:
+                raise ValueError("chunk_size is only supported for fixed-step flow samplers.")
             return sample_flow_adaptive_heun(
                 self._net,
                 x,
@@ -362,21 +414,18 @@ class FlowAbstract(Base):
                 return_trajectory=return_trajectory,
             )
 
-        timesteps = build_flow_timesteps(
-            schedule=self._schedule,
-            n_steps=self._sample_steps,
-            t_min=self._t_min,
-            t_max=self._t_max,
-            device=self._device,
-            dtype=self._fdtype,
-            **self._schedule_kwargs,
-        )
-        return sample_flow(self._net, x, timesteps, sampler=self._sampler, return_trajectory=return_trajectory)
+        return sample_flow(self._net, x, self._sample_timesteps, sampler=self._sampler,
+                           return_trajectory=return_trajectory, chunk_size=chunk_size)
 
-    @torch.no_grad()
-    def sample(self, n_samples: int) -> torch.Tensor:
+    @torch.inference_mode()
+    def sample(
+        self,
+        n_samples: int | None = None,
+        sample_source: torch.Tensor | None = None,
+        chunk_size: int | None = None,
+    ) -> torch.Tensor:
         """Generate samples by integrating the learned flow field."""
-        x, _ = self._sample(n_samples, return_trajectory=False)
+        x, _ = self._sample(n_samples, return_trajectory=False, sample_source=sample_source, chunk_size=chunk_size)
         return x
 
 

@@ -221,11 +221,10 @@ def test_scaled_isotropic_alpha_stable_2d_direction_uniformity_and_symmetry():
     assert abs(frac_pos1 - 0.5) < 0.015
 
 
-def test_input_validation_alpha_stable():
+@pytest.mark.parametrize("alpha", [0.0, 2.1])
+def test_input_validation_alpha_stable(alpha):
     with pytest.raises(ValueError):
-        _ = sample_scaled_scalar_alpha_stable(10, alpha=0.0, device="cpu")
-    with pytest.raises(ValueError):
-        _ = sample_scaled_scalar_alpha_stable(10, alpha=2.1, device="cpu")
+        sample_scaled_scalar_alpha_stable(10, alpha=alpha, device="cpu")
 
 
 def test_alpha_stable_alpha_eq_2_returns_constant_2():
@@ -249,26 +248,23 @@ def test_sample_exponential_valid_returns_positive():
     assert torch.isfinite(x).all()
 
 
-def test_sample_exponential_nonpositive_rate_raises():
+@pytest.mark.parametrize("rate", [0.0, -1.0])
+def test_sample_exponential_nonpositive_rate_raises(rate):
     with pytest.raises(ValueError, match="rate must be > 0"):
-        sample_exponential(10, dim=2, rate=0.0)
-    with pytest.raises(ValueError, match="rate must be > 0"):
-        sample_exponential(10, dim=2, rate=-1.0)
+        sample_exponential(10, dim=2, rate=rate)
 
 
-def test_highdim_mixture_n_modes_one_raises():
-    with pytest.raises(ValueError, match="n_modes"):
-        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=1)
-
-
-def test_highdim_mixture_negative_imbalance_tau_raises():
-    with pytest.raises(ValueError, match="imbalance_tau"):
-        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=4, imbalance_tau=-0.1)
-
-
-def test_highdim_mixture_nonpositive_mean_scale_raises():
-    with pytest.raises(ValueError, match="mean_scale"):
-        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, n_modes=4, mean_scale=0.0)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"n_modes": 1}, "n_modes"),
+        ({"n_modes": 4, "imbalance_tau": -0.1}, "imbalance_tau"),
+        ({"n_modes": 4, "mean_scale": 0.0}, "mean_scale"),
+    ],
+)
+def test_highdim_gaussian_mixture_validates_arguments(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        sample_unbalanced_highdim_gaussian_mixture(10, dim=4, **kwargs)
 
 
 def test_alpha_stable_highdim_mixture_invalid_alpha_raises():

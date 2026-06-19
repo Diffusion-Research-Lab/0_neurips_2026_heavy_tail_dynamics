@@ -8,13 +8,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import torch
-from datakit import (
+from datakit._dataset import (
+    DatasetPayload,
     fetch_real_data,
     get_dataset_metadata as get_real_dataset_metadata,
     list_datasets as list_real_datasets,
-)
-from datakit._dataset import (
-    DatasetPayload,
     _load_cifar100_lt, _load_hrrr, _load_imagenet_lt, _load_lvis,
     _resolve_real_data_home, _standardize_split_arrays,
     _resolve_dataset, split_sample_indices,
@@ -119,13 +117,27 @@ def test_load_hrrr_accepts_saved_payload_dict(tmp_path, monkeypatch):
     assert torch.equal(loaded, values.to(torch.float32))
 
 
+def test_load_hrrr_accepts_apcp_mm_payload_key(tmp_path, monkeypatch):
+    hrrr_dir = tmp_path / "hrrr_data"
+    hrrr_dir.mkdir()
+    values = torch.arange(2 * 1 * 100 * 100, dtype=torch.float64).reshape(2, 1, 100, 100)
+    torch.save({"apcp_mm": values, "variable": "APCP"}, hrrr_dir / "hrrr_apcp_100x100.pt")
+    monkeypatch.setenv("WORK", str(tmp_path))
+
+    loaded = _load_hrrr()
+
+    assert loaded.shape == (2, 1, 100, 100)
+    assert loaded.dtype == torch.float32
+    assert torch.equal(loaded, values.to(torch.float32))
+
+
 def test_load_hrrr_rejects_unknown_payload_dict(tmp_path, monkeypatch):
     hrrr_dir = tmp_path / "hrrr_data"
     hrrr_dir.mkdir()
     torch.save({"timestamps": ["t0"]}, hrrr_dir / "hrrr_apcp_100x100.pt")
     monkeypatch.setenv("WORK", str(tmp_path))
 
-    with pytest.raises(ValueError, match="Expected a tensor payload or a dict containing 'frames'"):
+    with pytest.raises(ValueError, match="Expected a tensor payload or a dict containing 'frames' or 'apcp_mm'"):
         _load_hrrr()
 
 

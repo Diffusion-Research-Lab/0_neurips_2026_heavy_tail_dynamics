@@ -17,7 +17,40 @@ def _check_timesteps(timesteps: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return timesteps
 
 
-@torch.no_grad()
+def _check_chunk_size(chunk_size: int | None, n_samples: int) -> int | None:
+    if chunk_size is None:
+        return None
+    if isinstance(chunk_size, bool):
+        raise TypeError("chunk_size must be an int or None, not bool.")
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be positive, got {chunk_size}.")
+    return None if chunk_size >= n_samples else chunk_size
+
+
+def _sample_flow_chunks(
+    sample_chunk,
+    x: torch.Tensor,
+    chunk_size: int,
+    return_trajectory: bool,
+) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+    x_out_chunks = []
+    trajectory_chunks = None
+    for x_chunk in x.split(chunk_size):
+        x_out, trajectory = sample_chunk(x_chunk)
+        x_out_chunks.append(x_out)
+        if return_trajectory:
+            if trajectory_chunks is None:
+                trajectory_chunks = [[] for _ in trajectory]
+            for chunks_at_time, value in zip(trajectory_chunks, trajectory):
+                chunks_at_time.append(value)
+
+    x_out = torch.cat(x_out_chunks, dim=0)
+    trajectory_out = None if trajectory_chunks is None else [torch.cat(chunks, dim=0) for chunks in trajectory_chunks]
+    return x_out, trajectory_out
+
+
+@torch.inference_mode()
 def sample_flow_euler(
     net: torch.nn.Module,
     x: torch.Tensor,
@@ -36,7 +69,7 @@ def sample_flow_euler(
     return x, trajectory
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def sample_flow_heun(
     net: torch.nn.Module,
     x: torch.Tensor,
@@ -59,7 +92,7 @@ def sample_flow_heun(
     return x, trajectory
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def sample_flow_rk4(
     net: torch.nn.Module,
     x: torch.Tensor,
@@ -84,7 +117,7 @@ def sample_flow_rk4(
     return x, trajectory
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def sample_flow_adaptive_heun(
     net: torch.nn.Module,
     x: torch.Tensor,
@@ -140,17 +173,28 @@ def sample_flow_adaptive_heun(
     return x, trajectory
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def sample_flow(
     net: torch.nn.Module,
     x: torch.Tensor,
     timesteps: torch.Tensor | None = None,
     sampler: str = "heun",
     return_trajectory: bool = True,
+    chunk_size: int | None = None,
     **kwargs: Any,
 ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
     """Dispatch to a named flow ODE sampler."""
     name = sampler
+    chunk_size = _check_chunk_size(chunk_size, x.size(0))
+    if chunk_size is not None:
+        if name == "adaptive_heun":
+            raise ValueError("chunk_size is only supported for fixed-step flow samplers.")
+        return _sample_flow_chunks(
+            lambda x_chunk: sample_flow(net, x_chunk, timesteps, sampler, return_trajectory, chunk_size=None, **kwargs),
+            x,
+            chunk_size,
+            return_trajectory,
+        )
 
     if name == "euler":
         if kwargs:
@@ -181,7 +225,7 @@ def sample_flow(
     raise ValueError(f"Unknown flow sampler {sampler!r}.")
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _ddpm_eps_hat(model: Any, x: torch.Tensor, t: int, n_samples: int) -> torch.Tensor:
     t_idx = int(t) - 1
     t_norm = torch.full((n_samples, 1), float(t) / model._n_steps, device=model._device, dtype=model._fdtype)
@@ -205,16 +249,16 @@ def _ddim_timesteps(model_n_steps: int, n_steps: int | None, device: torch.devic
     return timesteps.round().to(dtype=torch.long).flip(0)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def sample_ddpm(
     model: Any,
-    n_samples: int,
+    n_samples: int | None = None,
     return_trajectory: bool = True,
+    sample_source: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
     """Run the native reverse DDPM chain for a DDPM-like model."""
-    n_samples = int(n_samples)
     model._net.eval()
-    x = model._sample_source(n_samples)
+    n_samples, x = model._resolve_sample_source(n_samples, sample_source)
     trajectory = [x] if return_trajectory else None
 
     for t in range(model._n_steps, 0, -1):
@@ -232,22 +276,22 @@ def sample_ddpm(
     return x, trajectory
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def sample_ddim(
     model: Any,
-    n_samples: int,
+    n_samples: int | None = None,
     n_steps: int | None = None,
     eta: float = 0.0,
     return_trajectory: bool = True,
+    sample_source: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
     """Run DDIM sampling for a DDPM-like model using epsilon predictions."""
     eta = float(eta)
     if eta < 0.0:
         raise ValueError(f"eta must be non-negative, got {eta}.")
 
-    n_samples = int(n_samples)
     model._net.eval()
-    x = model._sample_source(n_samples)
+    n_samples, x = model._resolve_sample_source(n_samples, sample_source)
     trajectory = [x] if return_trajectory else None
     timesteps = _ddim_timesteps(model._n_steps, n_steps, model._device)
 

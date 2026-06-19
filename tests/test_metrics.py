@@ -1,8 +1,16 @@
 """Metrics module unittests."""
 
+import numpy as np
 import pytest
 import torch
-from genkit.metrics import mmd_rbf, sliced_wasserstein, tail_coverage_error
+from genkit import DDPMV, DLPMEps, GaussianFlowEDM, GaussianFlowLinear
+from genkit.metrics import (
+    mmd_rbf,
+    model_est_err_curve,
+    model_est_jacobian_spectral_curve,
+    sliced_wasserstein,
+    tail_coverage_error,
+)
 from .utils import _devices
 
 
@@ -127,3 +135,147 @@ def test_tce_lower_tail_detects_lighter_left_tail(device, dtype):
 
     assert isinstance(score, float)
     assert score > 0.0
+
+
+class _LinearTimeNet(torch.nn.Module):
+    """Simple linear net with a known Lipschitz constant."""
+
+    def __init__(self, scale: float) -> None:
+        super().__init__()
+        self.scale = float(scale)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return self.scale * x + 0.0 * t
+
+
+class _DummyGenModel:
+    """Minimal metric-compatible generator stub."""
+
+    def __init__(self, family: str, n_steps: int, device: str, dtype: torch.dtype, scale: float) -> None:
+        self._family = family
+        self._n_steps = int(n_steps)
+        self._fdtype = dtype
+        self._idtype = torch.int64
+        self._device = device
+        self._net = _LinearTimeNet(scale=scale).to(device=device, dtype=dtype)
+
+    def _sample_source(self, n_samples: int) -> torch.Tensor:
+        return torch.zeros((n_samples, 1), device=self._device, dtype=self._fdtype)
+
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None) -> torch.Tensor:
+        if z is None:
+            z = self._sample_source(len(x))
+        if t is None:
+            if self._family == "flow":
+                t = torch.zeros((len(x), 1), device=self._device, dtype=self._fdtype)
+            else:
+                t = torch.ones((len(x),), device=self._device, dtype=self._idtype)
+        return (x.square().mean() + z.square().mean() + 0.0 * t.to(dtype=x.dtype).mean()).to(dtype=x.dtype)
+
+    def loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None) -> torch.Tensor:
+        return 3.0 * self._loss(x, z, t).mean()
+
+
+class _PointwiseLossGenModel(_DummyGenModel):
+    """Metric-compatible generator stub whose native loss is pointwise."""
+
+    def _loss(self, x: torch.Tensor, z: torch.Tensor = None, t: torch.Tensor = None) -> torch.Tensor:
+        return x.square()
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize(
+    ("family", "expected_t"),
+    [
+        ("flow", np.arange(5)),
+        ("diffusion", np.arange(1, 6)),
+    ],
+)
+def test_model_est_jacobian_spectral_curve_matches_linear_constant(device, family, expected_t):
+    x = torch.tensor([[1.0], [-2.0], [0.5]], device=device, dtype=torch.float64)
+    model = _DummyGenModel(family=family, n_steps=5, device=device, dtype=torch.float64, scale=2.5)
+
+    curve = model_est_jacobian_spectral_curve(model, x, n_power_iter=4)
+
+    assert curve.shape == (5,)
+    assert np.allclose(curve, 2.5)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("family", ["flow", "diffusion"])
+def test_model_est_jacobian_spectral_curve_caps_time_grid_by_default(device, family):
+    x = torch.tensor([[1.0], [-2.0], [0.5]], device=device, dtype=torch.float64)
+    model = _DummyGenModel(family=family, n_steps=32, device=device, dtype=torch.float64, scale=2.5)
+
+    curve = model_est_jacobian_spectral_curve(model, x, n_power_iter=2)
+
+    assert curve.shape == (10,)
+    assert np.allclose(curve, 2.5)
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_model_est_jacobian_spectral_curve_validates_arguments(device):
+    x = torch.randn(4, 1, device=device, dtype=torch.float32)
+    model = _DummyGenModel(family="flow", n_steps=4, device=device, dtype=torch.float32, scale=1.0)
+
+    with pytest.raises(ValueError, match="n_power_iter"):
+        model_est_jacobian_spectral_curve(model, x, n_power_iter=0)
+    with pytest.raises(ValueError, match="max_n_steps"):
+        model_est_jacobian_spectral_curve(model, x, max_n_steps=0)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize(("family",), [("flow",), ("diffusion",)])
+def test_model_est_err_curve_returns_native_grid(device, family):
+    x = torch.tensor([[1.0], [-2.0], [0.5]], device=device, dtype=torch.float64)
+    model = _DummyGenModel(family=family, n_steps=4, device=device, dtype=torch.float64, scale=1.0)
+
+    curve = model_est_err_curve(model, x)
+
+    assert curve.shape == (4,)
+    assert np.all(curve >= 0.0)
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize("family", ["flow", "diffusion"])
+def test_model_est_err_curve_reduces_pointwise_loss(device, family):
+    x = torch.tensor([[1.0, -2.0], [0.5, 1.5]], device=device, dtype=torch.float64)
+    model = _PointwiseLossGenModel(family=family, n_steps=12, device=device, dtype=torch.float64, scale=1.0)
+
+    curve = model_est_err_curve(model, x)
+
+    assert curve.shape == (10,)
+    assert np.allclose(curve, float(model.loss(x).item()))
+
+
+@pytest.mark.parametrize("device", _devices())
+@pytest.mark.parametrize(
+    ("model_cls", "kwargs"),
+    [
+        (GaussianFlowLinear, {}),
+        (GaussianFlowEDM, {}),
+        (DDPMV, {}),
+        (DLPMEps, {"alpha": 1.6}),
+    ],
+)
+def test_model_est_err_curve_supports_native_and_mse_loss(device, model_cls, kwargs):
+    x = torch.randn(8, 1, device=device, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(device=device, dtype=torch.float64)
+    model = model_cls(net=net, dim=1, n_steps=8, fdtype=torch.float64, device=device, **kwargs)
+
+    native_curve = model_est_err_curve(model, x, max_n_steps=5, loss_type="native")
+    mse_curve = model_est_err_curve(model, x, max_n_steps=5, loss_type="mse")
+
+    assert native_curve.shape == (5,)
+    assert mse_curve.shape == (5,)
+    assert np.all(native_curve >= 0.0)
+    assert np.all(mse_curve >= 0.0)
+
+
+def test_model_est_err_curve_rejects_unknown_loss_type():
+    x = torch.randn(8, 1, dtype=torch.float64)
+    net = _LinearTimeNet(scale=1.0).to(dtype=torch.float64)
+    model = GaussianFlowLinear(net=net, dim=1, n_steps=8, fdtype=torch.float64, device="cpu")
+
+    with pytest.raises(ValueError, match="loss_type"):
+        model_est_err_curve(model, x, loss_type="other")

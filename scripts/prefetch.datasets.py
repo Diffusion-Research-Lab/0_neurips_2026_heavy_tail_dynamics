@@ -18,9 +18,10 @@ from benchmarks.utils import load_yaml, require_section, select_entries  # noqa:
 CACHE_VERSION = 1
 
 DEFAULT_CONFIGS = [
-    "benchmarks/configs/pilot",
-    "benchmarks/configs/templates",
-    "benchmarks/configs/bench",
+    "benchmarks/configs/pilot/image.yaml",
+    "benchmarks/configs/templates/image_bench.yaml",
+    "benchmarks/configs/bench/image",
+    "benchmarks/configs/viz",
 ]
 
 

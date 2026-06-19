@@ -73,18 +73,11 @@ def test_dlpmeps_accepts_image_shaped_batches():
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("device", _devices())
-def test_dlpmeps_loss_accepts_integer_t(device, dtype):
+@pytest.mark.parametrize("t", [3, 0.5])
+def test_dlpmeps_loss_accepts_common_time_formats(t, device, dtype):
     model = _make_dlpmeps(n_steps=7, device=device, dtype=dtype)
     x = torch.randn(5, 2, dtype=dtype, device=device)
-    _assert_finite_scalar(model.loss(x, t=3))
-
-
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-@pytest.mark.parametrize("device", _devices())
-def test_dlpmeps_loss_accepts_normalized_float_t(device, dtype):
-    model = _make_dlpmeps(n_steps=7, device=device, dtype=dtype)
-    x = torch.randn(5, 2, dtype=dtype, device=device)
-    _assert_finite_scalar(model.loss(x, t=0.5))
+    _assert_finite_scalar(model.loss(x, t=t))
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

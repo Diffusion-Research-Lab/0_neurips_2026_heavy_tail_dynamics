@@ -9,17 +9,13 @@ from typing import Any, Callable
 import warnings
 import numpy as np
 import pandas as pd
+from PIL import Image
 from sklearn.model_selection import train_test_split
 import torch
 from ._cifar100_lt import (
     _cifar100_root,
     _normalize_cifar100_split,
     load_cifar100_lt_arrays,
-)
-from ._image_io import (
-    array_uint8_to_resized_tensor,
-    prepare_image_loader_kwargs,
-    read_rgb_resized,
 )
 from ._imagenet_lt import (
     _imagenet_lt_record,
@@ -58,6 +54,29 @@ DatasetLoader = Callable[..., pd.DataFrame | torch.Tensor | np.ndarray | Dataset
 _IMAGE_CACHE_VERSION = 1
 
 
+def _resampling() -> Any:
+    return getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+
+
+def array_uint8_to_resized_tensor(array: np.ndarray, image_size: int) -> torch.Tensor:
+    if array.ndim != 3 or array.shape[2] != 3:
+        raise ValueError(f"Expected an HxWx3 uint8 image array, got shape {array.shape}.")
+    image = Image.fromarray(array.astype(np.uint8, copy=False), mode="RGB")
+    if image.size != (image_size, image_size):
+        image = image.resize((image_size, image_size), _resampling())
+    pixels = np.asarray(image, dtype=np.float32) / 255.0
+    return torch.from_numpy(pixels).permute(2, 0, 1).contiguous()
+
+
+def read_rgb_resized(path: Path, image_size: int) -> torch.Tensor:
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        if image.size != (image_size, image_size):
+            image = image.resize((image_size, image_size), _resampling())
+        pixels = np.asarray(image, dtype=np.float32) / 255.0
+    return torch.from_numpy(pixels).permute(2, 0, 1).contiguous()
+
+
 @dataclass(frozen=True)
 class DatasetEntry:
     """Describe one dataset exposed through the public dataset API."""
@@ -82,12 +101,6 @@ class DatasetEntry:
             "dim": self.dim,
             "n_samples": self.n_samples,
         }
-
-
-def _copy_if_numpy(array: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
-    if isinstance(array, np.ndarray):
-        return np.array(array, copy=True)
-    return array
 
 
 def _metadata_value(value: Any) -> Any:
@@ -132,30 +145,6 @@ def _resolve_real_data_home() -> Path:
     raise RuntimeError("Unable to create a real-dataset cache directory.")
 
 
-def _real_entry(
-    name: str,
-    loader: DatasetLoader,
-    *,
-    description: str,
-    tail_index_alpha: Any = None,
-    split_mode: str = "random",
-    standardize_default: bool = True,
-    dim: int | tuple[int, ...] | None = None,
-    n_samples: int | None = None,
-) -> DatasetEntry:
-    return DatasetEntry(
-        name=name,
-        dataset_type="real",
-        description=description,
-        tail_index_alpha=tail_index_alpha,
-        split_mode=split_mode,
-        standardize_default=standardize_default,
-        dim=dim,
-        n_samples=n_samples,
-        loader=loader,
-    )
-
-
 def _resolve_dataset(
     target_data: str,
     all_datasets: dict[str, DatasetEntry],
@@ -180,21 +169,6 @@ def _standardize_split_arrays(
     std = x_train.std(axis=0, keepdims=True)
     std = np.where(std == 0, 1.0, std)
     return (x_train - mean) / std, (x_val - mean) / std, (x_test - mean) / std
-
-
-def _to_tensor_triplet(
-    x_train: np.ndarray | torch.Tensor,
-    x_val: np.ndarray | torch.Tensor,
-    x_test: np.ndarray | torch.Tensor,
-    *,
-    device: str | torch.device,
-    dtype: torch.dtype,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return (
-        torch.as_tensor(_copy_if_numpy(x_train), device=device, dtype=dtype),
-        torch.as_tensor(_copy_if_numpy(x_val), device=device, dtype=dtype),
-        torch.as_tensor(_copy_if_numpy(x_test), device=device, dtype=dtype),
-    )
 
 
 def _coerce_numeric_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -280,7 +254,14 @@ def _split_frame_to_tensors(
     x_test = frame.iloc[test_idx].reset_index(drop=True).to_numpy()
     if standardize:
         x_train, x_val, x_test = _standardize_split_arrays(x_train, x_val, x_test)
-    return _to_tensor_triplet(x_train, x_val, x_test, device=device, dtype=dtype), (train_idx, val_idx, test_idx)
+    return (
+        (
+            torch.as_tensor(np.array(x_train, copy=True), device=device, dtype=dtype),
+            torch.as_tensor(np.array(x_val, copy=True), device=device, dtype=dtype),
+            torch.as_tensor(np.array(x_test, copy=True), device=device, dtype=dtype),
+        ),
+        (train_idx, val_idx, test_idx),
+    )
 
 
 def _split_tensor_to_tensors(
@@ -770,12 +751,15 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
         )
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(payload, dict):
-        if "frames" not in payload:
+        if "frames" in payload:
+            payload = payload["frames"]
+        elif "apcp_mm" in payload:
+            payload = payload["apcp_mm"]
+        else:
             raise ValueError(
                 f"Unexpected HRRR payload keys in {path}: {sorted(payload)}. "
-                "Expected a tensor payload or a dict containing 'frames'."
+                "Expected a tensor payload or a dict containing 'frames' or 'apcp_mm'."
             )
-        payload = payload["frames"]
     tensor = torch.as_tensor(payload, dtype=torch.float32)
     if tensor.ndim != 4 or tuple(tensor.shape[1:]) != (1, 100, 100):
         raise ValueError(
@@ -786,33 +770,37 @@ def _load_hrrr(**kwargs: Any) -> torch.Tensor:
 
 
 REAL_DATASETS: dict[str, DatasetEntry] = {
-    "lvis": _real_entry(
-        "lvis",
-        _load_lvis,
+    "lvis": DatasetEntry(
+        name="lvis",
+        dataset_type="real",
         description="LVIS long-tailed object categories from local Jean Zay COCO/LVIS files; default image_size=64.",
         standardize_default=False,
         dim=(3, 64, 64),
+        loader=_load_lvis,
     ),
-    "cifar100_lt": _real_entry(
-        "cifar100_lt",
-        _load_cifar100_lt,
+    "cifar100_lt": DatasetEntry(
+        name="cifar100_lt",
+        dataset_type="real",
         description="CIFAR-100 reshaped into a long-tailed subset using exponential class decay; default image_size=64.",
         standardize_default=False,
         dim=(3, 64, 64),
+        loader=_load_cifar100_lt,
     ),
-    "imagenet_lt": _real_entry(
-        "imagenet_lt",
-        _load_imagenet_lt,
+    "imagenet_lt": DatasetEntry(
+        name="imagenet_lt",
+        dataset_type="real",
         description="ImageNet-LT split using shipped annotation files and a local ImageNet image tree; default image_size=64.",
         standardize_default=False,
         dim=(3, 64, 64),
+        loader=_load_imagenet_lt,
     ),
-    "hrrr": _real_entry(
-        "hrrr",
-        _load_hrrr,
+    "hrrr": DatasetEntry(
+        name="hrrr",
+        dataset_type="real",
         description="HRRR accumulated precipitation fields on a 100x100 crop.",
         standardize_default=False,
         dim=(1, 100, 100),
+        loader=_load_hrrr,
     ),
 }
 
@@ -826,7 +814,10 @@ def fetch_real_data(target_data: str, **kwargs: Any):
     n_samples = kwargs.pop("n_samples", None)
     if n_samples is not None:
         n_samples = int(n_samples)
-    kwargs, n_samples = prepare_image_loader_kwargs(getattr(entry, "name", target_data), kwargs, n_samples)
+    entry_name = getattr(entry, "name", target_data)
+    if entry_name in {"lvis", "cifar100_lt", "imagenet_lt"} and n_samples is not None and "max_samples" not in kwargs:
+        kwargs["max_samples"] = n_samples
+        n_samples = None
 
     val_size = float(kwargs.pop("val_size", 0.15))
     test_size = float(kwargs.pop("test_size", 0.15))

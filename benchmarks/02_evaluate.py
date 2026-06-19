@@ -51,11 +51,7 @@ IMAGE_CLASSIFIER_EPOCHS = 8
 IMAGE_CLASSIFIER_BATCH_SIZE = 256
 IMAGE_CLASSIFIER_LR = 1.0e-3
 
-PILOT_SELECTION_METRIC_TEMPLATES = {
-    "train": "INNER_LOSS_TRAIN",
-    "val": "INNER_LOSS_VAL",
-    "test": "INNER_LOSS_TEST",
-}
+PILOT_SELECTION_METRIC_NAME = "validation_loss"
 
 TAIL_COVERAGE_METRICS = {
     "TCE(90)": 0.10,
@@ -66,12 +62,40 @@ TAIL_COVERAGE_METRICS = {
 TEST_VS_TEST_SOURCE = "test_vs_test_metrics"
 
 MODEL_LABELS = {
+    "gaussian_flow_linear_euler": "GF-Linear Euler",
+    "gaussian_flow_linear_heun": "GF-Linear Heun",
     "gaussian_flow_linear": "GF-Linear",
-    "gaussian_flow_ot": "GF-OT",
+    "ddpm_v_ddpm": "DDPM-V DDPM",
+    "ddpm_v_ddim": "DDPM-V DDIM",
+    "dlpm_eps_a17": "DLPM alpha=1.7",
+    "dlpm_eps_a19": "DLPM alpha=1.9",
     "ddpm_v": "DDPM-V",
     "dlpm_eps": "DLPM",
+    "tedm_origin_nu21": "TEDM nu=2.1",
+    "tedm_origin_nu30": "TEDM nu=3.0",
     "tedm_origin": "TEDM-Orig",
 }
+MODEL_ORDER = [
+    "gaussian_flow_linear_euler",
+    "gaussian_flow_linear_heun",
+    "ddpm_v_ddpm",
+    "ddpm_v_ddim",
+    "dlpm_eps_a17",
+    "dlpm_eps_a19",
+    "tedm_origin_nu21",
+    "tedm_origin_nu30",
+    "dlpm_eps",
+    "tedm_origin",
+    "gaussian_flow_linear",
+    "ddpm_v",
+]
+
+
+def canonical_model_name(model_preset: str, model_name: str) -> str:
+    for candidate in MODEL_ORDER:
+        if model_preset.startswith(candidate):
+            return candidate
+    return model_name
 
 
 def checkpoint_dtype(config: dict[str, Any], checkpoint: dict[str, Any]) -> torch.dtype:
@@ -267,9 +291,9 @@ if __name__ == "__main__":
     parser.add_argument("--sample-batch-size", type=int, default=5000)
     parser.add_argument("--max-mmd-samples", type=int, default=2000)
     parser.add_argument("--selection-only", action="store_true")
-    parser.add_argument("--selection-split", choices=sorted(PILOT_SELECTION_METRIC_TEMPLATES), default="test")
+    parser.add_argument("--selection-split", choices=["train", "val", "test"], default="val")
     parser.add_argument("--selection-repeats", type=int, default=1)
-    parser.add_argument("--selection-batch-size", type=int, default=2048)
+    parser.add_argument("--selection-batch-size", type=int, default=64)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--shard-count", type=int, default=1)
@@ -291,7 +315,6 @@ if __name__ == "__main__":
         raise ValueError("--selection-repeats must be >= 1")
     if args.selection_batch_size < 1:
         raise ValueError("--selection-batch-size must be >= 1")
-
     batch_dir = args.batch_dir.expanduser()
     if not batch_dir.exists():
         raise FileNotFoundError(f"Missing batch directory: {batch_dir}")
@@ -342,7 +365,7 @@ if __name__ == "__main__":
                     }
                     image_class_probe_warnings = []
                 else:
-                    x_train, _, x_test = build_dataset(dataset_cfg, dtype=dtype, device="cpu")
+                    x_train, x_test = build_dataset(dataset_cfg, dtype=dtype, device="cpu", splits=("train", "test"))
                     metadata = load_preprocessed_real_dataset_metadata(dataset_cfg, dtype=dtype)
                     train_labels = metadata_class_labels(metadata, "train")
                     test_labels = metadata_class_labels(metadata, "test")
@@ -460,17 +483,158 @@ if __name__ == "__main__":
             if summary_path.exists() and not args.overwrite:
                 summary = yaml.safe_load(summary_path.read_text()) or {}
                 if summary.get("status") == "ok":
-                    row = {
-                        "run_dir": run_dir.name,
-                        "artifact_dir": str(artifact_dir),
-                        "status": "skipped",
-                        "n_scalar_rows": int(summary.get("n_scalar_rows", 0)),
-                        "n_checkpoints": int(summary.get("n_checkpoints", 0)),
-                    }
-                    manifest_rows.append(row)
-                    continue
+                    can_skip = True
+                    if args.selection_only:
+                        can_skip = False
+                        if scalars_path.exists():
+                            sample = pd.read_csv(scalars_path, usecols=["source", "metric_name"])
+                            can_skip = bool((sample["source"].eq("pilot_selection") & sample["metric_name"].eq(PILOT_SELECTION_METRIC_NAME)).any())
+                    if can_skip:
+                        row = {
+                            "run_dir": run_dir.name,
+                            "artifact_dir": str(artifact_dir),
+                            "status": "skipped",
+                            "n_scalar_rows": int(summary.get("n_scalar_rows", 0)),
+                            "n_checkpoints": int(summary.get("n_checkpoints", 0)),
+                        }
+                        manifest_rows.append(row)
+                        continue
 
             config = yaml.safe_load((run_dir / "config.yaml").read_text())
+            train_stats = pd.read_csv(run_dir / "train_stats.csv") if (run_dir / "train_stats.csv").exists() else pd.DataFrame()
+            if args.selection_only:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
+                dtype = checkpoint_dtype(config, final_checkpoint)
+                torch.set_default_dtype(dtype)
+                x_train, x_selection = build_dataset(
+                    config["dataset"],
+                    dtype=dtype,
+                    device="cpu",
+                    splits=("train", args.selection_split),
+                )
+                if len(x_selection) == 0:
+                    raise ValueError(f"Selection split {args.selection_split!r} is empty.")
+
+                network_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["network"]))
+                model_cfg = yaml.safe_load(yaml.safe_dump(final_checkpoint["model_init"]["model"]))
+                model_cfg.setdefault("params", {})
+                model_cfg["params"]["fdtype"] = dtype
+                model_cfg["params"]["device"] = args.device
+                net, _ = build_network(network_cfg, x_train)
+                net = net.to(device=args.device, dtype=dtype)
+                generator, _ = build_model(model_cfg, net, x_train, dtype=dtype, device=args.device)
+                state_dict = final_checkpoint["network_state_dict"] if "network_state_dict" in final_checkpoint else final_checkpoint["model_state"]
+                generator._net.load_state_dict(state_dict)
+                generator._net.eval()
+
+                final_epoch = int(config["train"]["n_epochs"])
+                dataset_params = config.get("dataset", {}).get("params", {})
+                model_params = config.get("model", {}).get("params", {})
+                model_preset = config["model"].get("preset_name", config["model"]["name"])
+                model_name = canonical_model_name(str(model_preset), str(config["model"]["name"]))
+                feature_dim = int(x_selection[:1].reshape(1, -1).shape[1])
+                scalar_rows: list[dict[str, Any]] = []
+                base_row = {
+                    "run_dir": run_dir.name,
+                    "checkpoint_epoch": final_epoch,
+                    "trial_idx": int(config.get("run", {}).get("trial_idx", 0)),
+                    "dataset_preset": config["dataset"].get("preset_name", config["dataset"]["name"]),
+                    "dataset_name": config["dataset"]["name"],
+                    "dataset_alpha": dataset_params.get("alpha", np.nan),
+                    "dataset_dim": dataset_params.get("dim", np.nan),
+                    "model_name": model_name,
+                    "model_label": MODEL_LABELS.get(model_name, model_name),
+                    "model_preset": model_preset,
+                    "model_alpha": model_params.get("alpha", np.nan),
+                    "network_preset": config["network"]["preset_name"],
+                    "train_preset": config["train"]["preset_name"],
+                    "train_lr": config["train"].get("lr", np.nan),
+                }
+                stats = train_stats.copy()
+                if not stats.empty and "epoch" in stats.columns:
+                    stats["epoch"] = pd.to_numeric(stats["epoch"], errors="coerce")
+                for column in ["training_loss", "grad_norm"]:
+                    if stats.empty or "epoch" not in stats.columns or column not in stats.columns:
+                        continue
+                    for _, stat_row in stats[["epoch", column]].dropna().iterrows():
+                        scalar_rows.append(
+                            {
+                                **base_row,
+                                "source": "train_stats",
+                                "metric_name": column,
+                                "value": float(stat_row[column]),
+                                "eval_repeat_idx": np.nan,
+                                "epoch": int(stat_row["epoch"]),
+                            }
+                        )
+
+                selection_values = []
+                split_dtype = x_selection.dtype
+                pin = str(args.device).startswith("cuda")
+                with torch.no_grad():
+                    for eval_repeat_idx in range(int(args.selection_repeats)):
+                        weighted_sum = 0.0
+                        weight_count = 0
+                        for start in range(0, len(x_selection), int(args.selection_batch_size)):
+                            x = x_selection[start: start + int(args.selection_batch_size)].to(
+                                device=args.device,
+                                dtype=split_dtype,
+                                non_blocking=pin,
+                            )
+                            loss = generator.loss(x)
+                            if loss.ndim != 0:
+                                raise ValueError(f"generative_model.loss must return a scalar, got shape {tuple(loss.shape)}")
+                            n_batch = int(x.shape[0])
+                            weighted_sum += float(loss.detach().cpu()) * n_batch
+                            weight_count += n_batch
+                        value = weighted_sum / max(weight_count, 1)
+                        selection_values.append(value)
+                        scalar_rows.append(
+                            {
+                                **base_row,
+                                "source": "pilot_selection",
+                                "metric_name": PILOT_SELECTION_METRIC_NAME,
+                                "value": float(value),
+                                "eval_repeat_idx": eval_repeat_idx,
+                                "epoch": np.nan,
+                            }
+                        )
+
+                pd.DataFrame(scalar_rows).to_csv(scalars_path, index=False, compression="gzip")
+                summary = {
+                    "status": "ok",
+                    "run_dir": run_dir.name,
+                    "source_run_dir": str(run_dir.resolve()),
+                    "artifact_dir": str(artifact_dir.resolve()),
+                    "device": args.device,
+                    "n_checkpoints": 1,
+                    "checkpoint_epochs": [final_epoch],
+                    "feature_dim": feature_dim,
+                    "image_like": bool(x_selection.ndim > 2),
+                    "selection_only": True,
+                    "selection_split": args.selection_split,
+                    "selection_metric_name": PILOT_SELECTION_METRIC_NAME,
+                    "selection_repeats": int(args.selection_repeats),
+                    "selection_batch_size": int(args.selection_batch_size),
+                    "selection_score": float(np.mean(selection_values)),
+                    "metric_names": [PILOT_SELECTION_METRIC_NAME],
+                    "n_scalar_rows": len(scalar_rows),
+                    "scalars_path": str(scalars_path),
+                    "warnings": [],
+                }
+                summary_path.write_text(yaml.safe_dump(summary, sort_keys=False), encoding="utf-8")
+                manifest_rows.append(
+                    {
+                        "run_dir": run_dir.name,
+                        "artifact_dir": str(artifact_dir),
+                        "status": "ok",
+                        "n_scalar_rows": len(scalar_rows),
+                        "n_checkpoints": 1,
+                    }
+                )
+                continue
+
             final_checkpoint = torch.load(run_dir / "checkpoint.pt", map_location="cpu")
             dtype = checkpoint_dtype(config, final_checkpoint)
             torch.set_default_dtype(dtype)
@@ -481,9 +645,13 @@ if __name__ == "__main__":
             model_cfg_template["params"]["fdtype"] = dtype
             model_cfg_template["params"]["device"] = args.device
 
-            x_train, x_val, x_test = build_dataset(config["dataset"], dtype=dtype, device="cpu")
-            image_like = x_test.ndim > 2
-            feature_dim = int(x_test[:1].reshape(1, -1).shape[1])
+            needed_splits = ("train", "test")
+            loaded_splits = build_dataset(config["dataset"], dtype=dtype, device="cpu", splits=needed_splits)
+            split_tensors = dict(zip(needed_splits, loaded_splits))
+            x_train = split_tensors["train"]
+            metric_ref = split_tensors["test"]
+            image_like = metric_ref.ndim > 2
+            feature_dim = int(metric_ref[:1].reshape(1, -1).shape[1])
             final_epoch = int(config["train"]["n_epochs"])
             checkpoint_epochs = []
             ckpt_dir = run_dir / "checkpoints"
@@ -494,17 +662,10 @@ if __name__ == "__main__":
                     except ValueError:
                         continue
             checkpoint_epochs = sorted(set(checkpoint_epochs + [final_epoch]))
-            train_stats = pd.read_csv(run_dir / "train_stats.csv") if (run_dir / "train_stats.csv").exists() else pd.DataFrame()
             artifact_dir.mkdir(parents=True, exist_ok=True)
 
             scalar_rows: list[dict[str, Any]] = []
             warnings: list[str] = list(image_class_probe_warnings)
-            selection_tensors = {
-                "train": x_train,
-                "val": x_val,
-                "test": x_test,
-            }
-            selection_metric_name = PILOT_SELECTION_METRIC_TEMPLATES[args.selection_split]
 
             for requested_epoch in checkpoint_epochs:
                 if requested_epoch == final_epoch:
@@ -526,6 +687,8 @@ if __name__ == "__main__":
                 checkpoint_epoch = int(resolved_epoch if resolved_epoch is not None else final_epoch)
                 dataset_params = config.get("dataset", {}).get("params", {})
                 model_params = config.get("model", {}).get("params", {})
+                model_preset = config["model"].get("preset_name", config["model"]["name"])
+                model_name = canonical_model_name(str(model_preset), str(config["model"]["name"]))
                 base_row = {
                     "run_dir": run_dir.name,
                     "checkpoint_epoch": checkpoint_epoch,
@@ -534,21 +697,19 @@ if __name__ == "__main__":
                     "dataset_name": config["dataset"]["name"],
                     "dataset_alpha": dataset_params.get("alpha", np.nan),
                     "dataset_dim": dataset_params.get("dim", np.nan),
-                    "model_name": config["model"]["name"],
-                    "model_label": MODEL_LABELS.get(config["model"]["name"], config["model"]["name"]),
-                    "model_preset": config["model"].get("preset_name", config["model"]["name"]),
+                    "model_name": model_name,
+                    "model_label": MODEL_LABELS.get(model_name, model_name),
+                    "model_preset": model_preset,
                     "model_alpha": model_params.get("alpha", np.nan),
                     "network_preset": config["network"]["preset_name"],
                     "train_preset": config["train"]["preset_name"],
+                    "train_lr": config["train"].get("lr", np.nan),
                 }
-
-                if args.selection_only and checkpoint_epoch != final_epoch:
-                    continue
 
                 epoch_stats = train_stats
                 if "epoch" in train_stats.columns:
                     epoch_stats = train_stats[train_stats["epoch"] <= checkpoint_epoch]
-                for column in ["training_loss", "training_loss_std", "grad_variance_epoch", "grad_norm_epoch"]:
+                for column in ["training_loss", "grad_norm"]:
                     if column not in epoch_stats.columns:
                         continue
                     for _, stat_row in epoch_stats[["epoch", column]].dropna().iterrows():
@@ -563,47 +724,7 @@ if __name__ == "__main__":
                             }
                         )
 
-                if args.selection_only:
-                    x_split_cpu = selection_tensors[args.selection_split].detach().cpu()
-                    split_losses: list[float] = []
-                    if len(x_split_cpu) > 0:
-                        split_dtype = x_split_cpu.dtype
-                        pin = str(args.device).startswith("cuda")
-                        was_training = generator._net.training
-                        generator._net.eval()
-                        try:
-                            with torch.no_grad():
-                                for _ in range(int(args.selection_repeats)):
-                                    weighted_sum = 0.0
-                                    weight_count = 0
-                                    for start in range(0, len(x_split_cpu), int(args.selection_batch_size)):
-                                        x = x_split_cpu[start: start + int(args.selection_batch_size)].to(
-                                            device=args.device,
-                                            dtype=split_dtype,
-                                            non_blocking=pin,
-                                        )
-                                        loss = generator.loss(x)
-                                        if loss.ndim != 0:
-                                            raise ValueError(f"generative_model.loss must return a scalar, got shape {tuple(loss.shape)}")
-                                        n_batch = int(x.shape[0])
-                                        weighted_sum += float(loss.detach().cpu()) * n_batch
-                                        weight_count += n_batch
-                                    split_losses.append(weighted_sum / max(weight_count, 1))
-                        finally:
-                            generator._net.train(was_training)
-                    for eval_repeat_idx, metric_value in enumerate(split_losses):
-                        scalar_rows.append(
-                            {
-                                **base_row,
-                                "source": "pilot_selection",
-                                "metric_name": selection_metric_name,
-                                "value": float(metric_value),
-                                "eval_repeat_idx": eval_repeat_idx,
-                                "epoch": np.nan,
-                            }
-                        )
-                    continue
-
+                x_test = split_tensors["test"]
                 x_ref = x_test[: min(int(args.n_eval_samples), len(x_test))]
                 x_ref_cpu = x_ref.detach().cpu()
                 baseline_values, baseline_warnings = compute_test_vs_test_metrics(
@@ -677,15 +798,10 @@ if __name__ == "__main__":
                 "feature_dim": feature_dim,
                 "image_like": bool(image_like),
                 "selection_only": bool(args.selection_only),
-                "selection_split": args.selection_split,
-                "selection_metric_name": selection_metric_name if args.selection_only else None,
-                "selection_repeats": int(args.selection_repeats),
-                "selection_batch_size": int(args.selection_batch_size),
+                "selection_metric_name": None,
                 "max_mmd_samples": int(args.max_mmd_samples),
                 "metric_names": (
-                    [selection_metric_name]
-                    if args.selection_only
-                    else EVAL_METRIC_NAMES + (IMAGE_CLASS_RECOVERY_METRIC_NAMES if image_class_probe is not None else [])
+                    EVAL_METRIC_NAMES + (IMAGE_CLASS_RECOVERY_METRIC_NAMES if image_class_probe is not None else [])
                 ),
                 "n_scalar_rows": len(scalar_rows),
                 "scalars_path": str(scalars_path),

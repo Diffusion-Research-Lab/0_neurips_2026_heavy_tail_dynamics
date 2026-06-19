@@ -11,6 +11,8 @@ BENCH_UTILS               ?= benchmarks/utils.py
 PILOT_ANALYSIS            ?= benchmarks/03_pilot_analysis.py
 BENCH_PLOTTING            ?= benchmarks/04_plotting_bench.py
 SHARIATAN_BENCH           ?= benchmarks/05_shariatan_et_al.py
+IMAGENET128_VIZ_CONFIGS   ?= benchmarks/06_make_imagenet128_viz.py
+IMAGENET128_VIZ_SCRIPT    ?= benchmarks/07_visualize_imagenet128.py
 
 
 # Output directories.
@@ -24,11 +26,15 @@ FIGURE_DIR                ?= benchmarks/figures
 PILOT_CONFIG_DIR          ?= benchmarks/configs/pilot
 BENCH_TEMPLATE_DIR        ?= benchmarks/configs/templates
 BENCH_CONFIG_DIR          ?= benchmarks/configs/bench
+VIZ_CONFIG_DIR            ?= benchmarks/configs/viz
+IMAGENET128_VIZ_CONFIG_DIR ?= $(VIZ_CONFIG_DIR)/imagenet_lt_128
 
 
 # Dataset cache controls. Override DATASETS to submit a subset.
 DATASETS                  ?= hrrr lvis cifar100_lt imagenet_lt
 INIT_DATASETS             ?= cifar100_lt imagenet_lt
+DATASET_OVERWRITE         ?= 0
+DATASET_HRRR_ENSURE       ?= 1
 
 
 # Slurm array sizes.
@@ -68,13 +74,14 @@ JZ_GPU_DEV_ARGS           ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:
 PILOT_SBATCH_ARGS         ?= $(JZ_GPU_ARGS) --time=04:00:00
 BENCH_SBATCH_ARGS_SYNTH   ?= $(JZ_GPU_ARGS) --time=04:00:00
 BENCH_SBATCH_ARGS_IMAGE   ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=10:00:00
+IMAGENET128_VIZ_SBATCH_ARGS ?= $(BENCH_SBATCH_ARGS_IMAGE)
 EVAL_PILOT_SBATCH_ARGS    ?= $(JZ_GPU_DEV_ARGS) --time=00:50:00
 EVAL_SBATCH_ARGS          ?= $(JZ_GPU_ARGS) --time=06:00:00
-DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=01:00:00
+DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=20:00:00
 
 
 # Evaluation options.
-PILOT_SELECTION_ARGS      ?= --selection-only --selection-split val --selection-repeats 8 --selection-batch-size 64
+PILOT_SELECTION_ARGS      ?= --selection-only --selection-split val --selection-repeats 4 --selection-batch-size 64
 EVAL_BENCH_SYNTH_ARGS     ?= --n-eval-samples 2048 --n-eval-repeats 4 --sample-batch-size 64 --max-mmd-samples 4096
 EVAL_BENCH_IMAGE_ARGS     ?= --n-eval-samples 4096 --n-eval-repeats 6 --sample-batch-size 64 --max-mmd-samples 256
 SHARIATAN_ARGS            ?=
@@ -83,13 +90,14 @@ SHARIATAN_ARGS            ?=
 # Pilot configs and dataset prefetch inputs.
 PILOT_SYNTH_CONFIG        ?= $(PILOT_CONFIG_DIR)/synth.yaml
 PILOT_IMAGE_CONFIG        ?= $(PILOT_CONFIG_DIR)/image.yaml
-PREFETCH_CONFIG_INPUTS    = $(PILOT_CONFIG_DIR) $(BENCH_TEMPLATE_DIR) $(BENCH_CONFIG_DIR)
+DATASET_CONFIG_INPUTS     ?= $(PILOT_IMAGE_CONFIG) $(BENCH_TEMPLATE_DIR)/image_bench.yaml $(BENCH_CONFIG_DIR)/image $(VIZ_CONFIG_DIR)
 
 
 .DEFAULT_GOAL := help
 
-.PHONY: setup dataset pilot analyze-pilot bench bench-shariatan evaluate-pilot evaluate-bench \
-        analyze-bench check send supp help
+.PHONY: setup dataset pilot analyze-pilot bench bench-shariatan imagenet128-viz-configs \
+        bench-imagenet128-viz visualize-imagenet128 evaluate-pilot evaluate-bench analyze-bench \
+        check send supp help
 
 
 # Environment bootstrap.
@@ -105,14 +113,30 @@ dataset:
 	  case " $(INIT_DATASETS) " in \
 	    *" $$dataset "*) $(RUN_PYTHON) -m datakit init "$$dataset" ;; \
 	  esac; \
-	  if $(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset "$$dataset" $(PREFETCH_CONFIG_INPUTS); then \
-	    echo "[skip-sbatch] $$dataset: all variants already cached"; \
+	  submit=0; \
+	  if [ "$$dataset" = "hrrr" ] && [ "$(DATASET_HRRR_ENSURE)" = "1" ]; then \
+	    submit=1; \
+	  elif [ "$(DATASET_OVERWRITE)" = "1" ]; then \
+	    submit=1; \
 	  else \
+	    $(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset "$$dataset" $(DATASET_CONFIG_INPUTS); \
+	    status="$$?"; \
+	    if [ "$$status" = "0" ]; then \
+	      echo "[skip-sbatch] $$dataset: all variants already cached"; \
+	    elif [ "$$status" = "2" ]; then \
+	      submit=1; \
+	    else \
+	      exit "$$status"; \
+	    fi; \
+	  fi; \
+	  if [ "$$submit" = "1" ]; then \
+	    overwrite_arg=""; \
+	    if [ "$(DATASET_OVERWRITE)" = "1" ]; then overwrite_arg="--overwrite"; fi; \
 	    sbatch --job-name=htfm_dataset_$${dataset} \
 	      --output="$(CURDIR)/$(LOG_DIR)/htfm_dataset_$${dataset}_%j.out" \
 	      --error="$(CURDIR)/$(LOG_DIR)/htfm_dataset_$${dataset}_%j.err" \
 	      $(DATASET_SBATCH_ARGS) $(SBATCH_EXPORT) scripts/dataset.slurm.sh \
-	      --only-dataset "$$dataset" $(PREFETCH_CONFIG_INPUTS) ; \
+	      $$overwrite_arg --only-dataset "$$dataset" $(DATASET_CONFIG_INPUTS) ; \
 	  fi; \
 	done
 
@@ -157,6 +181,21 @@ bench:
 	  echo "[bench] submit $$config ($$count runs)"; \
 	  sbatch --job-name=htfm_bench --array="0-$$array_end" $$bench_sbatch_args $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$$config" --skip-existing; \
 	done
+
+imagenet128-viz-configs:
+	$(RUN_PYTHON) "$(IMAGENET128_VIZ_CONFIGS)" --bench-config-root "$(BENCH_CONFIG_DIR)" --output-root "$(IMAGENET128_VIZ_CONFIG_DIR)"
+
+bench-imagenet128-viz: imagenet128-viz-configs
+	@mkdir -p "$(LOG_DIR)"
+	@find "$(IMAGENET128_VIZ_CONFIG_DIR)" -name '*.yaml' | sort | while read -r config; do \
+	  count="$$($(call config_run_count,$$config))"; \
+	  array_end="$$((count - 1))"; \
+	  echo "[bench-imagenet128-viz] submit $$config ($$count runs)"; \
+	  sbatch --job-name=htfm_imagenet128_viz --array="0-$$array_end" $(IMAGENET128_VIZ_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$$config" --skip-existing; \
+	done
+
+visualize-imagenet128:
+	$(RUN_PYTHON) "$(IMAGENET128_VIZ_SCRIPT)" --config-root "$(IMAGENET128_VIZ_CONFIG_DIR)" --artifact-root "$(ARTIFACT_DIR)" --output-dir "$(FIGURE_DIR)/imagenet_lt_128_viz"
 
 bench-shariatan:
 	$(RUN_PYTHON) "$(SHARIATAN_BENCH)" $(SHARIATAN_ARGS)
@@ -214,10 +253,13 @@ supp:
 help:
 	@printf "Available targets:\n"
 	@printf "  %-22s %s\n" "setup" "Install Jean Zay environment"
-	@printf "  %-22s %s\n" "dataset" "Submit image dataset cache jobs; override with DATASETS=hrrr"
+	@printf "  %-22s %s\n" "dataset" "Submit real image-cache jobs; override with DATASETS=hrrr"
 	@printf "  %-22s %s\n" "pilot" "Submit pilot configs via Slurm"
 	@printf "  %-22s %s\n" "analyze-pilot" "Generate per-dataset winners, reports, and bench configs"
 	@printf "  %-22s %s\n" "bench" "Generate and submit explicit benchmark configs via Slurm"
+	@printf "  %-22s %s\n" "imagenet128-viz-configs" "Generate ImageNet-LT-128 viz configs from selected bench configs"
+	@printf "  %-22s %s\n" "bench-imagenet128-viz" "Submit ImageNet-LT-128 visualization training jobs"
+	@printf "  %-22s %s\n" "visualize-imagenet128" "Sample visualization grids from ImageNet-LT-128 runs"
 	@printf "  %-22s %s\n" "bench-shariatan" "Run standalone Shariatian et al. benchmark"
 	@printf "  %-22s %s\n" "evaluate-pilot" "Submit pilot evaluation only"
 	@printf "  %-22s %s\n" "evaluate-bench" "Submit benchmark evaluation only"

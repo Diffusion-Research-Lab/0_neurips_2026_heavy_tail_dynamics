@@ -1,7 +1,7 @@
 run:
   name: template_image_bench
   seed: 0
-  dtype: float32
+  dtype: bfloat16
   n_trial: 1
 
 sweep:
@@ -11,9 +11,8 @@ sweep:
     - cifar100_lt
     - imagenet_lt
   networks:
-    - unet
+    - transformer
   models:
-    - gaussian_flow_ot
     - gaussian_flow_linear
     - ddpm_v
     - dlpm_eps
@@ -50,7 +49,7 @@ datasets:
     params:
       split: train
       image_size: 32
-      imbalance_factor: 20
+      imbalance_factor: 10
       seed: 0
     split:
       val_size: 0.1
@@ -72,29 +71,25 @@ datasets:
       standardize: false
 
 networks:
-  unet:
-    name: unet
-    params:
-      model_channels: 64
-      num_res_blocks: 2
-      attention_resolutions:
-        literal: [4]
-      dropout: 0.1
-      channel_mult:
-        literal: [1, 2, 4]
-      conv_resample: true
-      dims: 2
-      num_heads: 4
-      use_scale_shift_norm: true
-
-models:
-  gaussian_flow_ot:
-    name: gaussian_flow_ot
+  transformer:
+    name: transformer
     params:
       n_steps: 256
-      sigma_min: 0.001
-      sigma_max: 2.0
+      timestep_mode: continuous
+      patch_size: 4
+      num_layers: 12
+      num_attention_heads: 6
+      attention_head_dim: 64
+      dropout: 0.1
+      attention_bias: true
+      activation_fn: gelu-approximate
+      norm_type: ada_norm_single
+      norm_elementwise_affine: false
+      cross_attention_dim: null
+      caption_channels: null
+      use_additional_conditions: false
 
+models:
   gaussian_flow_linear:
     name: gaussian_flow_linear
     params:
@@ -124,9 +119,11 @@ models:
 trains:
   standard:
     device: cuda
+    data_device: cpu
     batch_size: 8
     n_epochs: 128
     lr: 0.0002
+    pin_memory: true
     num_workers: 0
     use_adamw: true
     weight_decay: 0.0001

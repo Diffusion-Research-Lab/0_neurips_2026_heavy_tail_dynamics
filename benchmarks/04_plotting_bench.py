@@ -18,17 +18,40 @@ ARTIFACT_ROOT = REPO_ROOT / "benchmarks" / "artifacts"
 TABLE_ROOT = REPO_ROOT / "benchmarks" / "tables"
 FIGURE_ROOT = REPO_ROOT / "benchmarks" / "figures"
 
-PREFERRED_LABELS = ["GF-Linear", "GF-OT", "DDPM-V", "DLPM", "TEDM-Orig"]
+PREFERRED_LABELS = [
+    "GF-Linear Euler",
+    "GF-Linear Heun",
+    "DDPM-V DDPM",
+    "DDPM-V DDIM",
+    "DLPM alpha=1.7",
+    "DLPM alpha=1.9",
+    "TEDM nu=2.1",
+    "TEDM nu=3.0",
+]
 DISPLAY_MODEL_LABELS = {
+    "gaussian_flow_linear_euler": "GF-Linear Euler",
+    "gaussian_flow_linear_heun": "GF-Linear Heun",
     "gaussian_flow_linear": "GF-Linear",
-    "gaussian_flow_ot": "GF-OT",
+    "ddpm_v_ddpm": "DDPM-V DDPM",
+    "ddpm_v_ddim": "DDPM-V DDIM",
+    "dlpm_eps_a17": "DLPM alpha=1.7",
+    "dlpm_eps_a19": "DLPM alpha=1.9",
     "ddpm_v": "DDPM-V",
     "dlpm_eps": "DLPM",
+    "tedm_origin_nu21": "TEDM nu=2.1",
+    "tedm_origin_nu30": "TEDM nu=3.0",
     "tedm_origin": "TEDM-Orig",
 }
 MODEL_COLORS = {
+    "GF-Linear Euler": "tab:blue",
+    "GF-Linear Heun": "tab:cyan",
+    "DDPM-V DDPM": "tab:green",
+    "DDPM-V DDIM": "tab:purple",
+    "DLPM alpha=1.7": "tab:orange",
+    "DLPM alpha=1.9": "tab:red",
+    "TEDM nu=2.1": "tab:olive",
+    "TEDM nu=3.0": "tab:brown",
     "GF-Linear": "tab:blue",
-    "GF-OT": "tab:pink",
     "DDPM-V": "tab:green",
     "DLPM": "tab:orange",
     "TEDM-Orig": "tab:olive",
@@ -73,7 +96,7 @@ CLASS_RECOVERY_METRICS = [
     ("CLASS_RECOVERY_INDEX", True),
     ("CLASS_HIST_TV", False),
 ]
-TRAIN_METRICS = ["training_loss", "training_loss_std", "grad_norm_epoch"]
+TRAIN_METRICS = ["training_loss", "grad_norm"]
 TEST_VS_TEST_SOURCE = "test_vs_test_metrics"
 STALE_DATASET_FIGURE_FILENAMES = [
     "mmd_rbf",
@@ -93,8 +116,7 @@ METRIC_LABELS = {
     "CLASS_RECOVERY_INDEX": "Class Recovery",
     "CLASS_HIST_TV": "Class Hist. TV",
     "training_loss": "Training Loss",
-    "training_loss_std": "Training Loss Std.",
-    "grad_norm_epoch": "Grad Norm",
+    "grad_norm": "Grad Norm",
 }
 METRIC_FILENAMES = {
     "MMD_RBF": "mmd_rbf",
@@ -105,8 +127,7 @@ METRIC_FILENAMES = {
     "CLASS_RECOVERY_INDEX": "class_recovery",
     "CLASS_HIST_TV": "class_hist_tv",
     "training_loss": "training_loss",
-    "training_loss_std": "training_loss_std",
-    "grad_norm_epoch": "grad_norm",
+    "grad_norm": "grad_norm",
 }
 
 

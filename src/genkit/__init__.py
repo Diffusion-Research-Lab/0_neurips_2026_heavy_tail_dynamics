@@ -1,7 +1,7 @@
 """Public genkit model exports."""
 
 from .diffusion import DDPMEps, DDPMV, DDPMX0, DLPMEps
-from .flow_matching import GaussianFlowDDPM, GaussianFlowLinear, GaussianFlowOT
+from .flow_matching import GaussianFlowDDPM, GaussianFlowEDM, GaussianFlowLinear, GaussianFlowOTLinear
 from .thirdparty import DLPMEpsOrigin, FlowMatchingOrigin, ScoreSDEOrigin, TEDMOrigin
 
 __all__ = [
@@ -12,8 +12,9 @@ __all__ = [
     "DLPMEpsOrigin",
     "FlowMatchingOrigin",
     "GaussianFlowDDPM",
+    "GaussianFlowEDM",
     "GaussianFlowLinear",
-    "GaussianFlowOT",
+    "GaussianFlowOTLinear",
     "ScoreSDEOrigin",
     "TEDMOrigin",
 ]
