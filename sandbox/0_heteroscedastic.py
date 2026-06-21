@@ -1,3 +1,11 @@
+import os
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 from _utils import (
     add_test_vs_test,
@@ -14,95 +22,93 @@ from genkit.training import train
 device, dtype = setup()
 
 
-class _HeteroscedasticNet(torch.nn.Module):
-    def __init__(self, field, dim, n_noise_levels, gate_width, init_log_var, learn_scales):
-        super().__init__()
-        self.field = field
-        self.noise_gate = torch.nn.Sequential(
-            torch.nn.Linear(dim, gate_width),
-            torch.nn.SiLU(),
-            torch.nn.Linear(gate_width, n_noise_levels),
-        )
-        if learn_scales:
-            self.log_var_multipliers = torch.nn.Parameter(init_log_var.clone())
-        else:
-            self.register_buffer("log_var_multipliers", init_log_var.clone())
+class HistogramLevels2D:
+    def __init__(self, x, n_levels=4, n_bins=80, range_quantile=0.995):
+        if x.ndim != 2 or x.shape[1] != 2:
+            raise ValueError(f"Expected 2D samples with shape (N, 2), got {tuple(x.shape)}.")
+        self.n_levels = int(n_levels)
+        self.n_bins = int(n_bins)
+        if self.n_levels <= 0 or self.n_bins <= 1:
+            raise ValueError("n_levels must be positive and n_bins must be greater than one.")
+        q = (1.0 - float(range_quantile)) / 2.0
+        lo = torch.quantile(x, q, dim=0)
+        hi = torch.quantile(x, 1.0 - q, dim=0)
+        span = (hi - lo).clamp_min(torch.finfo(x.dtype).eps)
+        lo, hi = lo - 1e-3 * span, hi + 1e-3 * span
+        self.x_edges = torch.linspace(lo[0], hi[0], self.n_bins + 1, device=x.device, dtype=x.dtype)
+        self.y_edges = torch.linspace(lo[1], hi[1], self.n_bins + 1, device=x.device, dtype=x.dtype)
 
-    def forward(self, x, t):
-        return self.field(x, t)
+        ix, iy = self.cell_indices(x)
+        counts = torch.bincount(ix * self.n_bins + iy, minlength=self.n_bins**2).reshape(self.n_bins, self.n_bins).float()
+        point_counts = counts[ix, iy]
+        thresholds = torch.quantile(point_counts, torch.linspace(0.0, 1.0, self.n_levels + 1, device=x.device))
+        self.cell_levels = torch.bucketize(counts.reshape(-1), thresholds[1:-1], right=False).reshape(self.n_bins, self.n_bins).long()
+        levels = self.cell_levels[ix, iy]
+        self.level_probs = torch.bincount(levels, minlength=self.n_levels).float()
+        self.level_probs /= self.level_probs.sum().clamp_min(1.0)
+
+    def to(self, device=None, dtype=None):
+        self.x_edges = self.x_edges.to(device=device, dtype=dtype)
+        self.y_edges = self.y_edges.to(device=device, dtype=dtype)
+        self.cell_levels = self.cell_levels.to(device=device)
+        self.level_probs = self.level_probs.to(device=device, dtype=dtype)
+        return self
+
+    def cell_indices(self, x):
+        ix = torch.bucketize(x[:, 0], self.x_edges[1:-1]).clamp(0, self.n_bins - 1)
+        iy = torch.bucketize(x[:, 1], self.y_edges[1:-1]).clamp(0, self.n_bins - 1)
+        return ix.long(), iy.long()
+
+    def assign(self, x):
+        ix, iy = self.cell_indices(x)
+        return self.cell_levels[ix, iy]
 
 
 class HeteroscedasticGaussianFlowLinear(GaussianFlowLinear):
     def __init__(
         self,
         *args,
-        n_noise_levels=4,
+        levels,
         init_var_multipliers=None,
-        gate_width=64,
         learn_scales=True,
-        temperature=1.0,
         scale_reg=1e-4,
-        entropy_reg=0.0,
-        ema_decay=0.99,
         min_log_var=-6.0,
         max_log_var=6.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self._n_noise_levels = int(n_noise_levels)
-        self._temperature = float(temperature)
+        self.levels = levels.to(device=self._device, dtype=self._fdtype)
+        self._n_noise_levels = int(levels.n_levels)
         self._scale_reg = float(scale_reg)
-        self._entropy_reg = float(entropy_reg)
-        self._ema_decay = float(ema_decay)
         self._min_log_var = float(min_log_var)
         self._max_log_var = float(max_log_var)
         if init_var_multipliers is None:
-            init_var = torch.logspace(-2.0, 2.0, self._n_noise_levels, base=2.0)
+            init_var = torch.ones(self._n_noise_levels)
         else:
             init_var = torch.as_tensor(init_var_multipliers)
         init_log_var = init_var.to(device=self._device, dtype=self._fdtype)
         init_log_var = init_log_var.log().clamp(self._min_log_var, self._max_log_var)
         self._init_log_var_multipliers = init_log_var.detach().clone()
-        self._net = _HeteroscedasticNet(
-            self._net,
-            self._dim,
-            self._n_noise_levels,
-            gate_width,
-            init_log_var,
-            learn_scales,
-        )
-        self._net.to(device=self._device, dtype=self._fdtype)
-        self._noise_probs = torch.full(
-            (self._n_noise_levels,),
-            1.0 / self._n_noise_levels,
-            device=self._device,
-            dtype=self._fdtype,
-        )
-        self._noise_probs_ema = self._noise_probs.clone()
-        self._last_entropy_penalty = torch.zeros((), device=self._device, dtype=self._fdtype)
+        if learn_scales:
+            self.log_var_multipliers = torch.nn.Parameter(init_log_var.clone())
+        else:
+            self.register_buffer("log_var_multipliers", init_log_var.clone())
 
     def _var_multipliers(self):
-        return self._net.log_var_multipliers.clamp(self._min_log_var, self._max_log_var).exp()
+        return self.log_var_multipliers.clamp(self._min_log_var, self._max_log_var).exp()
 
     def _precompute_loss(self, x, z=None, t=None):
         if z is not None:
-            raise ValueError("This prototype samples x0 from the data-dependent source and does not accept z.")
+            raise ValueError("This prototype samples x0 from the histogram source and does not accept z.")
         x_1 = x.to(device=self._device, dtype=self._fdtype)
         if tuple(x_1.shape[1:]) != self._sample_shape:
             raise ValueError(f"Expected x1 shape (N, *{self._sample_shape}), got {tuple(x_1.shape)}")
         batch_size = x_1.shape[0]
         t = self._check_t(t, batch_size)
-        logits = self._net.noise_gate(x_1.reshape(batch_size, -1))
-        pi = torch.softmax(logits, dim=-1)
-        y = torch.nn.functional.gumbel_softmax(logits, tau=self._temperature, hard=True, dim=-1)
-        var_mult = (y * self._var_multipliers()).sum(dim=-1)
+        level = self.levels.assign(x_1)
+        var_mult = self._var_multipliers().index_select(0, level)
         eps = torch.randn_like(x_1)
         x_0 = self._sigma_max * self._expand_batch_scalar(torch.sqrt(var_mult.clamp_min(self._eps)), x_1) * eps
-        batch_probs = pi.detach().mean(dim=0)
-        self._noise_probs.copy_(batch_probs)
-        self._noise_probs_ema.mul_(self._ema_decay).add_((1.0 - self._ema_decay) * batch_probs)
-        self._noise_probs_ema.div_(self._noise_probs_ema.sum().clamp_min(1e-12))
-        self._last_entropy_penalty = -(pi * pi.clamp_min(self._eps).log()).sum(dim=-1).mean()
         t_data = self._expand_batch_scalar(t, x_1)
         x_t = (1.0 - t_data) * x_0 + t_data * x_1
         v_t = x_1 - x_0
@@ -110,7 +116,7 @@ class HeteroscedasticGaussianFlowLinear(GaussianFlowLinear):
         return v_t_hat, v_t, t
 
     def _sample_source_default(self, n_samples):
-        probs = self._noise_probs_ema / self._noise_probs_ema.sum().clamp_min(1e-12)
+        probs = self.levels.level_probs / self.levels.level_probs.sum().clamp_min(1e-12)
         idx = torch.multinomial(probs, int(n_samples), replacement=True)
         var_mult = self._var_multipliers().index_select(0, idx)
         eps = torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
@@ -118,16 +124,48 @@ class HeteroscedasticGaussianFlowLinear(GaussianFlowLinear):
 
     def loss(self, x, z=None, t=None):
         mse_loss = self._reduce(self._loss(x=x, z=z, t=t))
-        scale_penalty = (self._net.log_var_multipliers - self._init_log_var_multipliers).pow(2).mean()
-        return mse_loss + self._scale_reg * scale_penalty + self._entropy_reg * self._last_entropy_penalty
+        scale_penalty = (self.log_var_multipliers - self._init_log_var_multipliers).pow(2).mean()
+        return mse_loss + self._scale_reg * scale_penalty
 
     @property
     def noise_std_multipliers(self):
         return torch.sqrt(self._var_multipliers()).detach().cpu()
 
     @property
-    def noise_probs_ema(self):
-        return self._noise_probs_ema.detach().cpu()
+    def noise_level_probs(self):
+        return self.levels.level_probs.detach().cpu()
+
+
+def save_variance_map(model, x_train, filename):
+    levels = model.levels
+    std = model.noise_std_multipliers.to(levels.cell_levels.device)
+    std_map = std.index_select(0, levels.cell_levels.reshape(-1)).reshape_as(levels.cell_levels).detach().cpu()
+    x_edges = levels.x_edges.detach().cpu()
+    y_edges = levels.y_edges.detach().cpu()
+    x_plot = x_train.detach().cpu()
+    if x_plot.shape[0] > 5_000:
+        x_plot = x_plot[torch.randperm(x_plot.shape[0])[:5_000]]
+
+    fig, ax = plt.subplots(figsize=(5.5, 5))
+    image = ax.imshow(
+        std_map.T,
+        origin="lower",
+        extent=(float(x_edges[0]), float(x_edges[-1]), float(y_edges[0]), float(y_edges[-1])),
+        cmap="viridis",
+        aspect="equal",
+    )
+    ax.scatter(x_plot[:, 0], x_plot[:, 1], s=2, c="white", alpha=0.12, linewidths=0)
+    fig.colorbar(image, ax=ax, label="learned source std multiplier")
+    ax.set_title("Fixed density regions, learned variance")
+    ax.set_xlabel("x1")
+    ax.set_ylabel("x2")
+    fig.tight_layout()
+
+    path = Path(__file__).resolve().parent / "_figures" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[INFO] wrote variance map to {path}")
 
 
 alpha, x_train, x_test = load_alpha_stable(device, dtype)
@@ -135,6 +173,7 @@ n_test = x_test.shape[0]
 n_tail = n_test
 n_mmd = n_test // 10
 n_trials = 5
+n_noise_levels = 4
 train_kwargs = dict(
     batch_size=128,
     n_epochs=32,
@@ -146,7 +185,10 @@ train_kwargs = dict(
 )
 
 
-print(f"[INFO] n_trials={n_trials} train_kwargs={train_kwargs}")
+levels = HistogramLevels2D(x_train, n_levels=n_noise_levels, n_bins=80)
+
+print(f"[INFO] n_trials={n_trials} n_noise_levels={n_noise_levels} train_kwargs={train_kwargs}")
+print("[INFO] fixed histogram level probabilities:", levels.level_probs.cpu())
 
 rows = []
 for trial in range(1, n_trials + 1):
@@ -165,9 +207,8 @@ for trial in range(1, n_trials + 1):
         net=make_mlp(device, dtype),
         dim=2,
         n_steps=128,
-        n_noise_levels=4,
+        levels=levels,
         sigma_max=1.0,
-        gate_width=64,
         device=device,
     )
 
@@ -186,17 +227,10 @@ for trial in range(1, n_trials + 1):
     print(f"[INFO] trial {trial}/{n_trials}: done")
 
 
-print("[INFO] heteroscedastic mixture logic")
-
-x_probe = x_train.to(device=device, dtype=dtype)
-
-with torch.no_grad():
-    logits = hetero._net.noise_gate(x_probe.reshape(x_probe.shape[0], -1))
-    pi = torch.softmax(logits / hetero._temperature, dim=-1)
-
+print("[INFO] fixed histogram heteroscedastic source")
 print("std multipliers:", hetero.noise_std_multipliers)
-print("batch mean pi(x):", pi.mean(dim=0).cpu())
-print("EMA generation probabilities:", hetero.noise_probs_ema)
+print("level probabilities:", hetero.noise_level_probs)
+save_variance_map(hetero, x_train, "0_heteroscedastic_variance_map.pdf")
 
 
 add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials)
