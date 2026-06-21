@@ -1,5 +1,8 @@
 import logging
+import os
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
 
 import matplotlib
 matplotlib.use("Agg")
@@ -49,11 +52,16 @@ def make_mlp(device, dtype):
     return MLPModel(dim=2, width=128, depth=3).to(device=device, dtype=dtype)
 
 
+def figure_path(filename):
+    path = Path(__file__).resolve().parent / "_figures" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @torch.no_grad()
-def evaluate_model(name, model, trial, x_ref, n_tail, n_mmd):
-    print(f"[INFO] evaluating trial={trial} model={name} n_tail={n_tail} n_mmd={n_mmd}")
+def evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd):
     x_ref = x_ref[:n_tail].detach().cpu().to(torch.float64)
-    x_gen = model.sample(len(x_ref)).detach().cpu().to(torch.float64)
+    x_gen = x_gen[:n_tail].detach().cpu().to(torch.float64)
     row = {
         "trial": trial,
         "model": name,
@@ -68,6 +76,24 @@ def evaluate_model(name, model, trial, x_ref, n_tail, n_mmd):
             mode="log",
         )
     return row
+
+
+@torch.no_grad()
+def evaluate_model(name, model, trial, x_ref, n_tail, n_mmd):
+    print(f"[INFO] evaluating trial={trial} model={name} n_tail={n_tail} n_mmd={n_mmd}")
+    x_gen = model.sample(n_tail)
+    return evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd)
+
+
+@torch.no_grad()
+def evaluate_model_with_source(name, model, trial, x_ref, sample_source, n_tail, n_mmd, chunk_size=None):
+    print(f"[INFO] evaluating trial={trial} model={name} n_tail={n_tail} n_mmd={n_mmd}")
+    sample_source = sample_source[:n_tail]
+    if chunk_size is None:
+        x_gen = model.sample(sample_source=sample_source)
+    else:
+        x_gen = model.sample(sample_source=sample_source, chunk_size=chunk_size)
+    return evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd)
 
 
 def add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials):
@@ -133,8 +159,7 @@ def save_tail_figure(rows, title, filename):
     ax.legend()
     fig.tight_layout()
 
-    path = Path(__file__).resolve().parent / "_figures" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = figure_path(filename)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     print(f"[INFO] wrote figure to {path}")
