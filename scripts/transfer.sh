@@ -22,6 +22,7 @@ stage_project() {
 
     rsync -a \
       --exclude '.git/' \
+      --exclude '.agents/' \
       --exclude '.claude/' \
       --exclude '.github/' \
       --exclude '.gitignore' \
