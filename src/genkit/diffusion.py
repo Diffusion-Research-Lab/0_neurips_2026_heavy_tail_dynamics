@@ -254,8 +254,12 @@ class DLPMEps(Base):
         return self._reduce(self._loss(x=x, z=z, t=t))
 
     @torch.no_grad()
-    def _sample(self, n_samples: int) -> torch.Tensor:
-        """Run the native DLPM-eps reverse chain and keep intermediate states."""
+    def _sample(
+        self,
+        n_samples: int,
+        return_trajectory: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        """Run the native DLPM-eps reverse chain."""
         self._net.eval()
 
         # Sample latent stable path A_{1:T} used to build Sigma_{1->t}(A_{1:t})
@@ -265,7 +269,7 @@ class DLPMEps(Base):
         eps = self._sample_source_default(n_samples)
 
         x = self._sigma_1_t[self._n_steps - 1] * eps  # vendor terminal barsigma
-        l_x = [x]
+        l_x = [x] if return_trajectory else None
 
         # Reverse recursion (Table 4 DLPM): mean update divided by gamma_t, then add Gaussian innovation
         for t in range(self._n_steps - 1, 0, -1):  # t from T - 1 to 0
@@ -283,12 +287,13 @@ class DLPMEps(Base):
                 innovation = torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
                 x = x + self._expand_batch_scalar(Sigma_hat.sqrt(), innovation) * innovation
 
-            l_x.append(x)
+            if return_trajectory:
+                l_x.append(x)
 
         return x, l_x
 
     @torch.no_grad()
     def sample(self, n_samples: int) -> torch.Tensor:
         """Generate samples with the native DLPM reverse sampler."""
-        x, _ = self._sample(n_samples)
+        x, _ = self._sample(n_samples, return_trajectory=False)
         return x

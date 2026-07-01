@@ -61,6 +61,42 @@ def test_dlpmeps_sample_uses_vendor_terminal_sigma_index(monkeypatch):
     assert torch.allclose(out, expected, atol=2e-3, rtol=0.0)
 
 
+def test_dlpmeps_sample_requests_final_state_only(monkeypatch):
+    model = _make_dlpmeps(n_steps=4)
+    seen = {}
+
+    def _patched_sample(n_samples, return_trajectory=True):
+        seen["n_samples"] = n_samples
+        seen["return_trajectory"] = return_trajectory
+        return torch.zeros(n_samples, 2), None
+
+    monkeypatch.setattr(model, "_sample", _patched_sample)
+
+    out = model.sample(3)
+
+    assert out.shape == (3, 2)
+    assert seen == {"n_samples": 3, "return_trajectory": False}
+
+
+def test_dlpmeps_sample_trajectory_is_optional():
+    n_steps = 4
+    n_samples = 2
+    model = _make_dlpmeps(n_steps=n_steps)
+
+    torch.manual_seed(0)
+    out, trajectory = model._sample(n_samples, return_trajectory=False)
+
+    assert out.shape == (n_samples, 2)
+    assert trajectory is None
+
+    torch.manual_seed(0)
+    out_with_trajectory, trajectory = model._sample(n_samples, return_trajectory=True)
+
+    assert out_with_trajectory.shape == (n_samples, 2)
+    assert len(trajectory) == n_steps
+    assert all(x.shape == (n_samples, 2) for x in trajectory)
+
+
 def test_dlpmeps_accepts_image_shaped_batches():
     model = DLPMEps(net=_ZeroNet(), dim=(1, 4, 4), n_steps=4, device="cpu", fdtype=torch.float32)
     x = torch.randn(3, 1, 4, 4)
