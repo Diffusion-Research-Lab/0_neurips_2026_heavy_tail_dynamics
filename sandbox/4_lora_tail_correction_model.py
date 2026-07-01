@@ -1,10 +1,12 @@
 import copy
 import math
 import time
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from genkit.flow_matching import GaussianFlowLinear
+from genkit.nn import MLPModel
+from genkit.training import train
 from _utils import (
     add_test_vs_true_sample,
     evaluation_sizes,
@@ -15,9 +17,6 @@ from _utils import (
     save_tail_figure,
     setup,
 )
-from genkit.flow_matching import GaussianFlowLinear
-from genkit.nn import MLPModel
-from genkit.training import train
 
 
 ########################################################################################################################

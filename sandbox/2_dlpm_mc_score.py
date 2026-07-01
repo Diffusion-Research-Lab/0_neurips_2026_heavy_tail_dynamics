@@ -1,13 +1,12 @@
 import time
 import torch
-from _utils import (
-    setup,
-)
 from genkit._noise import sample_scaled_isotropic_alpha_stable
 from genkit.diffusion import DLPMEps
 from genkit.metrics import mmd_rbf, tail_coverage_error
 from genkit.nn import MLPModel
 from genkit.training import train
+from _utils import setup
+
 
 ########################################################################################################################
 # Setup

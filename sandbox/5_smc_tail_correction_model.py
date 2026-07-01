@@ -1,7 +1,8 @@
 import math
-
 import numpy as np
 import torch
+from genkit.flow_matching import GaussianFlowLinear
+from genkit.training import train
 from _utils import (
     add_test_vs_true_sample,
     evaluation_sizes,
@@ -12,8 +13,6 @@ from _utils import (
     save_tail_figure,
     setup,
 )
-from genkit.flow_matching import GaussianFlowLinear
-from genkit.training import train
 
 
 ########################################################################################################################

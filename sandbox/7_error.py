@@ -1,6 +1,12 @@
 import time
+import matplotlib.colors as mcolors
+import matplotlib.ticker as mticker
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from genkit.diffusion import DDPMV, DLPMEps
+from genkit.metrics import tail_coverage_error
+from genkit.training import train
 from _utils import (
     evaluation_sizes,
     fetch_alpha_stable_reference,
@@ -10,13 +16,6 @@ from _utils import (
     make_train_kwargs,
     setup,
 )
-import matplotlib.colors as mcolors
-import matplotlib.ticker as mticker
-import matplotlib.pyplot as plt
-from genkit.diffusion import DDPMV, DLPMEps
-from genkit.metrics import tail_coverage_error
-from genkit.training import train
-
 
 ########################################################################################################################
 # Setup

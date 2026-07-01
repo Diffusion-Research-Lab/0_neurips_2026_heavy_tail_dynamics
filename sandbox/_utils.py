@@ -1,11 +1,5 @@
 import logging
-import os
 from pathlib import Path
-
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
-
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
