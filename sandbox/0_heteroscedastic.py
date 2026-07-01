@@ -1,17 +1,11 @@
-import os
-from pathlib import Path
-
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import torch
 from _utils import (
-    add_test_vs_test,
+    add_test_vs_true_sample,
+    evaluation_sizes,
     evaluate_model,
     load_alpha_stable,
     make_mlp,
+    make_train_kwargs,
     save_tail_figure,
     setup,
 )
@@ -19,8 +13,14 @@ from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
 
 
+########################################################################################################################
+# Setup
+
 device, dtype = setup()
 
+
+########################################################################################################################
+# Additional classes
 
 class HistogramLevels2D:
     def __init__(self, x, n_levels=4, n_bins=80, range_quantile=0.995):
@@ -136,53 +136,14 @@ class HeteroscedasticGaussianFlowLinear(GaussianFlowLinear):
         return self.levels.level_probs.detach().cpu()
 
 
-def save_variance_map(model, x_train, filename):
-    levels = model.levels
-    std = model.noise_std_multipliers.to(levels.cell_levels.device)
-    std_map = std.index_select(0, levels.cell_levels.reshape(-1)).reshape_as(levels.cell_levels).detach().cpu()
-    x_edges = levels.x_edges.detach().cpu()
-    y_edges = levels.y_edges.detach().cpu()
-    x_plot = x_train.detach().cpu()
-    if x_plot.shape[0] > 5_000:
-        x_plot = x_plot[torch.randperm(x_plot.shape[0])[:5_000]]
-
-    fig, ax = plt.subplots(figsize=(5.5, 5))
-    image = ax.imshow(
-        std_map.T,
-        origin="lower",
-        extent=(float(x_edges[0]), float(x_edges[-1]), float(y_edges[0]), float(y_edges[-1])),
-        cmap="viridis",
-        aspect="equal",
-    )
-    ax.scatter(x_plot[:, 0], x_plot[:, 1], s=2, c="white", alpha=0.12, linewidths=0)
-    fig.colorbar(image, ax=ax, label="learned source std multiplier")
-    ax.set_title("Fixed density regions, learned variance")
-    ax.set_xlabel("x1")
-    ax.set_ylabel("x2")
-    fig.tight_layout()
-
-    path = Path(__file__).resolve().parent / "_figures" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[INFO] wrote variance map to {path}")
-
+########################################################################################################################
+# Main
 
 alpha, x_train, x_test = load_alpha_stable(device, dtype)
-n_test = x_test.shape[0]
-n_tail = n_test
-n_mmd = n_test // 10
-n_trials = 5
+n_tail, n_mmd = evaluation_sizes(x_test)
+n_trials = 10
 n_noise_levels = 4
-train_kwargs = dict(
-    batch_size=128,
-    n_epochs=32,
-    lr=5e-4,
-    device=device,
-    use_adamw=False,
-    lr_schedule="constant",
-    freq_logging=8,
-)
+train_kwargs = make_train_kwargs(device)
 
 
 levels = HistogramLevels2D(x_train, n_levels=n_noise_levels, n_bins=80)
@@ -230,8 +191,10 @@ for trial in range(1, n_trials + 1):
 print("[INFO] fixed histogram heteroscedastic source")
 print("std multipliers:", hetero.noise_std_multipliers)
 print("level probabilities:", hetero.noise_level_probs)
-save_variance_map(hetero, x_train, "0_heteroscedastic_variance_map.pdf")
 
 
-add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials)
+########################################################################################################################
+# Plotting
+
+add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 save_tail_figure(rows, "Heteroscedastic GF linear", "0_heteroscedastic.pdf")

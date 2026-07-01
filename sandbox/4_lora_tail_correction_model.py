@@ -6,10 +6,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from _utils import (
-    add_test_vs_test,
+    add_test_vs_true_sample,
+    evaluation_sizes,
     evaluate_model_with_source,
     load_alpha_stable,
     make_mlp,
+    make_train_kwargs,
     save_tail_figure,
     setup,
 )
@@ -18,8 +20,14 @@ from genkit.nn import MLPModel
 from genkit.training import train
 
 
+########################################################################################################################
+# Setup
+
 device, dtype = setup()
 
+
+########################################################################################################################
+# Additional classes
 
 class LoRALinear(nn.Module):
     def __init__(self, linear, rank=8, alpha=1.0):
@@ -170,21 +178,14 @@ def build_base_model():
     )
 
 
+########################################################################################################################
+# Main
+
 alpha, x_train, x_test = load_alpha_stable(device, dtype)
-n_test = x_test.shape[0]
-n_tail = n_test
-n_mmd = n_test // 10
-n_trials = 5
+n_tail, n_mmd = evaluation_sizes(x_test)
+n_trials = 10
 sample_chunk_size = 10_000
-train_kwargs = dict(
-    batch_size=128,
-    n_epochs=32,
-    lr=5e-4,
-    device=device,
-    use_adamw=False,
-    lr_schedule="constant",
-    freq_logging=8,
-)
+train_kwargs = make_train_kwargs(device)
 lora_specs = [
     {"name": "gLoRA q90", "tau_q": 0.90, "gate_q": 0.90, "rank": 6, "alpha": 4.0, "loss_tail_weight": 2.0, "sharpness": 5.0},
 ]
@@ -230,5 +231,8 @@ for trial in range(1, n_trials + 1):
     print(f"[INFO] trial {trial}/{n_trials}: done")
 
 
-add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials)
+########################################################################################################################
+# Plotting
+
+add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 save_tail_figure(rows, "Gated LoRA tail correction", "4_lora_tail_correction_model.pdf")

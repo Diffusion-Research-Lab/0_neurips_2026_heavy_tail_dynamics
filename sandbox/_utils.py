@@ -14,12 +14,19 @@ from genkit.metrics import mmd_rbf, tail_coverage_error
 from genkit.nn import MLPModel
 
 
-TCE_PROBS = {
-    "TCE(90)": 1e-1,
-    "TCE(99)": 1e-2,
-    "TCE(99,9)": 1e-3,
-    "TCE(99,99)": 1e-4,
-}
+TCE_TAIL_PROBS = torch.logspace(-1.0, -5.0, 20, dtype=torch.float64)
+DEFAULT_MMD_SAMPLES = 10_000
+DEFAULT_SAMPLE_CHUNK_SIZE = 10_000
+
+
+def _tce_label(prob):
+    quantile = 100.0 * (1.0 - float(prob))
+    precision = 2 if quantile < 99.0 else 4
+    label = f"{quantile:.{precision}f}".rstrip("0").rstrip(".")
+    return f"TCE({label})"
+
+
+TCE_PROBS = {_tce_label(prob): float(prob) for prob in TCE_TAIL_PROBS}
 
 
 def setup(seed=0):
@@ -31,25 +38,88 @@ def setup(seed=0):
     return device, dtype
 
 
-def load_alpha_stable(device, dtype, alpha=1.7):
-    print(f"[INFO] loading isotropic alpha-stable data alpha={alpha}")
-    x_train, _, x_test = fetch_synthetic_data(
+def load_alpha_stable(device, dtype, alpha=1.7, n_train=30_000, n_test=1_500_000, n_val=1):
+    n_samples = int(n_train) + int(n_val) + int(n_test)
+    val_size = int(n_val) / n_samples
+    test_size = int(n_test) / n_samples
+    print(
+        f"[INFO] loading isotropic alpha-stable data alpha={alpha} "
+        f"target_train={n_train} target_test={n_test}"
+    )
+    x_train, x_val, x_test = fetch_synthetic_data(
         "alpha_stable",
         alpha=alpha,
         dim=2,
-        n_samples=170_000,
-        val_size=0.001,
-        test_size=0.8,
+        n_samples=n_samples,
+        val_size=val_size,
+        test_size=test_size,
         standardize=False,
         device=device,
         dtype=dtype,
     )
+    if x_train.shape[0] < n_train:
+        x_train = torch.cat([x_train, x_val[: n_train - x_train.shape[0]]], dim=0)
+    else:
+        x_train = x_train[:n_train]
+    x_test = x_test[:n_test]
+    if x_train.shape[0] != n_train or x_test.shape[0] != n_test:
+        raise RuntimeError(f"unexpected alpha-stable split sizes: train={x_train.shape[0]} test={x_test.shape[0]}")
     print(f"[INFO] train_shape={x_train.shape[0]} test_shape={x_test.shape[0]}")
     return alpha, x_train, x_test
 
 
+def fetch_alpha_stable_reference(n_samples, device, dtype, alpha=1.7, seed=0):
+    n_samples = int(n_samples)
+    n_total = n_samples + 2
+    rng_state = torch.random.get_rng_state()
+    torch.manual_seed(int(seed))
+    try:
+        _, _, x_ref = fetch_synthetic_data(
+            "alpha_stable",
+            alpha=alpha,
+            dim=2,
+            n_samples=n_total,
+            val_size=1.0 / n_total,
+            test_size=n_samples / n_total,
+            standardize=False,
+            device=device,
+            dtype=dtype,
+        )
+    finally:
+        torch.random.set_rng_state(rng_state)
+    return x_ref
+
+
 def make_mlp(device, dtype):
     return MLPModel(dim=2, width=128, depth=3).to(device=device, dtype=dtype)
+
+
+def make_train_kwargs(device):
+    return dict(
+        batch_size=128,
+        n_epochs=128,
+        lr=5e-4,
+        device=device,
+        use_adamw=False,
+        lr_schedule="constant",
+        freq_logging=8,
+    )
+
+
+def evaluation_sizes(x_test):
+    n_tail = x_test.shape[0]
+    return n_tail, min(DEFAULT_MMD_SAMPLES, n_tail)
+
+
+@torch.no_grad()
+def sample_model_in_chunks(model, n_samples, chunk_size=DEFAULT_SAMPLE_CHUNK_SIZE):
+    n_samples = int(n_samples)
+    if chunk_size is None or int(chunk_size) >= n_samples:
+        return model.sample(n_samples)
+    chunks = []
+    for start in range(0, n_samples, int(chunk_size)):
+        chunks.append(model.sample(min(int(chunk_size), n_samples - start)).detach().cpu())
+    return torch.cat(chunks, dim=0)
 
 
 def figure_path(filename):
@@ -81,7 +151,7 @@ def evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd):
 @torch.no_grad()
 def evaluate_model(name, model, trial, x_ref, n_tail, n_mmd):
     print(f"[INFO] evaluating trial={trial} model={name} n_tail={n_tail} n_mmd={n_mmd}")
-    x_gen = model.sample(n_tail)
+    x_gen = sample_model_in_chunks(model, n_tail)
     return evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd)
 
 
@@ -96,32 +166,22 @@ def evaluate_model_with_source(name, model, trial, x_ref, sample_source, n_tail,
     return evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd)
 
 
-def add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials):
-    print("[INFO] computing test-vs-test reference metrics")
+def add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=1.7):
+    print("[INFO] computing test-vs-true-sample reference metrics")
     x_ref = x_test.detach().cpu().to(torch.float64)
-    reference_tail = min(n_tail, x_ref.shape[0] // 2)
+    reference_tail = min(n_tail, x_ref.shape[0])
     reference_mmd = min(n_mmd, reference_tail)
-    print(f"[INFO] test-vs-test n_tail={reference_tail} n_mmd={reference_mmd}")
+    print(f"[INFO] test-vs-true-sample n_tail={reference_tail} n_mmd={reference_mmd}")
 
     for trial in range(1, n_trials + 1):
-        generator = torch.Generator(device="cpu").manual_seed(10_000 + trial)
-        perm = torch.randperm(x_ref.shape[0], generator=generator)
-        x_a = x_ref[perm[:reference_tail]]
-        x_b = x_ref[perm[reference_tail: 2 * reference_tail]]
-        row = {
-            "trial": trial,
-            "model": "test vs test",
-            "mmd_rbf": mmd_rbf(x_a[:reference_mmd], x_b[:reference_mmd]),
-        }
-        for label, prob in TCE_PROBS.items():
-            row[label] = tail_coverage_error(
-                x_a,
-                x_b,
-                probs=torch.tensor([prob], dtype=torch.float64),
-                tail="upper",
-                mode="log",
-            )
-        rows.append(row)
+        x_true = fetch_alpha_stable_reference(
+            reference_tail,
+            device=torch.device("cpu"),
+            dtype=x_test.dtype,
+            alpha=alpha,
+            seed=10_000 + trial,
+        )
+        rows.append(evaluate_samples("test vs true sample", trial, x_ref, x_true, reference_tail, reference_mmd))
 
 
 def save_tail_figure(rows, title, filename):
@@ -131,27 +191,33 @@ def save_tail_figure(rows, title, filename):
     grouped = results.groupby("model")
     mean_results = grouped[["mmd_rbf", *tce_cols]].mean()
     std_results = grouped[tce_cols].std().fillna(0.0)
-    tce_x = [0.90, 0.99, 0.999, 0.9999]
+    tce_x = 1.0 - TCE_TAIL_PROBS.numpy()
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "h", "8"]
+    reference_models = {"test vs test", "test vs true sample"}
+    line_alpha = 0.5
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    for model_name, row in mean_results.iterrows():
+    for index, (model_name, row) in enumerate(mean_results.iterrows()):
         y = row[tce_cols].to_numpy(dtype=float)
         yerr = std_results.loc[model_name, tce_cols].to_numpy(dtype=float)
+        color = "black" if model_name in reference_models else None
         line, = ax.plot(
             tce_x,
             y,
-            marker="o",
-            linewidth=2,
-            label=f"{model_name} (MMD-RBF={row['mmd_rbf']:.4g})",
-            alpha=0.5,
+            marker=markers[index % len(markers)],
+            markevery=4,
+            linewidth=1.8,
+            label=f"{model_name} (MMD-RBF={row['mmd_rbf']:.1e})",
+            alpha=line_alpha,
+            color=color,
         )
         ax.fill_between(tce_x, (y - yerr).clip(min=1e-12), y + yerr, color=line.get_color(), alpha=0.2)
 
     ax.set_xscale("logit")
     ax.set_yscale("log")
     ax.set_ylim(bottom=1e-2)
-    ax.set_xticks(tce_x)
-    ax.set_xticklabels(["90", "99", "99.9", "99.99"])
+    ax.set_xticks([0.90, 0.99, 0.999, 0.9999, 0.99999])
+    ax.set_xticklabels(["90", "99", "99.9", "99.99", "99.999"])
     ax.set_xlabel("tail quantile (%)", fontsize=12)
     ax.set_ylabel("TCE, upper tail log error", fontsize=12)
     ax.set_title(title)

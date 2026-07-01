@@ -3,10 +3,12 @@ import math
 import numpy as np
 import torch
 from _utils import (
-    add_test_vs_test,
+    add_test_vs_true_sample,
+    evaluation_sizes,
     evaluate_model_with_source,
     load_alpha_stable,
     make_mlp,
+    make_train_kwargs,
     save_tail_figure,
     setup,
 )
@@ -14,8 +16,14 @@ from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
 
 
+########################################################################################################################
+# Setup
+
 device, dtype = setup()
 
+
+########################################################################################################################
+# Additional classes and helpers
 
 def _time_batch(t, x):
     if not isinstance(t, torch.Tensor):
@@ -167,23 +175,16 @@ def build_base_model():
     )
 
 
+########################################################################################################################
+# Main
+
 alpha, x_train, x_test = load_alpha_stable(device, dtype)
-n_test = x_test.shape[0]
-n_tail = n_test
-n_mmd = n_test // 10
-n_trials = 5
+n_tail, n_mmd = evaluation_sizes(x_test)
+n_trials = 10
 sample_chunk_size = 10_000
 smc_beta_max = 0.005
 smc_ess_frac = 0.5
-train_kwargs = dict(
-    batch_size=128,
-    n_epochs=32,
-    lr=5e-4,
-    device=device,
-    use_adamw=False,
-    lr_schedule="constant",
-    freq_logging=8,
-)
+train_kwargs = make_train_kwargs(device)
 
 print(f"[INFO] n_trials={n_trials} train_kwargs={train_kwargs}")
 print(f"[INFO] smc_beta_max={smc_beta_max} smc_ess_frac={smc_ess_frac} sample_chunk_size={sample_chunk_size}")
@@ -224,5 +225,8 @@ for trial in range(1, n_trials + 1):
     print(f"[INFO] trial {trial}/{n_trials}: done")
 
 
-add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials)
+########################################################################################################################
+# Plotting
+
+add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 save_tail_figure(rows, "Path-space SMC tail correction", "5_smc_tail_correction_model.pdf")

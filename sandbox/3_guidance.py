@@ -1,6 +1,5 @@
-import time
-
 import os
+import time
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
 
@@ -12,11 +11,13 @@ import torch
 from matplotlib.animation import FuncAnimation
 from matplotlib.collections import LineCollection
 from _utils import (
-    add_test_vs_test,
+    add_test_vs_true_sample,
+    evaluation_sizes,
     evaluate_model_with_source,
     figure_path,
     load_alpha_stable,
     make_mlp,
+    make_train_kwargs,
     save_tail_figure,
     setup,
 )
@@ -24,8 +25,14 @@ from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
 
 
+########################################################################################################################
+# Setup
+
 device, dtype = setup()
 
+
+########################################################################################################################
+# Additional classes
 
 class GuidedGaussianFlowLinear:
     def __init__(
@@ -135,6 +142,9 @@ def build_models(x_train, train_kwargs, tail_radius, tail_scale):
         )
     return models, diagnostics
 
+
+########################################################################################################################
+# Plotting helpers
 
 def collect_visuals(models, target_preview, *, lim=4.0, n_vis=120, n_trails=120, n_grid=15):
     sample_source = next(iter(models.values()))._sample_source(n_vis)
@@ -266,23 +276,16 @@ def save_guidance_gif(models, x_test):
     print(f"[INFO] wrote animation to {path}")
 
 
+########################################################################################################################
+# Main
+
 alpha, x_train, x_test = load_alpha_stable(device, dtype)
-n_test = x_test.shape[0]
-n_tail = n_test
-n_mmd = n_test // 10
-n_trials = 5
+n_tail, n_mmd = evaluation_sizes(x_test)
+n_trials = 10
 sample_chunk_size = 10_000
 tail_radius = float(torch.quantile(x_train.flatten(1).norm(dim=1), 0.90).item())
 tail_scale = 0.25 * tail_radius
-train_kwargs = dict(
-    batch_size=128,
-    n_epochs=32,
-    lr=5e-4,
-    device=device,
-    use_adamw=False,
-    lr_schedule="constant",
-    freq_logging=8,
-)
+train_kwargs = make_train_kwargs(device)
 
 print(f"[INFO] n_trials={n_trials} train_kwargs={train_kwargs}")
 print(f"[INFO] tail_radius={tail_radius:.4g} tail_scale={tail_scale:.4g} sample_chunk_size={sample_chunk_size}")
@@ -305,6 +308,9 @@ for trial in range(1, n_trials + 1):
     print(f"[INFO] trial {trial}/{n_trials}: done")
 
 
-add_test_vs_test(rows, x_test, n_tail, n_mmd, n_trials)
+########################################################################################################################
+# Plotting
+
+add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 save_tail_figure(rows, "Tail guidance", "3_guidance.pdf")
 save_guidance_gif(last_models, x_test)
