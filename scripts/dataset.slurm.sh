@@ -113,17 +113,24 @@ if [[ "${NEEDS_HRRR}" -eq 1 ]]; then
     exit 1
   fi
   HRRR_STATUS="${SLURM_TMPDIR:-/tmp}/hrrr_ensure_${SLURM_JOB_ID:-$$}.json"
-  HRRR_CMD=("${PYTHON_BIN}" "${HRRR_SCRIPT}" --status-file "${HRRR_STATUS}")
+  HRRR_CMD=("${PYTHON_BIN}" "${HRRR_SCRIPT}" --check-only --status-file "${HRRR_STATUS}")
   if [[ -n "${HRRR_MIN_SAMPLES:-}" ]]; then
     HRRR_CMD+=(--min-samples "${HRRR_MIN_SAMPLES}")
   fi
   if [[ -n "${HRRR_MIN_COVERAGE:-}" ]]; then
     HRRR_CMD+=(--min-coverage "${HRRR_MIN_COVERAGE}")
   fi
-  echo "[dataset-slurm] ensuring raw HRRR tensor"
+  echo "[dataset-slurm] checking raw HRRR tensor; network fetching must run on the login node"
+  set +e
   "${HRRR_CMD[@]}"
-  if grep -q '"status": "built"' "${HRRR_STATUS}"; then
-    CLI_OVERWRITE=1
+  hrrr_status=$?
+  set -e
+  if [[ "${hrrr_status}" -eq 2 ]]; then
+    echo "[dataset-slurm] Missing or undersized raw HRRR tensor." >&2
+    echo "[dataset-slurm] Run on the login node first: make dataset DATASETS=hrrr" >&2
+    exit 2
+  elif [[ "${hrrr_status}" -ne 0 ]]; then
+    exit "${hrrr_status}"
   fi
 fi
 

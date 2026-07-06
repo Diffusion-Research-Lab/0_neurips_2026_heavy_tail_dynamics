@@ -35,6 +35,8 @@ DATASETS                  ?= hrrr lvis cifar100_lt imagenet_lt
 INIT_DATASETS             ?= cifar100_lt imagenet_lt
 DATASET_OVERWRITE         ?= 0
 DATASET_HRRR_ENSURE       ?= 1
+HRRR_ENSURE_ARGS          ?= --workers 4
+HRRR_STATUS               ?= $(CURDIR)/$(LOG_DIR)/hrrr_ensure_status.json
 
 
 # Slurm array sizes.
@@ -95,7 +97,7 @@ DATASET_CONFIG_INPUTS     ?= $(PILOT_IMAGE_CONFIG) $(BENCH_TEMPLATE_DIR)/image_b
 
 .DEFAULT_GOAL := help
 
-.PHONY: setup dataset pilot analyze-pilot bench bench-shariatan imagenet128-viz-configs \
+.PHONY: setup dataset dataset-hrrr pilot analyze-pilot bench bench-shariatan imagenet128-viz-configs \
         bench-imagenet128-viz visualize-imagenet128 evaluate-pilot evaluate-bench analyze-bench \
         check send supp help
 
@@ -107,6 +109,33 @@ setup:
 
 
 # Dataset cache submission.
+dataset-hrrr:
+	@mkdir -p "$(LOG_DIR)"
+	@set -euo pipefail; \
+	  if ! command -v module >/dev/null 2>&1; then \
+	    for init_script in /etc/profile.d/modules.sh /usr/share/lmod/lmod/init/bash; do \
+	      if [ -r "$$init_script" ]; then . "$$init_script"; break; fi; \
+	    done; \
+	  fi; \
+	  if ! command -v module >/dev/null 2>&1; then \
+	    echo "[hrrr-login] 'module' command is required to load $(JZ_MODULE)." >&2; \
+	    exit 1; \
+	  fi; \
+	  module purge || true; \
+	  conda deactivate 2>/dev/null || true; \
+	  module load "$(JZ_MODULE)"; \
+	  hrrr_args="$(HRRR_ENSURE_ARGS)"; \
+	  if [ -n "$${HRRR_MIN_SAMPLES:-}" ]; then hrrr_args="$$hrrr_args --min-samples $$HRRR_MIN_SAMPLES"; fi; \
+	  if [ -n "$${HRRR_MIN_COVERAGE:-}" ]; then hrrr_args="$$hrrr_args --min-coverage $$HRRR_MIN_COVERAGE"; fi; \
+	  echo "[hrrr-login] ensuring raw HRRR tensor on the login node with $(JZ_MODULE)"; \
+	  $(RUN_PYTHON) scripts/ensure_hrrr.py --status-file "$(HRRR_STATUS)" $$hrrr_args
+
+ifeq ($(DATASET_HRRR_ENSURE),1)
+ifneq (,$(filter hrrr,$(DATASETS)))
+dataset: dataset-hrrr
+endif
+endif
+
 dataset:
 	@mkdir -p "$(LOG_DIR)"
 	@for dataset in $(DATASETS); do \
@@ -114,11 +143,21 @@ dataset:
 	    *" $$dataset "*) $(RUN_PYTHON) -m datakit init "$$dataset" ;; \
 	  esac; \
 	  submit=0; \
+	  force_overwrite=0; \
 	  if [ "$$dataset" = "hrrr" ] && [ "$(DATASET_HRRR_ENSURE)" = "1" ]; then \
+	    if [ ! -f "$(HRRR_STATUS)" ]; then \
+	      echo "[dataset] missing HRRR status file after dataset-hrrr: $(HRRR_STATUS)" >&2; \
+	      exit 1; \
+	    fi; \
+	    if grep -q '"status": "built"' "$(HRRR_STATUS)"; then \
+	      submit=1; \
+	      force_overwrite=1; \
+	    fi; \
+	  fi; \
+	  if [ "$$submit" != "1" ] && [ "$(DATASET_OVERWRITE)" = "1" ]; then \
 	    submit=1; \
-	  elif [ "$(DATASET_OVERWRITE)" = "1" ]; then \
-	    submit=1; \
-	  else \
+	    force_overwrite=1; \
+	  elif [ "$$submit" != "1" ]; then \
 	    $(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset "$$dataset" $(DATASET_CONFIG_INPUTS); \
 	    status="$$?"; \
 	    if [ "$$status" = "0" ]; then \
@@ -131,7 +170,7 @@ dataset:
 	  fi; \
 	  if [ "$$submit" = "1" ]; then \
 	    overwrite_arg=""; \
-	    if [ "$(DATASET_OVERWRITE)" = "1" ]; then overwrite_arg="--overwrite"; fi; \
+	    if [ "$$force_overwrite" = "1" ]; then overwrite_arg="--overwrite"; fi; \
 	    sbatch --job-name=htfm_dataset_$${dataset} \
 	      --output="$(CURDIR)/$(LOG_DIR)/htfm_dataset_$${dataset}_%j.out" \
 	      --error="$(CURDIR)/$(LOG_DIR)/htfm_dataset_$${dataset}_%j.err" \
@@ -254,6 +293,7 @@ help:
 	@printf "Available targets:\n"
 	@printf "  %-22s %s\n" "setup" "Install Jean Zay environment"
 	@printf "  %-22s %s\n" "dataset" "Submit real image-cache jobs; override with DATASETS=hrrr"
+	@printf "  %-22s %s\n" "dataset-hrrr" "Fetch/grow raw HRRR tensor on the login node"
 	@printf "  %-22s %s\n" "pilot" "Submit pilot configs via Slurm"
 	@printf "  %-22s %s\n" "analyze-pilot" "Generate per-dataset winners, reports, and bench configs"
 	@printf "  %-22s %s\n" "bench" "Generate and submit explicit benchmark configs via Slurm"
