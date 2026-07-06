@@ -159,7 +159,8 @@ class DLPMEps(Base):
         # NOTE see L272 in src/genkit/_vendor/DLPM/dlpm/methods/dlpm.py
         # NOTE We follow the released code rather than the paper here.
         loss_values = torch.nn.functional.mse_loss(eps_hat, eps, reduction="none")
-        return loss_values.mean(dim=tuple(range(1, loss_values.ndim))).sqrt()
+        loss_values = loss_values.mean(dim=tuple(range(1, loss_values.ndim)))
+        return loss_values.clamp_min(self._eps).sqrt()
 
     def _Sigma_1_t(self, A: torch.Tensor) -> torch.Tensor:
         """Build the vendor-aligned sampling-time Sigma path from one stable chain."""
