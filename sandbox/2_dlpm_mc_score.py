@@ -1,158 +1,166 @@
-import time
 import torch
-from genkit._noise import sample_scaled_isotropic_alpha_stable
-from genkit.diffusion import DLPMEps
-from genkit.metrics import mmd_rbf, tail_coverage_error
-from genkit.nn import MLPModel
+from genkit.diffusion import DLPMEps, DDPMV
 from genkit.training import train
-from _utils import setup
-
+from genkit._noise import sample_scaled_scalar_alpha_stable
+from _utils import (
+    add_test_vs_true_sample,
+    make_net,
+    evaluate_model,
+    load_alpha_stable,
+    make_train_kwargs,
+    save_tail_figure,
+    setup,
+)
 
 ########################################################################################################################
-# Setup
+# Additional classes
+class MCDLPMEps(DLPMEps):
+    """DLPM-Eps sampler using a path-conditioned Monte Carlo eps estimate."""
 
-device, dtype = setup()
-
-
-########################################################################################################################
-# Helpers
-
-alpha = 1.7
-dim = 2
-n_steps = 64
-n_train = 2_048
-n_eval = 4_096
-n_mmd = 2_048
-n_mc = 2_048
-batch_size = 256
-n_epochs = 16
-chunk_size = 512
-tce_probs = torch.tensor([1e-1, 5e-2, 1e-2], dtype=torch.float64)
-
-
-class ConditionalMonteCarloEpsNet(torch.nn.Module):
-    """MC estimator of E[eps | x_t] for x_t = gamma_t x_0 + sigma_t eps."""
-
-    def __init__(self, model, n_mc=n_mc, chunk_size=chunk_size):
-        super().__init__()
-        self.model = model
+    def __init__(self, *args, n_mc=1_000, **kwargs):
+        kwargs["net"] = torch.nn.Identity()
+        super().__init__(*args, **kwargs)
         self.n_mc = int(n_mc)
-        self.chunk_size = int(chunk_size)
 
     @torch.no_grad()
-    def forward(self, x, t):
-        x = x.to(device=self.model._device, dtype=self.model._fdtype)
-        t_idx = (t.reshape(-1).to(device=self.model._device) * self.model._n_steps).round().long()
-        if t_idx.numel() == 1:
-            t_idx = t_idx.expand(x.shape[0])
-        t_idx = t_idx.clamp(1, self.model._n_steps - 1)
+    def _sample(
+        self,
+        n_samples: int,
+        return_trajectory: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        """Run the DLPM reverse chain with path-conditioned MC eps estimates."""
+        A_path = torch.stack([self._draw_A(n_samples).squeeze(-1) for _ in range(self._n_steps)], dim=0)
+        Sigma_1_t = self._Sigma_1_t(A_path)
+        x = self._sigma_1_t[self._n_steps - 1] * self._sample_source_default(n_samples)
+        l_x = [x] if return_trajectory else None
 
-        out = torch.empty_like(x)
-        tiny = torch.finfo(x.dtype).tiny
-        for start in range(0, x.shape[0], self.chunk_size):
-            stop = min(start + self.chunk_size, x.shape[0])
-            x_chunk = x[start:stop]
-            x_flat = x_chunk.reshape(x_chunk.shape[0], -1)
-            x2 = x_flat.square().sum(dim=1, keepdim=True)
+        for t in range(self._n_steps - 1, 0, -1):
+            Sigma_hat, gamma_t, Gamma_t = self._g_Sigma_hat_Gamma(Sigma_1_t, t)
 
-            idx = t_idx[start:stop]
-            gamma = self.model._gamma_1_t.index_select(0, idx).reshape(-1, 1)
-            sigma = self.model._sigma_1_t.index_select(0, idx).reshape(-1, 1)
-            A_data = self.model._draw_A(self.n_mc).reshape(1, -1).clamp_min(tiny)
-            A_noise = self.model._draw_A(self.n_mc).reshape(1, -1).clamp_min(tiny)
-            variance = (gamma.square() * A_data + sigma.square() * A_noise).clamp_min(tiny)
+            # Conditional model at time t: x_t = gamma_{1,t} x_0 + sigma_{1,t} eps_t,
+            # with x_0 | A_data ~ N(0, A_data I) and sigma_{1,t} eps_t | A_path ~ N(0, path_noise_var I).
+            x_flat = x.reshape(n_samples, -1)
+            observed_radius_sq = x_flat.square().sum(dim=1, keepdim=True)
 
-            logw = -0.5 * (self.model._dim * variance.log() + x2 / variance)
-            weights = torch.softmax(logw, dim=1)
-            coeff = (weights * sigma * A_noise / variance).sum(dim=1, keepdim=True)
-            out[start:stop] = (coeff * x_flat).reshape_as(x_chunk)
+            data_var = self._draw_A(self.n_mc).reshape(1, -1)
+            path_noise_var = Sigma_1_t[t].reshape(-1, 1)
+            gamma_1_t = self._gamma_1_t[t]
+            sigma_1_t = self._sigma_1_t[t]
 
-        return out
+            total_var = gamma_1_t.square() * data_var + path_noise_var
+            log_p_xt_given_data_var = -0.5 * (self._dim * total_var.log() + observed_radius_sq / total_var)
+            data_var_weight = torch.softmax(log_p_xt_given_data_var, dim=1)
 
+            # E[eps_t | x_t, A_data, A_path] = path_noise_var / (sigma_{1,t} total_var) x_t.
+            eps_coeff_given_data_var = path_noise_var / (sigma_1_t * total_var)
+            eps_coeff = (data_var_weight * eps_coeff_given_data_var).sum(dim=1, keepdim=True)
+            eps_hat = (eps_coeff * x_flat).reshape_as(x)
 
-def sample_target(n_samples, seed):
-    torch.manual_seed(seed)
-    return sample_scaled_isotropic_alpha_stable(
-        n_samples=n_samples,
-        dim=dim,
-        alpha=alpha,
-        device=device,
-        dtype=dtype,
-    )
+            gamma_t_data = self._expand_batch_scalar(Gamma_t, x)
+            x = (x - gamma_t_data * sigma_1_t * eps_hat) / gamma_t
 
+            if t > 1:
+                innovation = torch.randn(n_samples, *self._sample_shape, device=self._device, dtype=self._fdtype)
+                x = x + self._expand_batch_scalar(Sigma_hat.sqrt(), innovation) * innovation
 
-def make_dlpm(net):
-    return DLPMEps(
-        net=net,
-        dim=dim,
-        n_steps=n_steps,
-        alpha=alpha,
-        n_trial_A=1,
-        n_trial_G=1,
-        reduce_type="mean",
-        fdtype=dtype,
-        device=device,
-    )
+            if return_trajectory:
+                l_x.append(x)
+
+        return x, l_x
 
 
-@torch.no_grad()
-def evaluate_samples(name, x_ref, x_gen):
-    x_ref = x_ref.detach().cpu().to(torch.float64)
-    x_gen = x_gen.detach().cpu().to(torch.float64)
-    values = {"mmd_rbf": mmd_rbf(x_ref[:n_mmd], x_gen[:n_mmd])}
-    for prob in tce_probs:
-        q = 100.0 * (1.0 - float(prob))
-        values[f"tce_q{q:.1f}"] = tail_coverage_error(
-            x_ref,
-            x_gen,
-            probs=prob.reshape(1),
-            tail="upper",
-            mode="log",
-        )
-    print(f"[EVAL] {name}: " + " ".join(f"{key}={value:.3g}" for key, value in values.items()))
+class MCDDPMV(DDPMV):
+    """DDPM-V sampler using a Monte Carlo eps estimate under the alpha-stable data prior."""
+
+    def __init__(self, *args, alpha=1.7, n_mc=1_000, **kwargs):
+        kwargs["net"] = torch.nn.Identity()
+        super().__init__(*args, **kwargs)
+        self.alpha = float(alpha)
+        self.n_mc = int(n_mc)
+
+    @torch.no_grad()
+    def _sample(
+        self,
+        n_samples: int,
+        return_trajectory: bool = True,
+        sample_source: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        n_samples, x = self._resolve_sample_source(n_samples, sample_source)
+        l_x = [x] if return_trajectory else None
+        source_var = self._sigma_max**2
+
+        for t in range(self._n_steps, 0, -1):
+            t_idx = t - 1
+            alpha_bar_t = self._alpha_bar[t_idx]
+            one_minus_alpha_bar_t = 1.0 - alpha_bar_t
+
+            # Conditional model at time t: x_t = sqrt(alpha_bar_t) x_0 + sqrt(1 - alpha_bar_t) eps,
+            # with x_0 | A_data ~ N(0, A_data I) and eps ~ N(0, sigma_max^2 I).
+            x_flat = x.reshape(n_samples, -1)
+            observed_radius_sq = x_flat.square().sum(dim=1, keepdim=True)
+
+            data_var = sample_scaled_scalar_alpha_stable(self.n_mc, alpha=self.alpha, device=self._device,
+                                                         dtype=self._fdtype)
+            data_var = data_var.reshape(1, -1)
+            noise_var = one_minus_alpha_bar_t * source_var
+            total_var = alpha_bar_t * data_var + noise_var
+            log_p_xt_given_data_var = -0.5 * (self._dim * total_var.log() + observed_radius_sq / total_var)
+            data_var_weight = torch.softmax(log_p_xt_given_data_var, dim=1)
+
+            # E[eps | x_t, A_data] = sqrt(1 - alpha_bar_t) sigma_max^2 / total_var x_t.
+            eps_coeff_given_data_var = one_minus_alpha_bar_t.sqrt() * source_var / total_var
+            eps_coeff = (data_var_weight * eps_coeff_given_data_var).sum(dim=1, keepdim=True)
+            eps_hat = (eps_coeff * x_flat).reshape_as(x)
+
+            scale = self._betas[t_idx] / one_minus_alpha_bar_t.sqrt()
+            x = (x - scale * eps_hat) / self._alphas[t_idx].sqrt()
+
+            if t > 1:
+                x = x + self._sigma_max * self._sqrt_post_var[t_idx] * torch.randn_like(x)
+
+            if return_trajectory:
+                l_x.append(x)
+
+        return x, l_x
 
 
 ########################################################################################################################
 # Main
+device, dtype = setup()
 
-print(
-    f"[INFO] alpha={alpha} dim={dim} n_steps={n_steps} n_train={n_train} "
-    f"n_eval={n_eval} n_mc={n_mc}"
-)
-x_train = sample_target(n_train, seed=0)
-x_ref = sample_target(n_eval, seed=10_000)
-x_test = sample_target(n_eval, seed=20_000)
-evaluate_samples("test vs test", x_ref, x_test)
+dim = 15
+alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
-torch.manual_seed(1)
-dlpm = make_dlpm(MLPModel(dim=dim, width=64, depth=2).to(device=device, dtype=dtype))
-start = time.perf_counter()
-dlpm, stats = train(
-    dlpm,
-    x_train,
-    batch_size=batch_size,
-    n_epochs=n_epochs,
-    lr=5e-4,
-    device=device,
-    use_adamw=False,
-    lr_schedule="constant",
-    freq_logging=0,
-)
-elapsed = time.perf_counter() - start
-final_loss = stats["stats"]["training_loss"][-1]
-print(f"[TRAIN] DLPM done in {elapsed:.1f}s final_loss={final_loss:.4f}")
+n_tail = x_test.shape[0]
+n_mmd = 10_000
+n_trials = 10
+n_steps = 64
+n_mc = 5_000
+ddpm_sigma_max = 5.0
+train_kwargs = make_train_kwargs(device)
+
+rows = []
+for trial in range(1, n_trials + 1):
+
+    torch.manual_seed(trial - 1)
+
+    dlpm = DLPMEps(net=make_net(dim=dim, device=device, dtype=dtype), alpha=alpha, dim=dim, n_steps=n_steps, n_trial_A=1, n_trial_G=1, reduce_type="mean", device=device)
+    dlpm, _ = train(dlpm, x_train, **train_kwargs)
+    rows.append(evaluate_model("DLPM", dlpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
+
+    mc_dlpm = MCDLPMEps(alpha=alpha, dim=dim, n_steps=n_steps, n_trial_A=1, n_trial_G=1, reduce_type="mean", n_mc=n_mc, device=device)
+    rows.append(evaluate_model("DLPM (+MC)", mc_dlpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
+
+    ddpm = DDPMV(net=make_net(dim=dim, device=device, dtype=dtype), dim=dim, n_steps=n_steps, sigma_max=ddpm_sigma_max, sampler="ddpm", device=device, fdtype=dtype)
+    ddpm, _ = train(ddpm, x_train, **train_kwargs)
+    rows.append(evaluate_model("DDPM", ddpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
+
+    mc_ddpm = MCDDPMV(alpha=alpha, dim=dim, n_steps=n_steps, sigma_max=ddpm_sigma_max, sampler="ddpm", n_mc=n_mc, device=device, fdtype=dtype)
+    rows.append(evaluate_model("DDPM (+MC)", mc_ddpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
+
+add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 
 ########################################################################################################################
-# Evaluation
+# Plotting
 
-start = time.perf_counter()
-torch.manual_seed(30_000)
-evaluate_samples("DLPM trained net", x_ref, dlpm.sample(n_eval))
-print(f"[TIME] DLPM sampling+eval {time.perf_counter() - start:.1f}s")
-
-mc_dlpm = make_dlpm(torch.nn.Identity())
-mc_dlpm._net = ConditionalMonteCarloEpsNet(mc_dlpm)
-start = time.perf_counter()
-torch.manual_seed(30_000)
-evaluate_samples("DLPM conditional MC", x_ref, mc_dlpm.sample(n_eval))
-print(f"[TIME] conditional MC sampling+eval {time.perf_counter() - start:.1f}s")
+save_tail_figure(rows, "DLPM MC estimates", "2_dlpm_mc_score.pdf")
