@@ -1,3 +1,5 @@
+import logging
+from pathlib import Path
 import torch
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
@@ -10,6 +12,10 @@ from _utils import (
     save_tail_figure,
     setup,
 )
+
+log_path = Path(__file__).with_name("logs") / f"{Path(__file__).stem}.log"
+log_path.parent.mkdir(exist_ok=True)
+logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 ########################################################################################################################
 # Additional classes
@@ -80,11 +86,13 @@ flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sampler="euler", 
 sigma_b = 1.0
 sigma_t = 10.0
 split = BulkTailSplit(x_train, tail_quantile=0.90)
+logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s sigma_b=%s sigma_t=%s", device, dtype, dim, n_trials, n_tail, n_mmd, sigma_b, sigma_t)
 
 rows = []
 for trial in range(1, n_trials + 1):
 
     torch.manual_seed(trial - 1)
+    logging.info("trial %s/%s", trial, n_trials)
 
     models = {
         "GF linear": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, **flow_kwargs),
@@ -92,12 +100,15 @@ for trial in range(1, n_trials + 1):
     }
 
     for name, model in models.items():
+        logging.info("train/evaluate %s", name)
         model, _ = train(model, x_train, **train_kwargs)
         rows.append(evaluate_model(name, model, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+logging.info("add test-vs-true reference")
 add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 
 ########################################################################################################################
 # Plotting
 
 save_tail_figure(rows, "Heteroscedastic GF linear", "0_heteroscedastic.pdf")
+logging.info("saved figure 0_heteroscedastic.pdf")

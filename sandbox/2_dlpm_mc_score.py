@@ -1,3 +1,5 @@
+import logging
+from pathlib import Path
 import torch
 from genkit.diffusion import DLPMEps, DDPMV
 from genkit.training import train
@@ -11,6 +13,10 @@ from _utils import (
     save_tail_figure,
     setup,
 )
+
+log_path = Path(__file__).with_name("logs") / f"{Path(__file__).stem}.log"
+log_path.parent.mkdir(exist_ok=True)
+logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 ########################################################################################################################
 # Additional classes
@@ -138,29 +144,37 @@ n_steps = 64
 n_mc = 5_000
 ddpm_sigma_max = 5.0
 train_kwargs = make_train_kwargs(device)
+logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s n_steps=%s n_mc=%s", device, dtype, dim, n_trials, n_tail, n_mmd, n_steps, n_mc)
 
 rows = []
 for trial in range(1, n_trials + 1):
 
     torch.manual_seed(trial - 1)
+    logging.info("trial %s/%s", trial, n_trials)
 
+    logging.info("train/evaluate DLPM")
     dlpm = DLPMEps(net=make_net(dim=dim, device=device, dtype=dtype), alpha=alpha, dim=dim, n_steps=n_steps, n_trial_A=1, n_trial_G=1, reduce_type="mean", device=device)
     dlpm, _ = train(dlpm, x_train, **train_kwargs)
     rows.append(evaluate_model("DLPM", dlpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+    logging.info("evaluate DLPM (+MC)")
     mc_dlpm = MCDLPMEps(alpha=alpha, dim=dim, n_steps=n_steps, n_trial_A=1, n_trial_G=1, reduce_type="mean", n_mc=n_mc, device=device)
     rows.append(evaluate_model("DLPM (+MC)", mc_dlpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+    logging.info("train/evaluate DDPM")
     ddpm = DDPMV(net=make_net(dim=dim, device=device, dtype=dtype), dim=dim, n_steps=n_steps, sigma_max=ddpm_sigma_max, sampler="ddpm", device=device, fdtype=dtype)
     ddpm, _ = train(ddpm, x_train, **train_kwargs)
     rows.append(evaluate_model("DDPM", ddpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+    logging.info("evaluate DDPM (+MC)")
     mc_ddpm = MCDDPMV(alpha=alpha, dim=dim, n_steps=n_steps, sigma_max=ddpm_sigma_max, sampler="ddpm", n_mc=n_mc, device=device, fdtype=dtype)
     rows.append(evaluate_model("DDPM (+MC)", mc_ddpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+logging.info("add test-vs-true reference")
 add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 
 ########################################################################################################################
 # Plotting
 
 save_tail_figure(rows, "DLPM MC estimates", "2_dlpm_mc_score.pdf")
+logging.info("saved figure 2_dlpm_mc_score.pdf")

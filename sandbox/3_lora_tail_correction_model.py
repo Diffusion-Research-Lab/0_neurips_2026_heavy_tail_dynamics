@@ -1,5 +1,7 @@
 import copy
+import logging
 import math
+from pathlib import Path
 import torch
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.nn import MLPModel
@@ -13,6 +15,10 @@ from _utils import (
     save_tail_figure,
     setup,
 )
+
+log_path = Path(__file__).with_name("logs") / f"{Path(__file__).stem}.log"
+log_path.parent.mkdir(exist_ok=True)
+logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
 ########################################################################################################################
@@ -126,20 +132,25 @@ tail_quantile = 0.90
 train_kwargs = make_train_kwargs(device)
 flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sigma_max=1.0, sampler="euler", sample_steps=128, device=device)
 tau = torch.quantile(x_train.flatten(1).norm(dim=1), tail_quantile).item()
+logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s tail_quantile=%s tau=%s", device, dtype, dim, n_trials, n_tail, n_mmd, tail_quantile, tau)
 
 rows = []
 for trial in range(1, n_trials + 1):
 
     torch.manual_seed(trial - 1)
+    logging.info("trial %s/%s", trial, n_trials)
 
+    logging.info("train/evaluate GF linear")
     baseline = GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), **flow_kwargs)
     baseline, _ = train(baseline, x_train, **train_kwargs)
     rows.append(evaluate_model("GF linear", baseline, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+    logging.info("train/evaluate GF linear + tail LoRA")
     lora = TailLoRAFlow(baseline, tau=tau, rank=6, alpha=4.0, sharpness=5.0, tail_weight=2.0)
     lora, _ = train(lora, x_train, **train_kwargs)
     rows.append(evaluate_model("GF linear + tail LoRA", lora, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+logging.info("add test-vs-true reference")
 add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 
 
@@ -147,3 +158,4 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 # Plotting
 
 save_tail_figure(rows, "Tail LoRA GF linear", "3_lora_tail_correction_model.pdf")
+logging.info("saved figure 3_lora_tail_correction_model.pdf")

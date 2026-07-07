@@ -1,3 +1,5 @@
+import logging
+from pathlib import Path
 import torch
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
@@ -10,6 +12,10 @@ from _utils import (
     save_tail_figure,
     setup,
 )
+
+log_path = Path(__file__).with_name("logs") / f"{Path(__file__).stem}.log"
+log_path.parent.mkdir(exist_ok=True)
+logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
 ########################################################################################################################
@@ -87,11 +93,13 @@ flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sampler="euler", 
 contraction = AsinhContraction.fit(x_train, scale_quantile=0.5, inverse_clip_quantile=0.9999, inverse_clip_margin=0.75)
 y_train = contraction.transform(x_train)
 y_sigma = float(y_train.flatten(1).square().mean().sqrt().clamp_min(0.05).item())
+logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s y_sigma=%s", device, dtype, dim, n_trials, n_tail, n_mmd, y_sigma)
 
 rows = []
 for trial in range(1, n_trials + 1):
 
     torch.manual_seed(trial - 1)
+    logging.info("trial %s/%s", trial, n_trials)
 
     models = {
         "GFL": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, sample_steps=128, **flow_kwargs),
@@ -99,9 +107,11 @@ for trial in range(1, n_trials + 1):
     }
 
     for ((name, model), z_train) in zip(models.items(), [x_train, y_train]):
+        logging.info("train/evaluate %s", name)
         model, _ = train(model, z_train, **train_kwargs)
         rows.append(evaluate_model(name, model, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
+logging.info("add test-vs-true reference")
 add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 
 
@@ -109,3 +119,4 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 # Plotting
 
 save_tail_figure(rows, "Contracted-space GF linear", "4_contracted_space_gfl.pdf")
+logging.info("saved figure 4_contracted_space_gfl.pdf")
