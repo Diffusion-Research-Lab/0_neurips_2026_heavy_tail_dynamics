@@ -3,7 +3,7 @@ SHELL := /bin/bash
 ROOT := $(abspath ..)
 PYTHON ?= $(ROOT)/.venv/bin/python
 JZ_MODULE ?= pytorch-gpu/py3/2.8.0
-GPU_DEV_ARGS ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=10:00:00
+GPU_DEV_ARGS ?= --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=08:00:00
 SCRIPTS ?= 0_heteroscedastic.py 1_dlpm_loss_power.py 2_dlpm_mc_score.py 3_lora_tail_correction_model.py 4_contracted_space_gfl.py
 
 .PHONY: node run
