@@ -73,9 +73,9 @@ SBATCH_EXPORT             = --export=ALL,VENV_DIR="$(CURDIR)/$(VENV_DIR)"
 # Slurm resource presets.
 JZ_GPU_ARGS               ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100
 JZ_GPU_DEV_ARGS           ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-dev --account=jcx@v100
-PILOT_SBATCH_ARGS         ?= $(JZ_GPU_ARGS) --time=04:00:00
+PILOT_SBATCH_ARGS         ?= $(JZ_GPU_ARGS) --time=20:00:00
 BENCH_SBATCH_ARGS_SYNTH   ?= $(JZ_GPU_ARGS) --time=04:00:00
-BENCH_SBATCH_ARGS_IMAGE   ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=10:00:00
+BENCH_SBATCH_ARGS_IMAGE   ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=20:00:00
 IMAGENET128_VIZ_SBATCH_ARGS ?= $(BENCH_SBATCH_ARGS_IMAGE)
 EVAL_PILOT_SBATCH_ARGS    ?= $(JZ_GPU_DEV_ARGS) --time=00:50:00
 EVAL_SBATCH_ARGS          ?= $(JZ_GPU_ARGS) --time=06:00:00
