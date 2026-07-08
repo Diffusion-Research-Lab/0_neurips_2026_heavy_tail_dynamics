@@ -1,10 +1,9 @@
-### Interactive Node
+### Slurm Submission
 
 ```bash
 cd "$WORK/src/flowbench"
 make setup
-cd sandbox
-make node
+cd prototypes
 make run
 ```
 

@@ -79,7 +79,7 @@ alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
 n_mmd = 10_000
-n_trials = 10
+n_trials = 5
 train_kwargs = make_train_kwargs(device)
 flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sampler="euler", sample_steps=128, device=device)
 
@@ -95,8 +95,9 @@ for trial in range(1, n_trials + 1):
     logging.info("trial %s/%s", trial, n_trials)
 
     models = {
-        "GF linear": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, **flow_kwargs),
-        f"H-GFL sigma_b={sigma_b:g} sigma_t={sigma_t:g}": FixedHeteroscedasticGFL(net=make_net(dim=dim, device=device, dtype=dtype), split=split, sigma_b=sigma_b, sigma_t=sigma_t, **flow_kwargs),
+        "GFL (sigma=1)": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, **flow_kwargs),
+        "GFL (sigma=10)": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=10.0, **flow_kwargs),
+        f"H-GFL (sigma_b={sigma_b:g} sigma_t={sigma_t:g})": FixedHeteroscedasticGFL(net=make_net(dim=dim, device=device, dtype=dtype), split=split, sigma_b=sigma_b, sigma_t=sigma_t, **flow_kwargs),
     }
 
     for name, model in models.items():

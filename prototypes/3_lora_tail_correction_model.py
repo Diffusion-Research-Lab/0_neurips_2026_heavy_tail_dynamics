@@ -127,7 +127,7 @@ alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
 n_mmd = 10_000
-n_trials = 10
+n_trials = 5
 tail_quantile = 0.90
 train_kwargs = make_train_kwargs(device)
 flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sigma_max=1.0, sampler="euler", sample_steps=128, device=device)

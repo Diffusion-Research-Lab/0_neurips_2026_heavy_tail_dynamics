@@ -40,7 +40,7 @@ alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
 n_mmd = 10_000
-n_trials = 10
+n_trials = 5
 loss_powers = [0.1, 0.25, 0.5, 0.75]
 train_kwargs = make_train_kwargs(device)
 logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s loss_powers=%s", device, dtype, dim, n_trials, n_tail, n_mmd, loss_powers)

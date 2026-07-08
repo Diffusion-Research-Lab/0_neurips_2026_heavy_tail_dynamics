@@ -40,9 +40,9 @@ stage_project() {
       --exclude '*.py[cod]' \
       --exclude '*~' \
       --exclude 'code.zip' \
-      --exclude 'sandbox/*.ipynb' \
-      --exclude 'sandbox/*.sh' \
-      --exclude 'sandbox/figures/' \
+      --exclude 'prototypes/*.ipynb' \
+      --exclude 'prototypes/*.sh' \
+      --exclude 'prototypes/figures/' \
       --exclude '*_results*/' \
       --exclude 'benchmarks/artifacts/' \
       --exclude 'benchmarks/data/' \

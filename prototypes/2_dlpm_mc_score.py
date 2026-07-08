@@ -139,7 +139,7 @@ alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
 n_mmd = 10_000
-n_trials = 10
+n_trials = 5
 n_steps = 64
 n_mc = 5_000
 ddpm_sigma_max = 5.0
