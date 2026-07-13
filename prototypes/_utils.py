@@ -6,6 +6,24 @@ from genkit._noise import sample_scaled_isotropic_alpha_stable
 from genkit.datasets import fetch_synthetic_data
 from genkit.metrics import mmd_rbf, tail_coverage_error
 from genkit.nn import MLPModel
+from _constants import (
+    ALPHA,
+    DEPTH,
+    DEVICE,
+    DIM,
+    DTYPE,
+    MARKERS,
+    N_TEST,
+    N_TRAIN,
+    N_VAL,
+    REFERENCE_MODELS,
+    SAMPLE_CHUNK_SIZE,
+    SEED,
+    TCE_COLUMNS,
+    TCE_TAIL_PROBS,
+    TRAIN_KWARGS,
+    WIDTH,
+)
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
 
@@ -13,26 +31,13 @@ import matplotlib  # noqa
 matplotlib.use("Agg")  # noqa
 import matplotlib.pyplot as plt  # noqa
 
-TCE_TAIL_PROBS = torch.logspace(-1.0, -5.0, 20, dtype=torch.float64)
-SAMPLE_CHUNK_SIZE = 10_000
 
-
-def _tce_label(prob):
-    quantile = 100.0 * (1.0 - float(prob))
-    precision = 2 if quantile < 99.0 else 4
-    label = f"{quantile:.{precision}f}".rstrip("0").rstrip(".")
-    return f"TCE({label})"
-
-
-TCE_COLUMNS = [_tce_label(prob) for prob in TCE_TAIL_PROBS]
-
-
-def setup(seed=0):
+def setup(seed=SEED):
     torch.manual_seed(seed)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu"), torch.float32
+    return DEVICE, DTYPE
 
 
-def load_alpha_stable(device, dtype, dim=15, alpha=1.7, n_train=30_000, n_test=1_500_000, n_val=1):
+def load_alpha_stable(device, dtype, dim=DIM, alpha=ALPHA, n_train=N_TRAIN, n_test=N_TEST, n_val=N_VAL):
     n_samples = int(n_train) + int(n_val) + int(n_test)
     val_size = int(n_val) / n_samples
     test_size = int(n_test) / n_samples
@@ -49,12 +54,14 @@ def load_alpha_stable(device, dtype, dim=15, alpha=1.7, n_train=30_000, n_test=1
     return alpha, x_train, x_test
 
 
-def make_net(dim, device, width=128, depth=3, dtype=torch.float32):
+def make_net(dim, device, width=WIDTH, depth=DEPTH, dtype=DTYPE):
     return MLPModel(dim=dim, width=width, depth=depth).to(device=device, dtype=dtype)
 
 
-def make_train_kwargs(device):
-    return dict(batch_size=128, n_epochs=128, lr=5e-4, device=device, use_adamw=False, lr_schedule="constant", freq_logging=0)
+def make_train_kwargs(device=DEVICE):
+    kwargs = dict(TRAIN_KWARGS)
+    kwargs["device"] = device
+    return kwargs
 
 
 @torch.no_grad()
@@ -97,18 +104,16 @@ def save_tail_figure(rows, title, filename):
     std_results = grouped[tce_cols].std().fillna(0.0)
     x = 1.0 - TCE_TAIL_PROBS.numpy()
 
-    markers = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "h", "8"]
-    reference_models = {"test vs test", "test vs true sample"}
     line_alpha = 0.5
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=(4.8, 6.0))
     for index, (model_name, row) in enumerate(mean_results.iterrows()):
 
         y = row[tce_cols].to_numpy(dtype=float)
         yerr = std_results.loc[model_name, tce_cols].to_numpy(dtype=float)
-        color = "black" if model_name in reference_models else None
+        color = "black" if model_name in REFERENCE_MODELS else None
 
-        line, = ax.plot(x, y, marker=markers[index % len(markers)], markevery=4, linewidth=1.8,
+        line, = ax.plot(x, y, marker=MARKERS[index % len(MARKERS)], markevery=4, linewidth=1.8,
                         label=f"{model_name} (MMD-RBF={row['mmd_rbf']:.1e})", alpha=line_alpha, color=color)
         ax.fill_between(x, (y - yerr).clip(min=1e-12), y + yerr, color=line.get_color(), alpha=0.2)
 
@@ -121,10 +126,9 @@ def save_tail_figure(rows, title, filename):
     ax.set_ylabel("TCE, upper tail log error", fontsize=12)
     ax.set_title(title)
     ax.grid(True, which="both", alpha=0.4)
-    handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.98), ncol=2)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=1, fontsize=8)
 
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.82))
+    fig.tight_layout()
 
     path = Path(__file__).resolve().parent / "_figures" / filename
     path.parent.mkdir(parents=True, exist_ok=True)

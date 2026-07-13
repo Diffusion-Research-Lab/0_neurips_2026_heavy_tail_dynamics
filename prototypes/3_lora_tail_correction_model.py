@@ -6,6 +6,7 @@ import torch
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.nn import MLPModel
 from genkit.training import train
+from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_TRIALS
 from _utils import (
     add_test_vs_true_sample,
     evaluate_model,
@@ -122,15 +123,15 @@ class TailLoRAFlow(GaussianFlowLinear):
 
 device, dtype = setup()
 
-dim = 15
+dim = DIM
 alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
-n_mmd = 10_000
-n_trials = 5
+n_mmd = N_MMD
+n_trials = N_TRIALS
 tail_quantile = 0.90
 train_kwargs = make_train_kwargs(device)
-flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sigma_max=1.0, sampler="euler", sample_steps=128, device=device)
+flow_kwargs = dict(dim=dim, n_steps=FLOW_N_STEPS, t_min=0.0, t_max=1.0, sigma_max=1.0, sampler="euler", sample_steps=FLOW_SAMPLE_STEPS, device=device)
 tau = torch.quantile(x_train.flatten(1).norm(dim=1), tail_quantile).item()
 logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s tail_quantile=%s tau=%s", device, dtype, dim, n_trials, n_tail, n_mmd, tail_quantile, tau)
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
+from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_TRIALS
 from _utils import (
     add_test_vs_true_sample,
     evaluate_model,
@@ -74,14 +75,14 @@ class FixedHeteroscedasticGFL(GaussianFlowLinear):
 # Main
 device, dtype = setup()
 
-dim = 15
+dim = DIM
 alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
-n_mmd = 10_000
-n_trials = 5
+n_mmd = N_MMD
+n_trials = N_TRIALS
 train_kwargs = make_train_kwargs(device)
-flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sampler="euler", sample_steps=128, device=device)
+flow_kwargs = dict(dim=dim, n_steps=FLOW_N_STEPS, t_min=0.0, t_max=1.0, sampler="euler", sample_steps=FLOW_SAMPLE_STEPS, device=device)
 
 sigma_b = 1.0
 sigma_t = 10.0

@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
+from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_TRIALS
 from _utils import (
     add_test_vs_true_sample,
     evaluate_model,
@@ -81,14 +82,14 @@ class ContractedWGFL(GaussianFlowLinear):
 # Main
 device, dtype = setup()
 
-dim = 15
+dim = DIM
 alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
-n_mmd = 10_000
-n_trials = 5
+n_mmd = N_MMD
+n_trials = N_TRIALS
 train_kwargs = make_train_kwargs(device)
-flow_kwargs = dict(dim=dim, n_steps=128, t_min=0.0, t_max=1.0, sampler="euler", device=device)
+flow_kwargs = dict(dim=dim, n_steps=FLOW_N_STEPS, t_min=0.0, t_max=1.0, sampler="euler", device=device)
 
 contraction = AsinhContraction.fit(x_train, scale_quantile=0.5, inverse_clip_quantile=0.9999, inverse_clip_margin=0.75)
 y_train = contraction.transform(x_train)
@@ -102,7 +103,7 @@ for trial in range(1, n_trials + 1):
     logging.info("trial %s/%s", trial, n_trials)
 
     models = {
-        "GFL": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, sample_steps=128, **flow_kwargs),
+        "GFL": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, sample_steps=FLOW_SAMPLE_STEPS, **flow_kwargs),
         "H+GFL": ContractedWGFL(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=y_sigma, sample_steps=512, contraction=contraction, **flow_kwargs),
     }
 
