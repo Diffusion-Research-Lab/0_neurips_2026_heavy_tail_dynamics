@@ -35,6 +35,7 @@ DATASETS                  ?= hrrr lvis cifar100_lt imagenet_lt
 INIT_DATASETS             ?= cifar100_lt imagenet_lt
 DATASET_OVERWRITE         ?= 0
 DATASET_HRRR_ENSURE       ?= 1
+DATASET_CPUS              ?= 20
 HRRR_ENSURE_ARGS          ?= --workers 4
 HRRR_STATUS               ?= $(CURDIR)/$(LOG_DIR)/hrrr_ensure_status.json
 
@@ -79,7 +80,7 @@ BENCH_SBATCH_ARGS_IMAGE   ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:
 IMAGENET128_VIZ_SBATCH_ARGS ?= $(BENCH_SBATCH_ARGS_IMAGE)
 EVAL_PILOT_SBATCH_ARGS    ?= $(JZ_GPU_DEV_ARGS) --time=00:50:00
 EVAL_SBATCH_ARGS          ?= $(JZ_GPU_ARGS) --time=06:00:00
-DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=20:00:00
+DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=$(DATASET_CPUS) --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=20:00:00
 
 
 # Evaluation options.
@@ -226,6 +227,14 @@ imagenet128-viz-configs:
 
 bench-imagenet128-viz: imagenet128-viz-configs
 	@mkdir -p "$(LOG_DIR)"
+	@$(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset imagenet_lt "$(IMAGENET128_VIZ_CONFIG_DIR)" || { \
+	  status="$$?"; \
+	  if [ "$$status" = "2" ]; then \
+	    echo "[bench-imagenet128-viz] missing ImageNet-LT-128 processed cache." >&2; \
+	    echo "[bench-imagenet128-viz] Run first: make dataset DATASETS=imagenet_lt DATASET_CONFIG_INPUTS=\"$(IMAGENET128_VIZ_CONFIG_DIR)\"" >&2; \
+	  fi; \
+	  exit "$$status"; \
+	}
 	@find "$(IMAGENET128_VIZ_CONFIG_DIR)" -name '*.yaml' | sort | while read -r config; do \
 	  count="$$($(call config_run_count,$$config))"; \
 	  array_end="$$((count - 1))"; \

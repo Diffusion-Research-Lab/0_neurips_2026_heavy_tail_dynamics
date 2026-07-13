@@ -693,11 +693,11 @@ def _load_imagenet_lt(**kwargs: Any) -> DatasetPayload:
             f"ImageNet-LT produced no records for split={split!r} in {annotation_path}."
         )
 
-    tensors = []
+    total_records = len(raw_records)
+    data = torch.empty((total_records, 3, image_size, image_size), dtype=torch.float32)
     records = []
     histogram: dict[int, int] = {}
     started_at = time.perf_counter()
-    total_records = len(raw_records)
     print(
         f"[dataset] image imagenet_lt  start total={total_records} split={split} "
         f"image_size={image_size} root={imagenet_root}",
@@ -705,7 +705,7 @@ def _load_imagenet_lt(**kwargs: Any) -> DatasetPayload:
     )
     for index, raw_record in enumerate(raw_records, start=1):
         image_path = _resolve_imagenet_lt_image_path(raw_record, imagenet_root)
-        tensors.append(read_rgb_resized(image_path, image_size))
+        data[index - 1].copy_(read_rgb_resized(image_path, image_size))
         record = _imagenet_lt_record(raw_record, image_path)
         records.append(record)
         class_id = int(record["class_id"])
@@ -726,7 +726,7 @@ def _load_imagenet_lt(**kwargs: Any) -> DatasetPayload:
     }
     if cache_path is not None:
         metadata["cache_path"] = str(cache_path)
-    payload = DatasetPayload(data=torch.stack(tensors, dim=0).to(dtype=torch.float32), metadata=metadata)
+    payload = DatasetPayload(data=data, metadata=metadata)
     if cache_path is not None:
         _write_processed_image_cache(cache_path, payload)
     return payload

@@ -955,6 +955,46 @@ def _make_cifar100_lt_cfg():
     }
 
 
+def _write_imagenet_lt_cache_fixture(root: Path):
+    from PIL import Image
+
+    annotation_dir = root / "annotations"
+    image_root = root / "imagenet"
+    annotation_dir.mkdir(parents=True)
+    image_root.mkdir(parents=True)
+    records = [
+        ("train/n00000001/img1.JPEG", 0, (255, 0, 0)),
+        ("train/n00000001/img2.JPEG", 0, (220, 0, 0)),
+        ("train/n00000002/img3.JPEG", 1, (0, 255, 0)),
+        ("train/n00000002/img4.JPEG", 1, (0, 220, 0)),
+        ("train/n00000003/img5.JPEG", 2, (0, 0, 255)),
+        ("train/n00000003/img6.JPEG", 2, (0, 0, 220)),
+    ]
+    lines = []
+    for relative_path, class_id, color in records:
+        image_path = image_root / relative_path
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (12, 14), color=color).save(image_path)
+        lines.append(f"{relative_path} {class_id}")
+    (annotation_dir / "ImageNet_LT_train.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return root, image_root
+
+
+def _make_imagenet_lt_cfg(data_home: Path, image_root: Path):
+    return {
+        "kind": "real",
+        "name": "imagenet_lt",
+        "params": {
+            "split": "train",
+            "image_size": 8,
+            "data_home": str(data_home),
+            "imagenet_root": str(image_root),
+            "seed": 0,
+        },
+        "split": {"val_size": 0.25, "test_size": 0.25, "random_state": 0, "standardize": False},
+    }
+
+
 def _fake_fetch_real_4samples(name, **kwargs):
     return (
         torch.ones(2, 3),
@@ -962,6 +1002,43 @@ def _fake_fetch_real_4samples(name, **kwargs):
         torch.full((1, 3), 3.0),
         {"source": "test"},
     )
+
+
+def test_build_preprocessed_imagenet_lt_streams_directly_to_split_cache(tmp_path, monkeypatch):
+    data_home, image_root = _write_imagenet_lt_cache_fixture(tmp_path / "imagenet_lt")
+    cfg = _make_imagenet_lt_cfg(data_home, image_root)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("ImageNet-LT prefetch should stream directly instead of calling fetch_real_data")
+
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", boom)
+
+    result = real_data_cache.build_preprocessed_real_dataset(cfg, torch.bfloat16, data_root=tmp_path)
+    x_train, x_val, x_test = real_data_cache.load_preprocessed_real_dataset(cfg, torch.bfloat16, data_root=tmp_path)
+    metadata = real_data_cache.load_preprocessed_real_dataset_metadata(cfg, torch.bfloat16, data_root=tmp_path)
+
+    assert result["status"] == "built"
+    assert x_train.dtype == torch.bfloat16
+    assert x_train.shape[1:] == (3, 8, 8)
+    assert x_train.shape[0] + x_val.shape[0] + x_test.shape[0] == 6
+    assert sum(metadata["splits"][name]["n_samples"] for name in ("train", "val", "test")) == 6
+    assert all("records" in metadata["splits"][name] for name in ("train", "val", "test"))
+
+
+def test_build_preprocessed_real_dataset_disables_image_loader_cache_by_default(tmp_path, monkeypatch):
+    cfg = _make_cifar100_lt_cfg()
+    seen = {}
+
+    def fake_fetch_real_data(name, **kwargs):
+        seen.update(kwargs)
+        return _fake_fetch_real_4samples(name, **kwargs)
+
+    monkeypatch.setattr(real_data_cache, "fetch_real_data", fake_fetch_real_data)
+
+    real_data_cache.build_preprocessed_real_dataset(cfg, torch.float32, data_root=tmp_path)
+
+    assert seen["cache"] is False
+    assert "cache_dir" in seen
 
 
 def test_build_preprocessed_real_dataset_skips_when_cache_is_valid(tmp_path, monkeypatch, capsys):
