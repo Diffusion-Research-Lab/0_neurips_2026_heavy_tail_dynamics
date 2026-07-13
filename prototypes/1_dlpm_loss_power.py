@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 from genkit.diffusion import DLPMEps
 from genkit.training import train
+from _constants import DIM, N_MMD, N_STEPS, N_TRIALS
 from _utils import (
     add_test_vs_true_sample,
     evaluate_model,
@@ -35,13 +36,13 @@ class DLPMEpsPowerLoss(DLPMEps):
 # Main
 device, dtype = setup()
 
-dim = 15
+dim = DIM
 alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 
 n_tail = x_test.shape[0]
-n_mmd = 10_000
-n_trials = 5
-loss_powers = [0.1, 0.25, 0.5, 0.75]
+n_mmd = N_MMD
+n_trials = N_TRIALS
+loss_powers = [0.5, 0.7, 0.9]
 train_kwargs = make_train_kwargs(device)
 logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s loss_powers=%s", device, dtype, dim, n_trials, n_tail, n_mmd, loss_powers)
 
@@ -52,12 +53,11 @@ for trial in range(1, n_trials + 1):
     logging.info("trial %s/%s", trial, n_trials)
 
     models = {}
-    for reduce_type in ["mean", "median"]:
-        for r in loss_powers:
-            model = DLPMEpsPowerLoss(net=make_net(dim=dim, device=device, dtype=dtype), dim=dim, n_steps=64, alpha=alpha,
-                                     n_trial_A=1, n_trial_G=1, reduce_type=reduce_type, loss_power=r,
-                                     device=device)
-            models[f"DLPM r={r:g} reduce_type={reduce_type}"] = model
+    for r in loss_powers:
+        model = DLPMEpsPowerLoss(net=make_net(dim=dim, device=device, dtype=dtype), dim=dim, n_steps=N_STEPS, alpha=alpha,
+                                 n_trial_A=1, n_trial_G=1, reduce_type="mean", loss_power=r,
+                                 device=device)
+        models[f"DLPM r={r:g}"] = model
 
     for name, model in models.items():
         logging.info("train/evaluate %s", name)
