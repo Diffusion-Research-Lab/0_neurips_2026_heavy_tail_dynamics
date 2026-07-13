@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Sample and save visualization grids for the ImageNet-LT-128 benchmark."""
+"""Sample and save visualization grids for the ImageNet-LT visualization benchmark."""
 
 import argparse
 import importlib
@@ -49,6 +49,8 @@ MODEL_LABELS = {
     "tedm_origin_nu30": "TEDM nu=3.0",
     "tedm_origin": "TEDM-Orig",
 }
+VIZ_DATASET_NAME = "imagenet_lt_96"
+VIZ_LABEL = "ImageNet-LT 96"
 
 
 def checkpoint_dtype(checkpoint: dict[str, Any]) -> torch.dtype:
@@ -126,9 +128,9 @@ def save_grid(images: torch.Tensor, output_path: Path, title: str, normalize: st
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config-root", type=Path, default=PROJECT_ROOT / "benchmarks" / "configs" / "viz" / "imagenet_lt_128")
+    parser.add_argument("--config-root", type=Path, default=PROJECT_ROOT / "benchmarks" / "configs" / "viz" / VIZ_DATASET_NAME)
     parser.add_argument("--artifact-root", type=Path, default=PROJECT_ROOT / "benchmarks" / "artifacts")
-    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "benchmarks" / "figures" / "imagenet_lt_128_viz")
+    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "benchmarks" / "figures" / f"{VIZ_DATASET_NAME}_viz")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--n-samples", type=int, default=32)
     parser.add_argument("--sample-batch-size", type=int, default=8)
@@ -148,8 +150,8 @@ def main() -> None:
         run_dir = run_dirs[min(int(args.trial_index), len(run_dirs) - 1)]
         generator = build_generator_from_checkpoint(run_dir, device=device)
         samples = sample_in_batches(generator, n_samples=args.n_samples, batch_size=args.sample_batch_size)
-        output_path = args.output_dir / f"imagenet_lt_128__{model_name}.png"
-        save_grid(samples, output_path, title=f"ImageNet-LT 128 - {MODEL_LABELS.get(model_name, model_name)}", normalize=args.normalize)
+        output_path = args.output_dir / f"{VIZ_DATASET_NAME}__{model_name}.png"
+        save_grid(samples, output_path, title=f"{VIZ_LABEL} - {MODEL_LABELS.get(model_name, model_name)}", normalize=args.normalize)
         records.append(
             {
                 "model_name": model_name,

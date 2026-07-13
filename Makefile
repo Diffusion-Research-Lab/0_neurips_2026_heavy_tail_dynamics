@@ -27,7 +27,7 @@ PILOT_CONFIG_DIR          ?= benchmarks/configs/pilot
 BENCH_TEMPLATE_DIR        ?= benchmarks/configs/templates
 BENCH_CONFIG_DIR          ?= benchmarks/configs/bench
 VIZ_CONFIG_DIR            ?= benchmarks/configs/viz
-IMAGENET128_VIZ_CONFIG_DIR ?= $(VIZ_CONFIG_DIR)/imagenet_lt_128
+IMAGENET128_VIZ_CONFIG_DIR ?= $(VIZ_CONFIG_DIR)/imagenet_lt_96
 
 
 # Dataset cache controls. Override DATASETS to submit a subset.
@@ -77,7 +77,7 @@ JZ_GPU_DEV_ARGS           ?= --nodes=1 --ntasks=1 --cpus-per-task=16 --gres=gpu:
 PILOT_SBATCH_ARGS         ?= $(JZ_GPU_ARGS) --time=20:00:00
 BENCH_SBATCH_ARGS_SYNTH   ?= $(JZ_GPU_ARGS) --time=04:00:00
 BENCH_SBATCH_ARGS_IMAGE   ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=20:00:00
-IMAGENET128_VIZ_SBATCH_ARGS ?= $(BENCH_SBATCH_ARGS_IMAGE)
+IMAGENET128_VIZ_SBATCH_ARGS ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=30:00:00
 EVAL_PILOT_SBATCH_ARGS    ?= $(JZ_GPU_DEV_ARGS) --time=00:50:00
 EVAL_SBATCH_ARGS          ?= $(JZ_GPU_ARGS) --time=06:00:00
 DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=$(DATASET_CPUS) --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t3 --account=jcx@v100 --time=20:00:00
@@ -230,7 +230,7 @@ bench-imagenet128-viz: imagenet128-viz-configs
 	@$(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset imagenet_lt "$(IMAGENET128_VIZ_CONFIG_DIR)" || { \
 	  status="$$?"; \
 	  if [ "$$status" = "2" ]; then \
-	    echo "[bench-imagenet128-viz] missing ImageNet-LT-128 processed cache." >&2; \
+	    echo "[bench-imagenet128-viz] missing ImageNet-LT-96 processed cache." >&2; \
 	    echo "[bench-imagenet128-viz] Run first: make dataset DATASETS=imagenet_lt DATASET_CONFIG_INPUTS=\"$(IMAGENET128_VIZ_CONFIG_DIR)\"" >&2; \
 	  fi; \
 	  exit "$$status"; \
@@ -243,7 +243,7 @@ bench-imagenet128-viz: imagenet128-viz-configs
 	done
 
 visualize-imagenet128:
-	$(RUN_PYTHON) "$(IMAGENET128_VIZ_SCRIPT)" --config-root "$(IMAGENET128_VIZ_CONFIG_DIR)" --artifact-root "$(ARTIFACT_DIR)" --output-dir "$(FIGURE_DIR)/imagenet_lt_128_viz"
+	$(RUN_PYTHON) "$(IMAGENET128_VIZ_SCRIPT)" --config-root "$(IMAGENET128_VIZ_CONFIG_DIR)" --artifact-root "$(ARTIFACT_DIR)" --output-dir "$(FIGURE_DIR)/imagenet_lt_96_viz"
 
 bench-shariatan:
 	$(RUN_PYTHON) "$(SHARIATAN_BENCH)" $(SHARIATAN_ARGS)
@@ -306,9 +306,9 @@ help:
 	@printf "  %-22s %s\n" "pilot" "Submit pilot configs via Slurm"
 	@printf "  %-22s %s\n" "analyze-pilot" "Generate per-dataset winners, reports, and bench configs"
 	@printf "  %-22s %s\n" "bench" "Generate and submit explicit benchmark configs via Slurm"
-	@printf "  %-22s %s\n" "imagenet128-viz-configs" "Generate ImageNet-LT-128 viz configs from selected bench configs"
-	@printf "  %-22s %s\n" "bench-imagenet128-viz" "Submit ImageNet-LT-128 visualization training jobs"
-	@printf "  %-22s %s\n" "visualize-imagenet128" "Sample visualization grids from ImageNet-LT-128 runs"
+	@printf "  %-22s %s\n" "imagenet128-viz-configs" "Generate ImageNet-LT-96 viz configs from selected bench configs"
+	@printf "  %-22s %s\n" "bench-imagenet128-viz" "Submit ImageNet-LT-96 visualization training jobs"
+	@printf "  %-22s %s\n" "visualize-imagenet128" "Sample visualization grids from ImageNet-LT-96 runs"
 	@printf "  %-22s %s\n" "bench-shariatan" "Run standalone Shariatian et al. benchmark"
 	@printf "  %-22s %s\n" "evaluate-pilot" "Submit pilot evaluation only"
 	@printf "  %-22s %s\n" "evaluate-bench" "Submit benchmark evaluation only"

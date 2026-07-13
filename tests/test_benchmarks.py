@@ -648,7 +648,7 @@ def test_image_bench_uncaps_image_datasets_and_uses_target_resolutions():
     assert "category_frequency" not in config["datasets"]["lvis"]["params"]
 
 
-def test_imagenet128_viz_config_preserves_selected_model_and_uncaps_dataset():
+def test_imagenet128_viz_config_sets_target_resolution_epochs_and_uncaps_dataset():
     source = {
         "run": {"name": "bench_image__imagenet_lt__ddpm_v", "dtype": "float32", "n_trial": 1},
         "selection": {"dataset_slug": "imagenet_lt", "selected_lr": 0.0002},
@@ -674,15 +674,16 @@ def test_imagenet128_viz_config_preserves_selected_model_and_uncaps_dataset():
 
     config = imagenet128_viz_configs.build_viz_config(source, "ddpm_v")
 
-    assert config["run"]["name"] == "viz_image__imagenet_lt_128__ddpm_v"
-    assert config["sweep"]["datasets"] == ["imagenet_lt_128"]
+    assert config["run"]["name"] == "viz_image__imagenet_lt_96__ddpm_v"
+    assert config["sweep"]["datasets"] == ["imagenet_lt_96"]
     assert config["sweep"]["models"] == ["ddpm_v"]
-    dataset_params = config["datasets"]["imagenet_lt_128"]["params"]
-    assert dataset_params["image_size"] == 128
+    dataset_params = config["datasets"]["imagenet_lt_96"]["params"]
+    assert dataset_params["image_size"] == 96
     assert "max_samples" not in dataset_params
     assert "n_samples" not in dataset_params
     assert config["models"]["ddpm_v"]["params"]["sigma_max"] == 2.0
     assert config["trains"]["selected"]["lr"] == 0.0002
+    assert config["trains"]["selected"]["n_epochs"] == 64
     assert "sample_size" not in config["networks"]["transformer"]["params"]
     assert "in_channels" not in config["networks"]["transformer"]["params"]
     assert "out_channels" not in config["networks"]["transformer"]["params"]

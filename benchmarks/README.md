@@ -31,7 +31,7 @@ make evaluate-bench
 make analyze-bench
 ```
 
-### ImageNet-LT-128 Vizu
+### ImageNet-LT-96 Vizu
 
 ```bash
 make imagenet128-viz-configs
