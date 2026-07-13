@@ -8,7 +8,7 @@ REFERENCE_MODELS = {"test vs true sample"}
 DEVICE = torch.device("cpu")
 DTYPE = torch.float32
 SEED = 0
-N_TRIALS = 2
+N_TRIALS = 3
 
 N_STEPS = 64
 N_EPOCHS = 512
@@ -18,11 +18,11 @@ DEPTH = 3
 WIDTH = 128
 
 ALPHA = 1.7
-DIM = 2
-N_TRAIN = 5_000
+DIM = 20
+N_TRAIN = 10_000
 N_VAL = 1
 N_TEST = 100_000
-N_MMD = 2_000
+N_MMD = 5_000
 
 TCE_TAIL_PROBS = torch.logspace(math.log10(0.5), -4.0, 30, dtype=torch.float64)
 TCE_QUANTILES = 1.0 - TCE_TAIL_PROBS

@@ -5,7 +5,7 @@ from genkit._noise import sample_scaled_isotropic_alpha_stable
 from genkit.datasets import fetch_synthetic_data
 from genkit.metrics import mmd_rbf, tail_coverage_error
 from genkit.nn import MLPModel
-from sandbox._constants import (
+from _constants import (
     ALPHA,
     DEPTH,
     DEVICE,
@@ -99,7 +99,7 @@ def plot_tail_results(rows, title=None, show_std=True):
     mean_results = grouped[["mmd_rbf", *TCE_COLUMNS]].mean()
     std_results = grouped[TCE_COLUMNS].std().fillna(0.0)
 
-    fig, ax = plt.subplots(figsize=(5, 4))
+    fig, ax = plt.subplots(figsize=(4.8, 6.0))
     for i, (model_name, row) in enumerate(mean_results.iterrows()):
         x = TCE_QUANTILES.numpy()
         y = row[TCE_COLUMNS].to_numpy(dtype=float)
@@ -127,9 +127,7 @@ def plot_tail_results(rows, title=None, show_std=True):
     ax.set_xlim(float(TCE_QUANTILES[0]), float(TCE_QUANTILES[-1]))
     ax.set_xlabel("tail quantile (%)", fontsize=12)
     ax.set_ylabel("TCE, upper tail log error", fontsize=12)
-    if title is not None:
-        ax.set_title(title)
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=1, fontsize=8)
     fig.tight_layout()
     return fig, ax
