@@ -155,7 +155,7 @@ export NUMEXPR_NUM_THREADS="${CPUS}"
 SHARD_COUNT="${CLI_SHARD_COUNT:-${SHARD_COUNT:-${SLURM_ARRAY_TASK_COUNT:-1}}}"
 SHARD_INDEX="${CLI_SHARD_INDEX:-${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}}"
 DEVICE="${CLI_DEVICE:-${DEVICE:-cuda}}"
-N_EVAL_SAMPLES="${CLI_N_EVAL_SAMPLES:-${N_EVAL_SAMPLES:-512}}"
+N_EVAL_SAMPLES="${CLI_N_EVAL_SAMPLES:-${N_EVAL_SAMPLES:-}}"
 N_EVAL_REPEATS="${CLI_N_EVAL_REPEATS:-${N_EVAL_REPEATS:-2}}"
 SAMPLE_BATCH_SIZE="${CLI_SAMPLE_BATCH_SIZE:-${SAMPLE_BATCH_SIZE:-16}}"
 MAX_MMD_SAMPLES="${CLI_MAX_MMD_SAMPLES:-${MAX_MMD_SAMPLES:-2048}}"
@@ -169,7 +169,7 @@ echo "PROJECT_ROOT:     ${PROJECT_ROOT}"
 echo "BATCH_DIR:        ${BATCH_DIR}"
 echo "SHARD:            $((SHARD_INDEX + 1))/${SHARD_COUNT}"
 echo "DEVICE:           ${DEVICE}"
-echo "N_EVAL_SAMPLES:   ${N_EVAL_SAMPLES}"
+echo "N_EVAL_SAMPLES:   ${N_EVAL_SAMPLES:-auto}"
 echo "N_EVAL_REPEATS:   ${N_EVAL_REPEATS}"
 echo "SAMPLE_BATCH:     ${SAMPLE_BATCH_SIZE}"
 echo "SELECTION_ONLY:   ${CLI_SELECTION_ONLY}"
@@ -187,7 +187,6 @@ CMD=(
   --device "${DEVICE}"
   --shard-count "${SHARD_COUNT}"
   --shard-index "${SHARD_INDEX}"
-  --n-eval-samples "${N_EVAL_SAMPLES}"
   --n-eval-repeats "${N_EVAL_REPEATS}"
   --sample-batch-size "${SAMPLE_BATCH_SIZE}"
   --max-mmd-samples "${MAX_MMD_SAMPLES}"
@@ -195,6 +194,10 @@ CMD=(
   --selection-repeats "${SELECTION_REPEATS}"
   --selection-batch-size "${SELECTION_BATCH_SIZE}"
 )
+
+if [[ -n "${N_EVAL_SAMPLES}" ]]; then
+  CMD+=(--n-eval-samples "${N_EVAL_SAMPLES}")
+fi
 
 if [[ "${CLI_SELECTION_ONLY}" -eq 1 ]]; then
   CMD+=(--selection-only)

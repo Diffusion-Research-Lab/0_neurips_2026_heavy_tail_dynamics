@@ -198,6 +198,13 @@ def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
         assert torch.isfinite(torch.tensor(values[metric_name]))
 
 
+def test_tail_coverage_grid_keeps_anchor_metrics():
+    assert len(evaluate.TAIL_COVERAGE_METRICS) == 20
+    for metric_name in ["TCE(90)", "TCE(99)", "TCE(99,9)", "TCE(99,99)"]:
+        assert metric_name in evaluate.TAIL_COVERAGE_METRICS
+    assert len(plotting_bench.TCE_METRICS) == 20
+
+
 def test_compute_test_metrics_computes_mmd_for_high_dimensional_data():
     x_ref = torch.arange(12 * 32, dtype=torch.float32).reshape(12, 32)
     x_gen = x_ref + 0.1
@@ -386,8 +393,10 @@ def test_analyze_pilot_ignores_benchmark_evaluation_batches(tmp_path):
 def test_plotting_ignores_pilot_evaluation_batches(tmp_path):
     artifact_root = tmp_path / "artifacts"
     pilot_run = artifact_root / "100_pilot_synth_evaluate" / "001_alpha_stable_target"
-    bench_run = artifact_root / "999_ddpm_v_evaluate" / "001_alpha_stable_target"
+    bench_failed_run = artifact_root / "999_ddpm_v_evaluate" / "001_failed_run"
+    bench_run = artifact_root / "999_ddpm_v_evaluate" / "002_alpha_stable_target"
     pilot_run.mkdir(parents=True)
+    bench_failed_run.mkdir(parents=True)
     bench_run.mkdir(parents=True)
     rows = [
         {

@@ -30,13 +30,16 @@ build_model = _main.build_model
 build_network = _main.build_network
 
 
-EVAL_METRIC_NAMES = [
-    "MMD_RBF",
-    "TCE(90)",
-    "TCE(99)",
-    "TCE(99,9)",
-    "TCE(99,99)",
-]
+SYNTHETIC_EVAL_SAMPLES = 1_000_000
+TCE_QUANTILE_MIN = 90.0
+TCE_QUANTILE_MAX = 99.99
+TCE_N_QUANTILES = 20
+TCE_ANCHOR_NAMES = {
+    90.0: "TCE(90)",
+    99.0: "TCE(99)",
+    99.9: "TCE(99,9)",
+    99.99: "TCE(99,99)",
+}
 IMAGE_CLASS_RECOVERY_DATASETS = {"cifar100_lt", "imagenet_lt"}
 IMAGE_CLASS_RECOVERY_METRIC_NAMES = [
     "CLASS_RECOVERY_INDEX",
@@ -53,12 +56,35 @@ IMAGE_CLASSIFIER_LR = 1.0e-3
 
 PILOT_SELECTION_METRIC_NAME = "validation_loss"
 
-TAIL_COVERAGE_METRICS = {
-    "TCE(90)": 0.10,
-    "TCE(99)": 0.01,
-    "TCE(99,9)": 0.001,
-    "TCE(99,99)": 0.0001,
-}
+
+def format_tce_metric_name(quantile: float) -> str:
+    for anchor, name in TCE_ANCHOR_NAMES.items():
+        if np.isclose(float(quantile), anchor):
+            return name
+    label = f"{float(quantile):.4f}".rstrip("0").rstrip(".")
+    return f"TCE({label})"
+
+
+def tce_metric_specs() -> list[tuple[str, float, float]]:
+    probs = np.geomspace(
+        1.0 - TCE_QUANTILE_MIN / 100.0,
+        1.0 - TCE_QUANTILE_MAX / 100.0,
+        TCE_N_QUANTILES,
+    )
+    for anchor_quantile in TCE_ANCHOR_NAMES:
+        anchor_prob = 1.0 - anchor_quantile / 100.0
+        index = int(np.argmin(np.abs(np.log(probs) - np.log(anchor_prob))))
+        probs[index] = anchor_prob
+    specs = []
+    for prob in probs:
+        quantile = 100.0 * (1.0 - float(prob))
+        specs.append((format_tce_metric_name(quantile), float(prob), quantile))
+    return specs
+
+
+TCE_METRIC_SPECS = tce_metric_specs()
+TAIL_COVERAGE_METRICS = {name: exceedance_prob for name, exceedance_prob, _ in TCE_METRIC_SPECS}
+EVAL_METRIC_NAMES = ["MMD_RBF", *TAIL_COVERAGE_METRICS]
 TEST_VS_TEST_SOURCE = "test_vs_test_metrics"
 
 MODEL_LABELS = {
@@ -104,6 +130,46 @@ def checkpoint_dtype(config: dict[str, Any], checkpoint: dict[str, Any]) -> torc
     if dtype_spec is None:
         dtype_spec = checkpoint.get("model_init", {}).get("dtype", torch.float64)
     return getattr(torch, str(dtype_spec).split(".")[-1], torch.float64)
+
+
+def dataset_kind(dataset_cfg: dict[str, Any]) -> str:
+    return str(dataset_cfg.get("kind", "synthetic")).lower()
+
+
+def resolve_eval_sample_count(dataset_cfg: dict[str, Any], test_split_n: int, requested_n: int | None) -> int:
+    if requested_n is not None:
+        return min(int(requested_n), int(test_split_n)) if dataset_kind(dataset_cfg) == "real" else int(requested_n)
+    if dataset_kind(dataset_cfg) == "synthetic":
+        return int(SYNTHETIC_EVAL_SAMPLES)
+    return int(test_split_n)
+
+
+def sample_synthetic_reference(
+    dataset_cfg: dict[str, Any],
+    x_train: torch.Tensor,
+    *,
+    n_samples: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    from genkit.datasets import SYNTHETIC_DATASETS
+
+    name = str(dataset_cfg.get("name", "")).strip()
+    entry = SYNTHETIC_DATASETS[name]
+    params = copy.deepcopy(dataset_cfg.get("params", {}))
+    params.pop("n_samples", None)
+    sampling_kwargs = {"n_samples": int(n_samples), "device": "cpu", "dtype": dtype}
+    for param_name, builder in entry.sampler_kwargs_builders.items():
+        sampling_kwargs[param_name] = builder(params)
+    if params:
+        unexpected = ", ".join(sorted(params))
+        raise TypeError(f"Unexpected synthetic dataset params for evaluation: {unexpected}.")
+
+    x_ref = entry.sampler(**sampling_kwargs).detach().cpu()
+    if bool((dataset_cfg.get("split") or {}).get("standardize", False)):
+        mean = x_train.detach().cpu().to(dtype=torch.float64).mean(dim=0, keepdim=True)
+        std = x_train.detach().cpu().to(dtype=torch.float64).std(dim=0, keepdim=True, unbiased=False).clamp_min(1.0e-12)
+        x_ref = ((x_ref.to(dtype=torch.float64) - mean) / std).to(dtype=dtype)
+    return x_ref.contiguous()
 
 
 def sample_generator_in_batches(generator: Any, n_samples: int, batch_size: int) -> torch.Tensor:
@@ -286,7 +352,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate saved benchmark runs.")
     parser.add_argument("--batch-dir", type=Path, required=True, help="Training batch directory produced by 01_main.py.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--n-eval-samples", type=int, default=5000)
+    parser.add_argument("--n-eval-samples", type=int, default=None, help="Optional cap. Defaults to 1,000,000 for synthetic and full test split for real data.")
     parser.add_argument("--n-eval-repeats", type=int, default=10)
     parser.add_argument("--sample-batch-size", type=int, default=5000)
     parser.add_argument("--max-mmd-samples", type=int, default=2000)
@@ -303,7 +369,7 @@ if __name__ == "__main__":
         raise ValueError("--shard-count must be >= 1")
     if not 0 <= args.shard_index < args.shard_count:
         raise ValueError("--shard-index must satisfy 0 <= shard_index < shard_count")
-    if args.n_eval_samples < 1:
+    if args.n_eval_samples is not None and args.n_eval_samples < 1:
         raise ValueError("--n-eval-samples must be >= 1")
     if args.n_eval_repeats < 1:
         raise ValueError("--n-eval-repeats must be >= 1")
@@ -652,6 +718,18 @@ if __name__ == "__main__":
             metric_ref = split_tensors["test"]
             image_like = metric_ref.ndim > 2
             feature_dim = int(metric_ref[:1].reshape(1, -1).shape[1])
+            eval_sample_count = resolve_eval_sample_count(config["dataset"], len(metric_ref), args.n_eval_samples)
+            if dataset_kind(config["dataset"]) == "synthetic":
+                x_ref_cpu = sample_synthetic_reference(
+                    config["dataset"],
+                    x_train,
+                    n_samples=eval_sample_count,
+                    dtype=dtype,
+                )
+                eval_reference_source = "synthetic_resample"
+            else:
+                x_ref_cpu = metric_ref[:eval_sample_count].detach().cpu()
+                eval_reference_source = "test_split"
             final_epoch = int(config["train"]["n_epochs"])
             checkpoint_epochs = []
             ckpt_dir = run_dir / "checkpoints"
@@ -724,9 +802,6 @@ if __name__ == "__main__":
                             }
                         )
 
-                x_test = split_tensors["test"]
-                x_ref = x_test[: min(int(args.n_eval_samples), len(x_test))]
-                x_ref_cpu = x_ref.detach().cpu()
                 baseline_values, baseline_warnings = compute_test_vs_test_metrics(
                     x_ref_cpu,
                     max_mmd_samples=args.max_mmd_samples,
@@ -747,7 +822,7 @@ if __name__ == "__main__":
                         }
                     )
                 for eval_repeat_idx in range(int(args.n_eval_repeats)):
-                    x_gen_cpu = sample_generator_in_batches(generator, len(x_ref), args.sample_batch_size)
+                    x_gen_cpu = sample_generator_in_batches(generator, len(x_ref_cpu), args.sample_batch_size)
                     metric_values, metric_warnings = compute_test_metrics(
                         x_ref_cpu,
                         x_gen_cpu,
@@ -793,7 +868,10 @@ if __name__ == "__main__":
                 "n_checkpoints": len(checkpoint_epochs),
                 "checkpoint_epochs": checkpoint_epochs,
                 "n_eval_repeats": int(args.n_eval_repeats),
-                "n_eval_samples": int(args.n_eval_samples),
+                "requested_n_eval_samples": None if args.n_eval_samples is None else int(args.n_eval_samples),
+                "n_eval_samples": int(len(x_ref_cpu)),
+                "test_split_samples": int(len(metric_ref)),
+                "eval_reference_source": eval_reference_source,
                 "sample_batch_size": int(args.sample_batch_size),
                 "feature_dim": feature_dim,
                 "image_like": bool(image_like),
