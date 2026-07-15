@@ -54,8 +54,10 @@ def load_alpha_stable(device, dtype, dim=DIM, alpha=ALPHA, n_train=N_TRAIN, n_te
     return alpha, x_train, x_test
 
 
-def make_net(dim, device, width=WIDTH, depth=DEPTH, dtype=DTYPE):
-    return MLPModel(dim=dim, width=width, depth=depth).to(device=device, dtype=dtype)
+def make_net(dim, device, width=WIDTH, depth=DEPTH, dtype=DTYPE, input_dim=None, output_dim=None):
+    input_dim = dim if input_dim is None else input_dim
+    output_dim = dim if output_dim is None else output_dim
+    return MLPModel(input_dim=input_dim, output_dim=output_dim, width=width, depth=depth).to(device=device, dtype=dtype)
 
 
 def make_train_kwargs(device=DEVICE):

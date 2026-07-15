@@ -1,4 +1,4 @@
-"""Feynman--Kac guidance for stochastic DDPM sampling."""
+"""Feynman-Kac guidance for stochastic DDPM sampling."""
 
 import math
 from pathlib import Path
@@ -119,12 +119,7 @@ class Guidance:
         n_samples, x = self.model._resolve_sample_source(n_samples, sample_source)
 
         for step in range(self.model._n_steps, 0, -1):
-            t = torch.full(
-                (n_samples, 1),
-                step / self.model._n_steps,
-                device=x.device,
-                dtype=x.dtype,
-            )
+            t = torch.full((n_samples, 1), step / self.model._n_steps, device=x.device, dtype=x.dtype)
 
             with torch.no_grad():
                 eps = self.model._get_eps_hat(x, t, step - 1)
@@ -168,12 +163,7 @@ def _continue(model, x, start_step):
             continue
 
         x_active = x[active]
-        t = torch.full(
-            (len(x_active), 1),
-            step / model._n_steps,
-            device=x.device,
-            dtype=x.dtype,
-        )
+        t = torch.full((len(x_active), 1), step / model._n_steps, device=x.device, dtype=x.dtype)
 
         eps = model._get_eps_hat(x_active, t, step - 1)
         mean, variance = _posterior(model, x_active, eps, step)
