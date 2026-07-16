@@ -4,7 +4,7 @@ import torch
 from genkit.diffusion import DDPMV, DLPMEps
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
-from _constants import ALPHA, DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_STEPS, N_TRIALS, SAMPLE_CHUNK_SIZE
+from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_STEPS, N_TRIALS, SAMPLE_CHUNK_SIZE
 from _guidance import Guidance, make_guidance_dataset
 from _utils import (
     add_test_vs_true_sample,
@@ -26,8 +26,7 @@ GUIDANCE_N_SAMPLES = 10_000
 GUIDANCE_N_ROLLOUTS = 16
 GUIDANCE_EPOCHS = 128
 GUIDANCE_LR = 5e-4
-GUIDANCE_TEMPERATURE = 5.0
-GUIDANCE_STRENGTHS = (10.0,)
+GUIDANCE_LAMBDA = 1.0
 GUIDANCE_BASE_N_SAMPLES = 100_000
 MAX_ABS_REWARD = 5.0
 
@@ -37,12 +36,11 @@ MAX_ABS_REWARD = 5.0
 
 
 class GuidedSampler:
-    def __init__(self, guidance: Guidance, strength: float):
+    def __init__(self, guidance: Guidance):
         self.guidance = guidance
-        self.strength = float(strength)
 
     def sample(self, n_samples: int):
-        return self.guidance.sample(n_samples, strength=self.strength)
+        return self.guidance.sample(n_samples)
 
 
 def sample_model(model, n_samples, chunk_size=SAMPLE_CHUNK_SIZE):
@@ -71,6 +69,22 @@ def make_tail_ratio_reward(target_radius, base_samples, device):
     return reward
 
 
+def fit_guidance(model, target_radius, model_name):
+    logging.info("fit guidance for %s", model_name)
+    base_samples = sample_model(model, min(GUIDANCE_BASE_N_SAMPLES, n_tail))
+    guidance = Guidance(model, make_net(dim=dim, output_dim=1, device=device, dtype=dtype))
+    guidance_dataset = make_guidance_dataset(
+        model,
+        make_tail_ratio_reward(target_radius, base_samples, device),
+        guidance_lambda=GUIDANCE_LAMBDA,
+        n_samples=GUIDANCE_N_SAMPLES,
+        n_rollouts=GUIDANCE_N_ROLLOUTS,
+        batch_size=GUIDANCE_BATCH_SIZE,
+    )
+    guidance.fit(guidance_dataset, epochs=GUIDANCE_EPOCHS, batch_size=GUIDANCE_BATCH_SIZE, lr=GUIDANCE_LR)
+    return guidance
+
+
 ########################################################################################################################
 # Main
 
@@ -87,7 +101,7 @@ train_kwargs = make_train_kwargs(device)
 dlpm_kwargs = dict(alpha=alpha, dim=dim, n_steps=N_STEPS, n_trial_A=1, n_trial_G=1, reduce_type="mean", device=device)
 flow_kwargs = dict(dim=dim, n_steps=FLOW_N_STEPS, t_min=0.0, t_max=1.0, sigma_max=1.0, sampler="euler", sample_steps=FLOW_SAMPLE_STEPS, device=device)
 ddpm_kwargs = dict(dim=dim, n_steps=N_STEPS, sigma_max=DDPM_SIGMA_MAX, sampler="ddpm", device=device, fdtype=dtype)
-logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s guidance_samples=%s guidance_rollouts=%s guidance_strengths=%s", device, dtype, dim, n_trials, n_tail, n_mmd, GUIDANCE_N_SAMPLES, GUIDANCE_N_ROLLOUTS, GUIDANCE_STRENGTHS)
+logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s guidance_lambda=%s guidance_samples=%s guidance_rollouts=%s", device, dtype, dim, n_trials, n_tail, n_mmd, GUIDANCE_LAMBDA, GUIDANCE_N_SAMPLES, GUIDANCE_N_ROLLOUTS)
 
 rows = []
 for trial in range(1, n_trials + 1):
@@ -110,23 +124,11 @@ for trial in range(1, n_trials + 1):
     gfl, _ = train(gfl, x_train, **train_kwargs)
     rows.append(evaluate_model("GFL", gfl, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
-    logging.info("fit guidance")
-    ddpm_reward_samples = sample_model(ddpm, min(GUIDANCE_BASE_N_SAMPLES, n_tail))
-    guidance = Guidance(ddpm, make_net(dim=dim, output_dim=1, device=device, dtype=dtype))
-    guidance_dataset = make_guidance_dataset(
-        ddpm,
-        make_tail_ratio_reward(target_radius, ddpm_reward_samples, device),
-        temperature=GUIDANCE_TEMPERATURE,
-        n_samples=GUIDANCE_N_SAMPLES,
-        n_rollouts=GUIDANCE_N_ROLLOUTS,
-        batch_size=GUIDANCE_BATCH_SIZE,
-    )
-    guidance.fit(guidance_dataset, epochs=GUIDANCE_EPOCHS, batch_size=GUIDANCE_BATCH_SIZE, lr=GUIDANCE_LR)
-
-    for strength in GUIDANCE_STRENGTHS:
-        name = f"DDPM + guidance (strength={strength:g})"
+    for model_name, model in [("DDPM", ddpm), ("DLPM", dlpm), ("GFL", gfl)]:
+        guidance = fit_guidance(model, target_radius, model_name)
+        name = f"{model_name} + guidance (lambda={GUIDANCE_LAMBDA:g})"
         logging.info("evaluate %s", name)
-        rows.append(evaluate_model(name, GuidedSampler(guidance, strength), trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
+        rows.append(evaluate_model(name, GuidedSampler(guidance), trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
 logging.info("add test-vs-true reference")
 add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
@@ -135,5 +137,5 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 ########################################################################################################################
 # Plotting
 
-save_tail_figure(rows, "Feynman-Kac DDPM guidance", "8_feynman_kac_guidance.pdf")
+save_tail_figure(rows, "Feynman-Kac guidance", "8_feynman_kac_guidance.pdf")
 logging.info("saved figure 8_feynman_kac_guidance.pdf")
