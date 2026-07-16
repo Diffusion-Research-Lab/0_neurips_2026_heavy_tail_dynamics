@@ -501,7 +501,16 @@ def render_tce_quantiles(final_scalars: pd.DataFrame, dataset_slug: str, figure_
                 points.append((TCE_QUANTILES[metric_name] / 100.0, mean))
         if points:
             xs, means = zip(*points)
-            plot_model_curve(ax, xs, means, model_label, linewidth=1.8, markersize=3.0, alpha=0.64)
+            plot_model_curve(
+                ax,
+                xs,
+                means,
+                model_label,
+                linewidth=1.8,
+                markersize=3.0,
+                markevery=marker_positions(len(points)),
+                alpha=0.64,
+            )
 
     if not add_top_legend(ax):
         plt.close(fig)
