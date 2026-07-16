@@ -21,6 +21,7 @@ logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format=
 ########################################################################################################################
 # Additional classes
 
+
 class DLPMEpsPowerLoss(DLPMEps):
     def __init__(self, *args, loss_power=0.5, **kwargs):
         super().__init__(*args, **kwargs)
@@ -42,7 +43,7 @@ alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 n_tail = x_test.shape[0]
 n_mmd = N_MMD
 n_trials = N_TRIALS
-loss_powers = [0.5, 0.7, 0.9]
+loss_powers = [0.3, 0.5, 0.7, 0.9]
 train_kwargs = make_train_kwargs(device)
 logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s loss_powers=%s", device, dtype, dim, n_trials, n_tail, n_mmd, loss_powers)
 

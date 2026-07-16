@@ -7,7 +7,7 @@ REFERENCE_MODELS = {"test vs test", "test vs true sample"}
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.float32
 SEED = 0
-N_TRIALS = 5
+N_TRIALS = 10
 
 N_STEPS = 64
 FLOW_N_STEPS = 128
@@ -26,7 +26,7 @@ N_TEST = 1_500_000
 N_MMD = 10_000
 SAMPLE_CHUNK_SIZE = 10_000
 
-TCE_TAIL_PROBS = torch.logspace(-1.0, -5.0, 20, dtype=torch.float64)
+TCE_TAIL_PROBS = torch.logspace(-1.0, -4.0, 30, dtype=torch.float64)
 
 
 def _tce_label(prob):

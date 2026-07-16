@@ -14,11 +14,24 @@ run:
 	sbatch --job-name=flowbench_prototypes --output="$(LOG_DIR)/%x_%j.out" --error="$(LOG_DIR)/%x_%j.err" $(SBATCH_ARGS) --wrap='cd "$(CURDIR)" && make run-local SCRIPTS="$(SCRIPTS)"'
 
 run-local:
-	@set -euo pipefail; \
+	@set -uo pipefail; \
 	module purge || true; \
 	conda deactivate 2>/dev/null || true; \
-	module load "$(JZ_MODULE)"; \
+	module load "$(JZ_MODULE)" || exit "$$?"; \
+	status=0; \
+	failed_scripts=""; \
 	for script in $(SCRIPTS); do \
 	  echo "[prototypes] $$script"; \
-	  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(ROOT):$(ROOT)/src$${PYTHONPATH:+:$$PYTHONPATH}" "$(PYTHON)" "$$script"; \
-	done
+	  if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(ROOT):$(ROOT)/src$${PYTHONPATH:+:$$PYTHONPATH}" "$(PYTHON)" "$$script"; then \
+	    echo "[prototypes] $$script: ok"; \
+	  else \
+	    rc="$$?"; \
+	    status=1; \
+	    failed_scripts="$$failed_scripts $$script"; \
+	    echo "[prototypes] $$script: failed with exit $$rc" >&2; \
+	  fi; \
+	done; \
+	if [ "$$status" -ne 0 ]; then \
+	  echo "[prototypes] failed scripts:$$failed_scripts" >&2; \
+	fi; \
+	exit "$$status"

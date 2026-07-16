@@ -98,6 +98,12 @@ def add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=1.7):
         rows.append(_evaluate_samples("test vs true sample", trial, x_ref, x_true, n_tail, n_mmd))
 
 
+def marker_positions(n_points, n_markers=5):
+    if n_points <= n_markers:
+        return list(range(n_points))
+    return sorted(set(torch.linspace(0, n_points - 1, n_markers).round().to(torch.int64).tolist()))
+
+
 def save_tail_figure(rows, title, filename):
     results = pd.DataFrame(rows)
     tce_cols = TCE_COLUMNS
@@ -115,15 +121,16 @@ def save_tail_figure(rows, title, filename):
         yerr = std_results.loc[model_name, tce_cols].to_numpy(dtype=float)
         color = "black" if model_name in REFERENCE_MODELS else None
 
-        line, = ax.plot(x, y, marker=MARKERS[index % len(MARKERS)], markevery=4, linewidth=1.8,
+        line, = ax.plot(x, y, marker=MARKERS[index % len(MARKERS)], markevery=marker_positions(len(x)), linewidth=1.8,
                         label=f"{model_name} (MMD-RBF={row['mmd_rbf']:.1e})", alpha=line_alpha, color=color)
         ax.fill_between(x, (y - yerr).clip(min=1e-12), y + yerr, color=line.get_color(), alpha=0.2)
 
     ax.set_xscale("logit")
     ax.set_yscale("log")
     ax.set_ylim(bottom=1e-2)
-    ax.set_xticks([0.90, 0.99, 0.999, 0.9999, 0.99999])
-    ax.set_xticklabels(["90", "99", "99.9", "99.99", "99.999"])
+    ax.set_xticks([0.90, 0.99, 0.999, 0.9999])
+    ax.set_xticklabels(["90", "99", "99.9", "99.99"])
+    ax.set_xlim(float(x[0]), float(x[-1]))
     ax.set_xlabel("tail quantile (%)", fontsize=12)
     ax.set_ylabel("TCE, upper tail log error", fontsize=12)
     ax.set_title(title)

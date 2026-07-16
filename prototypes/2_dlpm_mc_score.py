@@ -21,16 +21,50 @@ logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format=
 
 MC_DIM = 2
 MC_N_TRAIN = 5_000
+MCDLPM_N_MC = 500_000
+MCDLPM_MC_CHUNK_SIZE = 5_000
+MCDDPM_N_MC = 1_000
 
 ########################################################################################################################
 # Additional classes
+
+
 class MCDLPMEps(DLPMEps):
     """DLPM-Eps sampler using a path-conditioned Monte Carlo eps estimate."""
 
-    def __init__(self, *args, n_mc=1_000, **kwargs):
+    def __init__(self, *args, n_mc=1_000, mc_chunk_size=1_000, **kwargs):
         kwargs["net"] = torch.nn.Identity()
         super().__init__(*args, **kwargs)
         self.n_mc = int(n_mc)
+        self.mc_chunk_size = int(mc_chunk_size)
+        if self.n_mc <= 0:
+            raise ValueError(f"n_mc must be positive, got {self.n_mc}.")
+        if self.mc_chunk_size <= 0:
+            raise ValueError(f"mc_chunk_size must be positive, got {self.mc_chunk_size}.")
+
+    def _mc_eps_coeff(self, observed_radius_sq, path_noise_var, gamma_1_t, sigma_1_t):
+        running_max = torch.full_like(path_noise_var, -torch.inf)
+        running_den = torch.zeros_like(path_noise_var)
+        running_num = torch.zeros_like(path_noise_var)
+
+        for start in range(0, self.n_mc, self.mc_chunk_size):
+            size = min(self.mc_chunk_size, self.n_mc - start)
+            data_var = sample_scaled_scalar_alpha_stable(size, alpha=self._a, device=self._device, dtype=torch.float64)
+            data_var = data_var.reshape(1, -1)
+            total_var = gamma_1_t.square() * data_var + path_noise_var
+            log_weight = -0.5 * (self._dim * total_var.log() + observed_radius_sq / total_var)
+            coeff = path_noise_var / (sigma_1_t * total_var)
+
+            block_max = log_weight.max(dim=1, keepdim=True).values
+            new_max = torch.maximum(running_max, block_max)
+            old_scale = torch.exp(running_max - new_max)
+            block_scale = torch.exp(log_weight - new_max)
+
+            running_den = running_den * old_scale + block_scale.sum(dim=1, keepdim=True)
+            running_num = running_num * old_scale + (block_scale * coeff).sum(dim=1, keepdim=True)
+            running_max = new_max
+
+        return running_num / running_den.clamp_min(torch.finfo(running_den.dtype).tiny)
 
     @torch.no_grad()
     def _sample(
@@ -60,19 +94,12 @@ class MCDLPMEps(DLPMEps):
             x_flat = x.reshape(n_samples, -1).to(torch.float64)
             observed_radius_sq = x_flat.square().sum(dim=1, keepdim=True)
 
-            data_var = sample_scaled_scalar_alpha_stable(self.n_mc, alpha=self._a, device=self._device, dtype=torch.float64)
-            data_var = data_var.reshape(1, -1)
             path_noise_var = Sigma_1_t[t].reshape(-1, 1)
             gamma_1_t = self._gamma_1_t[t].to(torch.float64)
             sigma_1_t = self._sigma_1_t[t].to(torch.float64)
 
-            total_var = gamma_1_t.square() * data_var + path_noise_var
-            log_p_xt_given_data_var = -0.5 * (self._dim * total_var.log() + observed_radius_sq / total_var)
-            data_var_weight = torch.softmax(log_p_xt_given_data_var, dim=1)
-
             # E[eps_t | x_t, A_data, A_path] = path_noise_var / (sigma_{1,t} total_var) x_t.
-            eps_coeff_given_data_var = path_noise_var / (sigma_1_t * total_var)
-            eps_coeff = (data_var_weight * eps_coeff_given_data_var).sum(dim=1, keepdim=True)
+            eps_coeff = self._mc_eps_coeff(observed_radius_sq, path_noise_var, gamma_1_t, sigma_1_t)
             eps_hat = (eps_coeff * x_flat).reshape_as(x).to(dtype=x.dtype)
 
             gamma_t_data = self._expand_batch_scalar(Gamma_t.to(dtype=x.dtype), x)
@@ -156,10 +183,10 @@ n_tail = x_test.shape[0]
 n_mmd = N_MMD
 n_trials = N_TRIALS
 n_steps = N_STEPS
-n_mc = 1_000_000
 ddpm_sigma_max = 5.0
 train_kwargs = make_train_kwargs(device)
-logging.info("device=%s dtype=%s dim=%s n_train=%s n_trials=%s n_tail=%s n_mmd=%s n_steps=%s n_mc=%s", device, dtype, dim, len(x_train), n_trials, n_tail, n_mmd, n_steps, n_mc)
+logging.info("device=%s dtype=%s dim=%s n_train=%s n_trials=%s n_tail=%s n_mmd=%s n_steps=%s mcdlpm_n_mc=%s mcdlpm_mc_chunk_size=%s mcddpm_n_mc=%s",
+             device, dtype, dim, len(x_train), n_trials, n_tail, n_mmd, n_steps, MCDLPM_N_MC, MCDLPM_MC_CHUNK_SIZE, MCDDPM_N_MC)
 
 rows = []
 for trial in range(1, n_trials + 1):
@@ -173,7 +200,8 @@ for trial in range(1, n_trials + 1):
     rows.append(evaluate_model("DLPM", dlpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
     logging.info("evaluate DLPM (+MC)")
-    mc_dlpm = MCDLPMEps(alpha=alpha, dim=dim, n_steps=n_steps, n_trial_A=1, n_trial_G=1, reduce_type="mean", n_mc=n_mc, device=device)
+    mc_dlpm = MCDLPMEps(alpha=alpha, dim=dim, n_steps=n_steps, n_trial_A=1, n_trial_G=1, reduce_type="mean",
+                        n_mc=MCDLPM_N_MC, mc_chunk_size=MCDLPM_MC_CHUNK_SIZE, device=device)
     rows.append(evaluate_model("DLPM (+MC)", mc_dlpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
     logging.info("train/evaluate DDPM")
@@ -182,7 +210,7 @@ for trial in range(1, n_trials + 1):
     rows.append(evaluate_model("DDPM", ddpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
     logging.info("evaluate DDPM (+MC)")
-    mc_ddpm = MCDDPMV(alpha=alpha, dim=dim, n_steps=n_steps, sigma_max=ddpm_sigma_max, sampler="ddpm", n_mc=n_mc, device=device, fdtype=dtype)
+    mc_ddpm = MCDDPMV(alpha=alpha, dim=dim, n_steps=n_steps, sigma_max=ddpm_sigma_max, sampler="ddpm", n_mc=MCDDPM_N_MC, device=device, fdtype=dtype)
     rows.append(evaluate_model("DDPM (+MC)", mc_ddpm, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
 
 logging.info("add test-vs-true reference")
