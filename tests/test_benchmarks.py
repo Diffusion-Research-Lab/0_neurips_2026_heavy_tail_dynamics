@@ -173,6 +173,22 @@ def test_sample_generator_in_batches_respects_batch_size():
     assert samples.shape == (7, 2)
 
 
+def test_save_image_sample_grid_writes_png(tmp_path):
+    images = torch.arange(6 * 4 * 4, dtype=torch.float32).reshape(6, 1, 4, 4)
+    output_path = tmp_path / "samples.png"
+
+    evaluate.save_image_sample_grid(
+        images,
+        output_path,
+        title="test samples",
+        normalize="per-image",
+        n_cols=3,
+    )
+
+    assert output_path.is_file()
+    assert output_path.stat().st_size > 0
+
+
 def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
     def raise_mmd(*args, **kwargs):
         raise RuntimeError("mmd boom")

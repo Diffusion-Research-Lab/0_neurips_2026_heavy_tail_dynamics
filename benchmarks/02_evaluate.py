@@ -4,6 +4,7 @@ import argparse
 import copy
 import importlib
 import logging
+import math
 import os
 from pathlib import Path
 import sys
@@ -53,6 +54,9 @@ IMAGE_CLASSIFIER_VERSION = 1
 IMAGE_CLASSIFIER_EPOCHS = 8
 IMAGE_CLASSIFIER_BATCH_SIZE = 256
 IMAGE_CLASSIFIER_LR = 1.0e-3
+IMAGE_SAMPLE_COUNT = 32
+IMAGE_SAMPLE_COLS = 8
+IMAGE_SAMPLE_NORMALIZE = "clamp"
 
 PILOT_SELECTION_METRIC_NAME = "validation_loss"
 
@@ -183,6 +187,59 @@ def sample_generator_in_batches(generator: Any, n_samples: int, batch_size: int)
             chunks.append(generator.sample(n_samples=n_batch).detach().cpu())
         remaining -= n_batch
     return torch.cat(chunks, dim=0)
+
+
+def prepare_image_samples(x: torch.Tensor, mode: str) -> torch.Tensor:
+    x = x.detach().float().cpu()
+    if x.ndim == 3:
+        x = x.unsqueeze(1)
+    if x.ndim != 4:
+        raise ValueError(f"Expected image tensor [B, C, H, W], got {tuple(x.shape)}.")
+    if x.shape[1] == 1:
+        x = x.repeat(1, 3, 1, 1)
+    elif x.shape[1] > 3:
+        x = x[:, :3]
+    if mode == "clamp":
+        return x.clamp(0.0, 1.0)
+    if mode == "per-image":
+        flat = x.flatten(start_dim=1)
+        lo = flat.min(dim=1).values.view(-1, 1, 1, 1)
+        hi = flat.max(dim=1).values.view(-1, 1, 1, 1)
+        return ((x - lo) / (hi - lo).clamp_min(1.0e-8)).clamp(0.0, 1.0)
+    raise ValueError(f"Unknown image normalization mode {mode!r}.")
+
+
+def save_image_sample_grid(
+    images: torch.Tensor,
+    output_path: Path,
+    *,
+    title: str,
+    normalize: str,
+    n_cols: int,
+) -> None:
+    images = prepare_image_samples(images, mode=normalize)
+    n_images = int(images.shape[0])
+    if n_images < 1:
+        raise ValueError("Cannot save an empty image sample grid.")
+
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
+    import matplotlib  # noqa
+    if "matplotlib.pyplot" not in sys.modules:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa
+
+    n_cols = max(1, min(int(n_cols), n_images))
+    n_rows = int(math.ceil(n_images / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.0 * n_cols, 2.0 * n_rows), squeeze=False)
+    for index, ax in enumerate(axes.ravel()):
+        ax.axis("off")
+        if index < n_images:
+            ax.imshow(images[index].permute(1, 2, 0).numpy())
+    fig.suptitle(title)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
 
 
 def compute_test_metrics(
@@ -356,6 +413,9 @@ if __name__ == "__main__":
     parser.add_argument("--n-eval-repeats", type=int, default=10)
     parser.add_argument("--sample-batch-size", type=int, default=5000)
     parser.add_argument("--max-mmd-samples", type=int, default=2000)
+    parser.add_argument("--image-sample-count", type=int, default=IMAGE_SAMPLE_COUNT, help="Number of generated image samples to save per image-like run. Use 0 to disable.")
+    parser.add_argument("--image-sample-cols", type=int, default=IMAGE_SAMPLE_COLS)
+    parser.add_argument("--image-sample-normalize", choices=["clamp", "per-image"], default=IMAGE_SAMPLE_NORMALIZE)
     parser.add_argument("--selection-only", action="store_true")
     parser.add_argument("--selection-split", choices=["train", "val", "test"], default="val")
     parser.add_argument("--selection-repeats", type=int, default=1)
@@ -377,6 +437,10 @@ if __name__ == "__main__":
         raise ValueError("--sample-batch-size must be >= 1")
     if args.max_mmd_samples < 2:
         raise ValueError("--max-mmd-samples must be >= 2")
+    if args.image_sample_count < 0:
+        raise ValueError("--image-sample-count must be >= 0")
+    if args.image_sample_cols < 1:
+        raise ValueError("--image-sample-cols must be >= 1")
     if args.selection_repeats < 1:
         raise ValueError("--selection-repeats must be >= 1")
     if args.selection_batch_size < 1:
@@ -555,6 +619,18 @@ if __name__ == "__main__":
                         if scalars_path.exists():
                             sample = pd.read_csv(scalars_path, usecols=["source", "metric_name"])
                             can_skip = bool((sample["source"].eq("pilot_selection") & sample["metric_name"].eq(PILOT_SELECTION_METRIC_NAME)).any())
+                    elif int(args.image_sample_count) > 0 and bool(summary.get("image_like", False)):
+                        image_sample_paths = summary.get("image_sample_paths") or []
+                        image_sample_matches = all(
+                            (
+                                bool(image_sample_paths),
+                                all(Path(path).is_file() for path in image_sample_paths),
+                                int(summary.get("image_sample_count", -1)) == int(args.image_sample_count),
+                                int(summary.get("image_sample_cols", -1)) == int(args.image_sample_cols),
+                                str(summary.get("image_sample_normalize", "")) == str(args.image_sample_normalize),
+                            )
+                        )
+                        can_skip = image_sample_matches
                     if can_skip:
                         row = {
                             "run_dir": run_dir.name,
@@ -744,6 +820,7 @@ if __name__ == "__main__":
 
             scalar_rows: list[dict[str, Any]] = []
             warnings: list[str] = list(image_class_probe_warnings)
+            image_sample_paths: list[str] = []
 
             for requested_epoch in checkpoint_epochs:
                 if requested_epoch == final_epoch:
@@ -823,6 +900,27 @@ if __name__ == "__main__":
                     )
                 for eval_repeat_idx in range(int(args.n_eval_repeats)):
                     x_gen_cpu = sample_generator_in_batches(generator, len(x_ref_cpu), args.sample_batch_size)
+                    should_save_image_samples = all(
+                        (
+                            image_like,
+                            int(args.image_sample_count) > 0,
+                            requested_epoch == final_epoch,
+                            eval_repeat_idx == 0,
+                        )
+                    )
+                    if should_save_image_samples:
+                        image_sample_path = artifact_dir / "image_samples" / f"epoch-{checkpoint_epoch:04d}__generated.png"
+                        try:
+                            save_image_sample_grid(
+                                x_gen_cpu[: int(args.image_sample_count)],
+                                image_sample_path,
+                                title=f"{base_row['dataset_preset']} - {base_row['model_label']} - trial {base_row['trial_idx']}",
+                                normalize=args.image_sample_normalize,
+                                n_cols=int(args.image_sample_cols),
+                            )
+                            image_sample_paths.append(str(image_sample_path))
+                        except Exception as exc:
+                            warnings.append(f"image_sample_save_failed: {type(exc).__name__}: {exc}")
                     metric_values, metric_warnings = compute_test_metrics(
                         x_ref_cpu,
                         x_gen_cpu,
@@ -875,6 +973,10 @@ if __name__ == "__main__":
                 "sample_batch_size": int(args.sample_batch_size),
                 "feature_dim": feature_dim,
                 "image_like": bool(image_like),
+                "image_sample_count": int(args.image_sample_count),
+                "image_sample_cols": int(args.image_sample_cols),
+                "image_sample_normalize": args.image_sample_normalize,
+                "image_sample_paths": image_sample_paths,
                 "selection_only": bool(args.selection_only),
                 "selection_metric_name": None,
                 "max_mmd_samples": int(args.max_mmd_samples),

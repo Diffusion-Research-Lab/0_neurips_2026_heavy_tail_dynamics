@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=06:00:00
+#SBATCH --time=10:00:00
 #SBATCH --partition=gpu_p13
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --account=jcx@v100
@@ -26,6 +26,9 @@ CLI_N_EVAL_SAMPLES=""
 CLI_N_EVAL_REPEATS=""
 CLI_SAMPLE_BATCH_SIZE=""
 CLI_MAX_MMD_SAMPLES=""
+CLI_IMAGE_SAMPLE_COUNT=""
+CLI_IMAGE_SAMPLE_COLS=""
+CLI_IMAGE_SAMPLE_NORMALIZE=""
 CLI_SELECTION_ONLY=0
 CLI_SELECTION_SPLIT=""
 CLI_SELECTION_REPEATS=""
@@ -65,6 +68,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-mmd-samples)
       CLI_MAX_MMD_SAMPLES="$2"
+      shift 2
+      ;;
+    --image-sample-count)
+      CLI_IMAGE_SAMPLE_COUNT="$2"
+      shift 2
+      ;;
+    --image-sample-cols)
+      CLI_IMAGE_SAMPLE_COLS="$2"
+      shift 2
+      ;;
+    --image-sample-normalize)
+      CLI_IMAGE_SAMPLE_NORMALIZE="$2"
       shift 2
       ;;
     --selection-only)
@@ -159,6 +174,9 @@ N_EVAL_SAMPLES="${CLI_N_EVAL_SAMPLES:-${N_EVAL_SAMPLES:-}}"
 N_EVAL_REPEATS="${CLI_N_EVAL_REPEATS:-${N_EVAL_REPEATS:-2}}"
 SAMPLE_BATCH_SIZE="${CLI_SAMPLE_BATCH_SIZE:-${SAMPLE_BATCH_SIZE:-16}}"
 MAX_MMD_SAMPLES="${CLI_MAX_MMD_SAMPLES:-${MAX_MMD_SAMPLES:-2048}}"
+IMAGE_SAMPLE_COUNT="${CLI_IMAGE_SAMPLE_COUNT:-${IMAGE_SAMPLE_COUNT:-}}"
+IMAGE_SAMPLE_COLS="${CLI_IMAGE_SAMPLE_COLS:-${IMAGE_SAMPLE_COLS:-}}"
+IMAGE_SAMPLE_NORMALIZE="${CLI_IMAGE_SAMPLE_NORMALIZE:-${IMAGE_SAMPLE_NORMALIZE:-}}"
 SELECTION_SPLIT="${CLI_SELECTION_SPLIT:-${SELECTION_SPLIT:-val}}"
 SELECTION_REPEATS="${CLI_SELECTION_REPEATS:-${SELECTION_REPEATS:-8}}"
 SELECTION_BATCH_SIZE="${CLI_SELECTION_BATCH_SIZE:-${SELECTION_BATCH_SIZE:-64}}"
@@ -177,6 +195,9 @@ echo "SELECTION_SPLIT:  ${SELECTION_SPLIT}"
 echo "SELECTION_REP:    ${SELECTION_REPEATS}"
 echo "SELECTION_BATCH:  ${SELECTION_BATCH_SIZE}"
 echo "MAX_MMD_SAMPLES:  ${MAX_MMD_SAMPLES}"
+echo "IMAGE_SAMPLES:    ${IMAGE_SAMPLE_COUNT:-default}"
+echo "IMAGE_COLS:       ${IMAGE_SAMPLE_COLS:-default}"
+echo "IMAGE_NORMALIZE:  ${IMAGE_SAMPLE_NORMALIZE:-default}"
 echo "REQUIRE_REAL_PRE: ${FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA}"
 echo "=============================================================================="
 
@@ -197,6 +218,18 @@ CMD=(
 
 if [[ -n "${N_EVAL_SAMPLES}" ]]; then
   CMD+=(--n-eval-samples "${N_EVAL_SAMPLES}")
+fi
+
+if [[ -n "${IMAGE_SAMPLE_COUNT}" ]]; then
+  CMD+=(--image-sample-count "${IMAGE_SAMPLE_COUNT}")
+fi
+
+if [[ -n "${IMAGE_SAMPLE_COLS}" ]]; then
+  CMD+=(--image-sample-cols "${IMAGE_SAMPLE_COLS}")
+fi
+
+if [[ -n "${IMAGE_SAMPLE_NORMALIZE}" ]]; then
+  CMD+=(--image-sample-normalize "${IMAGE_SAMPLE_NORMALIZE}")
 fi
 
 if [[ "${CLI_SELECTION_ONLY}" -eq 1 ]]; then
