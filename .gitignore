@@ -10,7 +10,7 @@ _tables/
 _results/
 *_results/
 logs/
-sandbox/figures/
+sandbox/
 benchmarks/artifacts/
 benchmarks/data/
 benchmarks/data_archive/
@@ -20,8 +20,6 @@ benchmarks/reports/
 benchmarks/tables/
 benchmarks/tables_dummy/
 src/genkit/_vendor/
-sandbox/report/
-sandbox/_*.pt
 htfm_*.out
 htfm_*.err
 slurm-*.out
