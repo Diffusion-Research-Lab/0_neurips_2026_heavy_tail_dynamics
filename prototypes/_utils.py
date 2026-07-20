@@ -1,10 +1,10 @@
 import os
+from collections.abc import Callable
 from pathlib import Path
 import pandas as pd
 import torch
 from genkit._noise import sample_scaled_isotropic_alpha_stable
-from genkit.datasets import fetch_synthetic_data
-from genkit.metrics import mmd_rbf, tail_coverage_error
+from genkit.metrics import mmd_rbf
 from genkit.nn import MLPModel
 from _constants import (
     ALPHA,
@@ -38,17 +38,10 @@ def setup(seed=SEED):
 
 
 def load_alpha_stable(device, dtype, dim=DIM, alpha=ALPHA, n_train=N_TRAIN, n_test=N_TEST, n_val=N_VAL):
-    n_samples = int(n_train) + int(n_val) + int(n_test)
-    val_size = int(n_val) / n_samples
-    test_size = int(n_test) / n_samples
-    x_train, x_val, x_test = fetch_synthetic_data("alpha_stable", alpha=alpha, dim=dim, n_samples=n_samples,
-                                                  val_size=val_size, test_size=test_size, standardize=False,
-                                                  device=device, dtype=dtype)
-    if x_train.shape[0] < n_train:
-        x_train = torch.cat([x_train, x_val[: n_train - x_train.shape[0]]], dim=0)
-    else:
-        x_train = x_train[:n_train]
-    x_test = x_test[:n_test]
+    if int(n_val) < 0:
+        raise ValueError("n_val must be non-negative.")
+    x_train = sample_scaled_isotropic_alpha_stable(n_samples=int(n_train), dim=int(dim), alpha=alpha, device=device, dtype=dtype)
+    x_test = sample_scaled_isotropic_alpha_stable(n_samples=int(n_test), dim=int(dim), alpha=alpha, device=torch.device("cpu"), dtype=dtype)
     if x_train.shape[0] != n_train or x_test.shape[0] != n_test:
         raise RuntimeError(f"unexpected alpha-stable split sizes: train={x_train.shape[0]} test={x_test.shape[0]}")
     return alpha, x_train, x_test
@@ -67,35 +60,83 @@ def make_train_kwargs(device=DEVICE):
 
 
 @torch.no_grad()
-def _evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd):
-    x_ref = x_ref[:n_tail].detach().cpu().to(torch.float64)
-    x_gen = x_gen[:n_tail].detach().cpu().to(torch.float64)
+def _metric_matrix(x, n_rows=None):
+    if n_rows is not None:
+        x = x[:int(n_rows)]
+    return x.detach().cpu().reshape(x.shape[0], -1).to(torch.float32)
 
-    row = {"trial": trial, "model": name, "mmd_rbf": mmd_rbf(x_ref[:n_mmd], x_gen[:n_mmd])}
-    for label, prob in zip(TCE_COLUMNS, TCE_TAIL_PROBS):
-        row[label] = tail_coverage_error(x_ref, x_gen, probs=prob.reshape(1), tail="upper", mode="log")
+
+@torch.no_grad()
+def _coverage_counts(x, thresholds, chunk_size=SAMPLE_CHUNK_SIZE):
+    counts = torch.zeros(thresholds.shape, dtype=torch.float64)
+    for start in range(0, x.shape[0], int(chunk_size)):
+        block = x[start: start + int(chunk_size)]
+        counts += (block.unsqueeze(0) > thresholds.unsqueeze(1)).sum(dim=1).to(torch.float64)
+    return counts
+
+
+def _tail_errors(ref_counts, gen_counts, n_ref, n_gen, eps=1e-12):
+    ref_cov = ref_counts / float(n_ref)
+    gen_cov = gen_counts / float(n_gen)
+    return (torch.log(gen_cov + float(eps)) - torch.log(ref_cov + float(eps))).abs().mean(dim=1)
+
+
+@torch.no_grad()
+def evaluate_sampler(name, sampler: Callable[[int], torch.Tensor], trial, x_ref, n_tail, n_mmd, chunk_size=SAMPLE_CHUNK_SIZE, **row_values):
+    n_tail = int(n_tail)
+    n_mmd = min(int(n_mmd), n_tail)
+    chunk_size = int(chunk_size)
+    if n_tail <= 0:
+        raise ValueError("n_tail must be positive.")
+    if n_mmd < 2:
+        raise ValueError("n_mmd must be at least 2.")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive.")
+
+    x_ref = _metric_matrix(x_ref, n_tail)
+    quantiles = (1.0 - TCE_TAIL_PROBS).to(dtype=x_ref.dtype)
+    thresholds = torch.quantile(x_ref, quantiles, dim=0)
+    ref_counts = _coverage_counts(x_ref, thresholds, chunk_size=chunk_size)
+
+    gen_counts = torch.zeros_like(ref_counts)
+    mmd_chunks = []
+    mmd_remaining = n_mmd
+    for start in range(0, n_tail, chunk_size):
+        size = min(chunk_size, n_tail - start)
+        x_gen = _metric_matrix(sampler(size))
+        if x_gen.shape[0] != size:
+            raise RuntimeError(f"sampler returned {x_gen.shape[0]} samples, expected {size}.")
+        gen_counts += _coverage_counts(x_gen, thresholds, chunk_size=chunk_size)
+        if mmd_remaining > 0:
+            mmd_chunks.append(x_gen[:mmd_remaining])
+            mmd_remaining -= min(mmd_remaining, x_gen.shape[0])
+
+    x_ref_mmd = x_ref[:n_mmd]
+    x_gen_mmd = torch.cat(mmd_chunks, dim=0)[:n_mmd]
+    row = {"trial": trial, "model": name, **row_values, "mmd_rbf": mmd_rbf(x_ref_mmd, x_gen_mmd)}
+    for label, value in zip(TCE_COLUMNS, _tail_errors(ref_counts, gen_counts, n_tail, n_tail)):
+        row[label] = float(value.item())
 
     return row
 
 
 @torch.no_grad()
-def evaluate_model(name, model, trial, x_ref, n_tail, n_mmd, chunk_size=SAMPLE_CHUNK_SIZE):
-    n_tail = int(n_tail)
-    chunk_size = int(chunk_size)
-    chunks = []
-    for start in range(0, n_tail, chunk_size):
-        chunks.append(model.sample(min(chunk_size, n_tail - start)).detach().cpu())
-    x_gen = torch.cat(chunks, dim=0)
-    return _evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd)
+def _evaluate_samples(name, trial, x_ref, x_gen, n_tail, n_mmd, **row_values):
+    x_gen = _metric_matrix(x_gen, n_tail)
+    return evaluate_sampler(name, lambda size: x_gen[:size], trial, x_ref, n_tail=x_gen.shape[0], n_mmd=n_mmd, chunk_size=x_gen.shape[0], **row_values)
 
 
-def add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=1.7):
-    x_ref = x_test.detach().cpu().to(torch.float64)
+@torch.no_grad()
+def evaluate_model(name, model, trial, x_ref, n_tail, n_mmd, chunk_size=SAMPLE_CHUNK_SIZE, **row_values):
+    return evaluate_sampler(name, model.sample, trial, x_ref, n_tail, n_mmd, chunk_size=chunk_size, **row_values)
+
+
+def add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=1.7, **row_values):
     dim = x_test.reshape(x_test.shape[0], -1).shape[1]
     for trial in range(1, n_trials + 1):
         torch.manual_seed(10_000 + trial)
-        x_true = sample_scaled_isotropic_alpha_stable(n_samples=len(x_test), dim=dim, alpha=alpha, device=torch.device("cpu"), dtype=x_test.dtype)
-        rows.append(_evaluate_samples("test vs true sample", trial, x_ref, x_true, n_tail, n_mmd))
+        sampler = lambda size: sample_scaled_isotropic_alpha_stable(n_samples=size, dim=dim, alpha=alpha, device=torch.device("cpu"), dtype=x_test.dtype)
+        rows.append(evaluate_sampler("test vs true sample", sampler, trial, x_test, n_tail, n_mmd, **row_values))
 
 
 def marker_positions(n_points, n_markers=5):

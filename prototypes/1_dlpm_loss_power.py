@@ -43,7 +43,7 @@ alpha, x_train, x_test = load_alpha_stable(device, dtype, dim=dim)
 n_tail = x_test.shape[0]
 n_mmd = N_MMD
 n_trials = N_TRIALS
-loss_powers = [0.3, 0.5, 0.7, 0.9]
+loss_powers = [0.1, 0.3, 0.5, 0.7, 0.9]
 train_kwargs = make_train_kwargs(device)
 logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s loss_powers=%s", device, dtype, dim, n_trials, n_tail, n_mmd, loss_powers)
 
@@ -71,5 +71,6 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 ########################################################################################################################
 # Plotting
 
-save_tail_figure(rows, "DLPM loss power", "1_dlpm_loss_power.pdf")
-logging.info("saved figure 1_dlpm_loss_power.pdf")
+figure_name = f"{Path(__file__).stem}.pdf"
+save_tail_figure(rows, "DLPM loss power", figure_name)
+logging.info("saved figure %s", figure_name)

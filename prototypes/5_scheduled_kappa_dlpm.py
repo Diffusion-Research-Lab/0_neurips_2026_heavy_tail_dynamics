@@ -26,13 +26,10 @@ logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format=
 class ScheduledKappaDLPM(DLPMEps):
     """Time-inhomogeneous DLPM with kappa_t decreasing from 2 to kappa_min."""
 
-    def __init__(self, *args, kappa_min=1.7, kappa_power=1.0, **kwargs):
+    def __init__(self, *args, kappa_min=1.7, **kwargs):
         kappa_min = float(kappa_min)
-        kappa_power = float(kappa_power)
         if not (0.0 < kappa_min <= 2.0):
             raise ValueError(f"kappa_min must be in (0, 2], got {kappa_min}.")
-        if kappa_power <= 0.0:
-            raise ValueError(f"kappa_power must be positive, got {kappa_power}.")
 
         kwargs.pop("alpha", None)
         super().__init__(*args, alpha=kappa_min, **kwargs)
@@ -40,9 +37,8 @@ class ScheduledKappaDLPM(DLPMEps):
             raise ValueError(f"n_steps must be >= 2, got {self._n_steps}.")
 
         self.kappa_min = kappa_min
-        self.kappa_power = kappa_power
         u = torch.linspace(0.0, 1.0, self._n_steps, device=self._device, dtype=self._fdtype)
-        self._kappa_t = 2.0 - (2.0 - self.kappa_min) * u.pow(self.kappa_power)
+        self._kappa_t = 2.0 - (2.0 - self.kappa_min) * torch.sin(0.5 * torch.pi * u).square()
 
         self._gamma_t = (1.0 - self._betas).clamp_min(self._eps).pow(1.0 / self._kappa_t)
         self._sigma_t = (1.0 - self._gamma_t.pow(self._kappa_t)).clamp_min(0.0).pow(1.0 / self._kappa_t)
@@ -170,10 +166,9 @@ n_tail = x_test.shape[0]
 n_mmd = N_MMD
 n_trials = N_TRIALS
 kappa_min = alpha
-kappa_power = 1.0
 train_kwargs = make_train_kwargs(device)
 model_kwargs = dict(dim=dim, n_steps=N_STEPS, n_trial_A=1, n_trial_G=1, reduce_type="mean", device=device)
-logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s kappa_min=%s kappa_power=%s", device, dtype, dim, n_trials, n_tail, n_mmd, kappa_min, kappa_power)
+logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s kappa_min=%s", device, dtype, dim, n_trials, n_tail, n_mmd, kappa_min)
 
 rows = []
 for trial in range(1, n_trials + 1):
@@ -186,7 +181,6 @@ for trial in range(1, n_trials + 1):
         "Scheduled DLPM": ScheduledKappaDLPM(
             net=make_net(dim=dim, device=device, dtype=dtype),
             kappa_min=kappa_min,
-            kappa_power=kappa_power,
             **model_kwargs,
         ),
     }
@@ -203,5 +197,6 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 ########################################################################################################################
 # Plotting
 
-save_tail_figure(rows, "Scheduled-kappa DLPM", "7_scheduled_kappa_dlpm.pdf")
-logging.info("saved figure 7_scheduled_kappa_dlpm.pdf")
+figure_name = f"{Path(__file__).stem}.pdf"
+save_tail_figure(rows, "Scheduled-kappa DLPM", figure_name)
+logging.info("saved figure %s", figure_name)

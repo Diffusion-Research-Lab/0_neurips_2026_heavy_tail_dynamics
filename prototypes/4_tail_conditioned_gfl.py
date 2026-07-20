@@ -5,7 +5,7 @@ from genkit._solvers import sample_flow
 from genkit.diffusion import DLPMEps
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
-from _constants import ALPHA, DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_STEPS, N_TRIALS
+from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_STEPS, N_TRIALS
 from _utils import (
     add_test_vs_true_sample,
     evaluate_model,
@@ -127,5 +127,6 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 ########################################################################################################################
 # Plotting
 
-save_tail_figure(rows, "Tail-conditioned GFL", "6_tail_conditioned_gfl.pdf")
-logging.info("saved figure 6_tail_conditioned_gfl.pdf")
+figure_name = f"{Path(__file__).stem}.pdf"
+save_tail_figure(rows, "Tail-conditioned GFL", figure_name)
+logging.info("saved figure %s", figure_name)

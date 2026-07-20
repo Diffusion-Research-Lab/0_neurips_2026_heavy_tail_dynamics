@@ -21,6 +21,7 @@ logging.basicConfig(filename=log_path, filemode="w", level=logging.INFO, format=
 ########################################################################################################################
 # Additional classes
 
+
 class BulkTailSplit:
     def __init__(self, x, tail_quantile=0.90):
         if x.ndim != 2:
@@ -71,6 +72,7 @@ class FixedHeteroscedasticGFL(GaussianFlowLinear):
         level = torch.multinomial(self.split.level_probs, int(n_samples), replacement=True)
         return self._sample_source_at_level(level)
 
+
 ########################################################################################################################
 # Main
 device, dtype = setup()
@@ -85,8 +87,8 @@ train_kwargs = make_train_kwargs(device)
 flow_kwargs = dict(dim=dim, n_steps=FLOW_N_STEPS, t_min=0.0, t_max=1.0, sampler="euler", sample_steps=FLOW_SAMPLE_STEPS, device=device)
 
 sigma_b = 1.0
-sigma_t = 10.0
-split = BulkTailSplit(x_train, tail_quantile=0.90)
+sigma_t = 20.0
+split = BulkTailSplit(x_train, tail_quantile=0.99)
 logging.info("device=%s dtype=%s dim=%s n_trials=%s n_tail=%s n_mmd=%s sigma_b=%s sigma_t=%s", device, dtype, dim, n_trials, n_tail, n_mmd, sigma_b, sigma_t)
 
 rows = []
@@ -96,8 +98,8 @@ for trial in range(1, n_trials + 1):
     logging.info("trial %s/%s", trial, n_trials)
 
     models = {
-        "GFL (sigma=1)": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, **flow_kwargs),
-        "GFL (sigma=10)": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=10.0, **flow_kwargs),
+        f"GFL (sigma={sigma_b:g})": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=sigma_b, **flow_kwargs),
+        f"GFL (sigma={sigma_t:g})": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=sigma_t, **flow_kwargs),
         f"H-GFL (sigma_b={sigma_b:g} sigma_t={sigma_t:g})": FixedHeteroscedasticGFL(net=make_net(dim=dim, device=device, dtype=dtype), split=split, sigma_b=sigma_b, sigma_t=sigma_t, **flow_kwargs),
     }
 
@@ -112,5 +114,6 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 ########################################################################################################################
 # Plotting
 
-save_tail_figure(rows, "Heteroscedastic GF linear", "0_heteroscedastic.pdf")
-logging.info("saved figure 0_heteroscedastic.pdf")
+figure_name = f"{Path(__file__).stem}.pdf"
+save_tail_figure(rows, "Heteroscedastic GF linear", figure_name)
+logging.info("saved figure %s", figure_name)

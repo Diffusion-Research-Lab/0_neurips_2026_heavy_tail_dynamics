@@ -1,9 +1,10 @@
 import logging
 from pathlib import Path
 import torch
+from genkit.diffusion import DLPMEps
 from genkit.flow_matching import GaussianFlowLinear
 from genkit.training import train
-from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_TRIALS
+from _constants import DIM, FLOW_N_STEPS, FLOW_SAMPLE_STEPS, N_MMD, N_STEPS, N_TRIALS
 from _utils import (
     add_test_vs_true_sample,
     evaluate_model,
@@ -89,6 +90,7 @@ n_tail = x_test.shape[0]
 n_mmd = N_MMD
 n_trials = N_TRIALS
 train_kwargs = make_train_kwargs(device)
+dlpm_kwargs = dict(alpha=alpha, dim=dim, n_steps=N_STEPS, n_trial_A=1, n_trial_G=1, reduce_type="mean", device=device)
 flow_kwargs = dict(dim=dim, n_steps=FLOW_N_STEPS, t_min=0.0, t_max=1.0, sampler="euler", device=device)
 
 contraction = AsinhContraction.fit(x_train, scale_quantile=0.5, inverse_clip_quantile=0.9999, inverse_clip_margin=0.75)
@@ -102,12 +104,13 @@ for trial in range(1, n_trials + 1):
     torch.manual_seed(trial - 1)
     logging.info("trial %s/%s", trial, n_trials)
 
-    models = {
-        "GFL": GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, sample_steps=FLOW_SAMPLE_STEPS, **flow_kwargs),
-        "H+GFL": ContractedWGFL(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=y_sigma, sample_steps=512, contraction=contraction, **flow_kwargs),
-    }
+    models = [
+        ("DLPM", DLPMEps(net=make_net(dim=dim, device=device, dtype=dtype), **dlpm_kwargs), x_train),
+        ("GFL", GaussianFlowLinear(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=1.0, sample_steps=FLOW_SAMPLE_STEPS, **flow_kwargs), x_train),
+        ("H+GFL", ContractedWGFL(net=make_net(dim=dim, device=device, dtype=dtype), sigma_max=y_sigma, sample_steps=512, contraction=contraction, **flow_kwargs), y_train),
+    ]
 
-    for ((name, model), z_train) in zip(models.items(), [x_train, y_train]):
+    for name, model, z_train in models:
         logging.info("train/evaluate %s", name)
         model, _ = train(model, z_train, **train_kwargs)
         rows.append(evaluate_model(name, model, trial, x_test, n_tail=n_tail, n_mmd=n_mmd))
@@ -119,5 +122,6 @@ add_test_vs_true_sample(rows, x_test, n_tail, n_mmd, n_trials, alpha=alpha)
 ########################################################################################################################
 # Plotting
 
-save_tail_figure(rows, "Contracted-space GF linear", "4_contracted_space_gfl.pdf")
-logging.info("saved figure 4_contracted_space_gfl.pdf")
+figure_name = f"{Path(__file__).stem}.pdf"
+save_tail_figure(rows, "Contracted-space GF linear", figure_name)
+logging.info("saved figure %s", figure_name)
