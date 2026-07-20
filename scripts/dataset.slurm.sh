@@ -7,9 +7,9 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:1
-#SBATCH --time=30:00:00
+#SBATCH --time=60:00:00
 #SBATCH --partition=gpu_p13
-#SBATCH --qos=qos_gpu-t3
+#SBATCH --qos=qos_gpu-t4
 #SBATCH --account=jcx@v100
 
 set -euo pipefail
