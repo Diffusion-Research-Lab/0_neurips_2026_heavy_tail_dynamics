@@ -99,6 +99,7 @@ DATASET_SLUG_ALIASES = {
 
 PERFORMANCE_TABLE_METRICS = [
     "MMD_RBF",
+    "TV_CLASSIFIER",
     "TCE(90)",
     "TCE(99)",
     "TCE(99,9)",
@@ -166,6 +167,7 @@ TRAIN_METRICS = ["training_loss"]
 TEST_VS_TEST_SOURCE = "test_vs_test_metrics"
 STALE_DATASET_FIGURE_FILENAMES = [
     "mmd_rbf",
+    "tv_classifier",
     "tce_90",
     "tce_95",
     "tce_99",
@@ -176,6 +178,7 @@ STALE_DATASET_FIGURE_FILENAMES = [
 
 METRIC_LABELS = {
     "MMD_RBF": "MMD RBF",
+    "TV_CLASSIFIER": "Classifier TV lower bound",
     "TCE(90)": "TCE(90)",
     "TCE(99)": "TCE(99)",
     "TCE(99,9)": "TCE(99,9)",
@@ -186,6 +189,7 @@ METRIC_LABELS = {
 }
 METRIC_FILENAMES = {
     "MMD_RBF": "mmd_rbf",
+    "TV_CLASSIFIER": "tv_classifier",
     "TCE(90)": "tce_90",
     "TCE(99)": "tce_99",
     "TCE(99,9)": "tce_999",
@@ -432,14 +436,23 @@ def cleanup_dataset_outputs(dataset_slug: str, *, table_root: Path, figure_root:
         (figure_root / f"{dataset_slug}__{filename_stem}.pdf").unlink(missing_ok=True)
 
 
-def render_mmd_boxplot(final_scalars: pd.DataFrame, dataset_slug: str, figure_root: Path) -> None:
+def render_metric_boxplot(
+    final_scalars: pd.DataFrame,
+    dataset_slug: str,
+    figure_root: Path,
+    *,
+    metric_name: str,
+    positive: bool = False,
+    yscale: str | None = None,
+    ylim: tuple[float, float] | None = None,
+) -> None:
     test_metric_mask = final_scalars["source"].eq("test_metrics")
-    mmd_metric_mask = final_scalars["metric_name"].eq("MMD_RBF")
-    metric_rows = final_scalars[test_metric_mask & mmd_metric_mask]
+    metric_mask = final_scalars["metric_name"].eq(metric_name)
+    metric_rows = final_scalars[test_metric_mask & metric_mask]
     groups = []
     kept_labels = []
     for model_label in ordered_model_labels(metric_rows["model_label"].dropna().unique()):
-        values = finite_values(metric_rows[metric_rows["model_label"].eq(model_label)], positive=True)
+        values = finite_values(metric_rows[metric_rows["model_label"].eq(model_label)], positive=positive)
         if values.size == 0:
             continue
         groups.append(values)
@@ -469,16 +482,20 @@ def render_mmd_boxplot(final_scalars: pd.DataFrame, dataset_slug: str, figure_ro
     ax.set_xticks(range(1, len(kept_labels) + 1), kept_labels)
 
     baseline_mask = final_scalars["source"].eq(TEST_VS_TEST_SOURCE)
-    baseline_values = finite_values(final_scalars[baseline_mask & mmd_metric_mask], positive=True)
+    baseline_values = finite_values(final_scalars[baseline_mask & metric_mask], positive=positive)
     if baseline_values.size:
         ax.axhline(float(np.median(baseline_values)), color="#777777", linestyle=":", linewidth=1.8, label="test-vs-test")
 
-    ax.set_ylabel("MMD RBF")
-    ax.set_yscale("log")
+    ax.set_ylabel(METRIC_LABELS.get(metric_name, metric_name))
+    if yscale is not None:
+        ax.set_yscale(yscale)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
     ax.tick_params(axis="x", rotation=25)
     ax.grid(alpha=0.2, axis="y", which="both")
     add_top_legend(ax)
-    save_figure(fig, figure_root / f"{dataset_slug}__mmd_rbf_boxplot.pdf", rect=TOP_LEGEND_LAYOUT_RECT)
+    filename = METRIC_FILENAMES.get(metric_name, metric_name.lower())
+    save_figure(fig, figure_root / f"{dataset_slug}__{filename}_boxplot.pdf", rect=TOP_LEGEND_LAYOUT_RECT)
 
 
 def render_tce_quantiles(final_scalars: pd.DataFrame, dataset_slug: str, figure_root: Path) -> None:
@@ -486,10 +503,33 @@ def render_tce_quantiles(final_scalars: pd.DataFrame, dataset_slug: str, figure_
     tce_scalars["metric_name"] = tce_scalars["metric_name"].map(lambda name: TCE_METRIC_ALIASES.get(name, name))
     summary = summarize_source_metrics(tce_scalars, "test_metrics", ["model_label"])
     summary = summary[summary["metric_name"].isin(TCE_METRICS)].copy()
-    if summary.empty:
+    baseline_summary = summarize_source_metrics(tce_scalars, TEST_VS_TEST_SOURCE, [])
+    baseline_summary = baseline_summary[baseline_summary["metric_name"].isin(TCE_METRICS)].set_index("metric_name")
+    if summary.empty and baseline_summary.empty:
         return
 
     fig, ax = plt.subplots(figsize=TCE_FIGSIZE)
+    baseline_points = []
+    for metric_name in TCE_METRICS:
+        if metric_name not in baseline_summary.index:
+            continue
+        mean = float(baseline_summary.loc[metric_name, "mean"])
+        if np.isfinite(mean) and mean > 0.0:
+            baseline_points.append((TCE_QUANTILES[metric_name] / 100.0, mean))
+    if baseline_points:
+        xs, means = zip(*baseline_points)
+        ax.plot(
+            xs,
+            means,
+            color="#777777",
+            linestyle=":",
+            linewidth=1.8,
+            marker=".",
+            markersize=3.0,
+            markevery=marker_positions(len(baseline_points)),
+            label="test-vs-test",
+        )
+
     for model_label in ordered_model_labels(summary["model_label"].dropna().unique()):
         rows = summary[summary["model_label"].eq(model_label)].set_index("metric_name")
         points = []
@@ -578,7 +618,8 @@ def render_dataset(
     cleanup_dataset_outputs(dataset_slug, table_root=table_root, figure_root=figure_root)
 
     final_scalars = final_checkpoint_rows(scalars)
-    render_mmd_boxplot(final_scalars, dataset_slug, figure_root)
+    render_metric_boxplot(final_scalars, dataset_slug, figure_root, metric_name="MMD_RBF", positive=True, yscale="log")
+    render_metric_boxplot(final_scalars, dataset_slug, figure_root, metric_name="TV_CLASSIFIER", ylim=(0.0, 1.0))
     render_tce_quantiles(final_scalars, dataset_slug, figure_root)
     render_training_curves(scalars, dataset_slug, figure_root)
 

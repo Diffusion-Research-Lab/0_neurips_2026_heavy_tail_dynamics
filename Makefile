@@ -85,8 +85,8 @@ DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=$(DATASET_CPUS
 
 # Evaluation options.
 PILOT_SELECTION_ARGS      ?= --selection-only --selection-split val --selection-repeats 4 --selection-batch-size 64
-EVAL_BENCH_SYNTH_ARGS     ?= --n-eval-repeats 4 --sample-batch-size 5000 --max-mmd-samples 4096
-EVAL_BENCH_IMAGE_ARGS     ?= --n-eval-repeats 6 --sample-batch-size 64 --max-mmd-samples 256
+EVAL_BENCH_SYNTH_ARGS     ?= --n-eval-repeats 4 --sample-batch-size 5000 --max-mmd-samples 4096 --max-tv-samples 8192
+EVAL_BENCH_IMAGE_ARGS     ?= --n-eval-repeats 6 --sample-batch-size 64 --max-mmd-samples 256 --max-tv-samples 512
 SHARIATAN_ARGS            ?=
 
 

@@ -23,7 +23,7 @@ import torch                                                                    
 from torch import nn                                                                                     # noqa
 import yaml                                                                                              # noqa
 from benchmarks._real_data_cache import load_preprocessed_real_dataset_metadata, real_dataset_cache_key  # noqa
-from genkit.metrics import mmd_rbf, tail_coverage_error                                                  # noqa
+from genkit.metrics import classifier_tv_lower_bound, mmd_rbf, tail_coverage_error                       # noqa
 
 _main = importlib.import_module("benchmarks.01_main")
 build_dataset = _main.build_dataset
@@ -88,7 +88,9 @@ def tce_metric_specs() -> list[tuple[str, float, float]]:
 
 TCE_METRIC_SPECS = tce_metric_specs()
 TAIL_COVERAGE_METRICS = {name: exceedance_prob for name, exceedance_prob, _ in TCE_METRIC_SPECS}
-EVAL_METRIC_NAMES = ["MMD_RBF", *TAIL_COVERAGE_METRICS]
+TV_CLASSIFIER_METRIC_NAME = "TV_CLASSIFIER"
+TV_CLASSIFIER_MIN_SAMPLES = 5
+EVAL_METRIC_NAMES = ["MMD_RBF", TV_CLASSIFIER_METRIC_NAME, *TAIL_COVERAGE_METRICS]
 TEST_VS_TEST_SOURCE = "test_vs_test_metrics"
 
 MODEL_LABELS = {
@@ -247,6 +249,8 @@ def compute_test_metrics(
     x_gen_cpu: torch.Tensor,
     *,
     max_mmd_samples: int,
+    max_tv_samples: int | None = None,
+    tv_seed: int | None = 0,
     mmd_device: str | None = None,
 ) -> tuple[dict[str, float], list[str]]:
     """Compute sample-quality metrics, leaving failed metrics as NaN."""
@@ -268,6 +272,13 @@ def compute_test_metrics(
         ),
     )
 
+    tv_limit = min(len(x_ref_cpu), len(x_gen_cpu)) if max_tv_samples is None else int(max_tv_samples)
+    tv_n = min(len(x_ref_cpu), len(x_gen_cpu), tv_limit)
+    compute_one(
+        TV_CLASSIFIER_METRIC_NAME,
+        lambda: classifier_tv_lower_bound(x_ref_cpu[:tv_n], x_gen_cpu[:tv_n], seed=tv_seed),
+    )
+
     for metric_name, exceedance_prob in TAIL_COVERAGE_METRICS.items():
         probs = torch.tensor([float(exceedance_prob)], dtype=x_ref_cpu.dtype, device=x_ref_cpu.device)
         compute_one(
@@ -285,31 +296,59 @@ def compute_test_vs_test_metrics(
     x_ref_cpu: torch.Tensor,
     *,
     max_mmd_samples: int,
+    max_tv_samples: int | None = None,
     mmd_device: str | None = None,
     seed: int = 0,
 ) -> tuple[dict[str, float], list[str]]:
     """Compute reference test-vs-test metrics from two disjoint test subsets."""
-    values = {"MMD_RBF": float("nan")}
+    values = {name: float("nan") for name in EVAL_METRIC_NAMES}
     warnings: list[str] = []
-    n_each = min(int(max_mmd_samples), int(len(x_ref_cpu)) // 2)
-    if n_each < 2:
-        warnings.append("test_vs_test_MMD_RBF_failed: ValueError: need at least four test samples")
-        return values, warnings
 
-    try:
-        generator = torch.Generator(device="cpu")
-        generator.manual_seed(int(seed))
-        indices = torch.randperm(int(len(x_ref_cpu)), generator=generator)
-        x_left = x_ref_cpu[indices[:n_each]]
-        x_right = x_ref_cpu[indices[n_each: 2 * n_each]]
-        values["MMD_RBF"] = float(
-            mmd_rbf(
-                x_left.to(device=mmd_device) if mmd_device else x_left,
-                x_right.to(device=mmd_device) if mmd_device else x_right,
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed))
+    indices = torch.randperm(int(len(x_ref_cpu)), generator=generator)
+    half_n = int(len(x_ref_cpu)) // 2
+    x_left_full = x_ref_cpu[indices[:half_n]]
+    x_right_full = x_ref_cpu[indices[half_n: 2 * half_n]]
+
+    mmd_n_each = min(int(max_mmd_samples), half_n)
+    if mmd_n_each < 2:
+        warnings.append("test_vs_test_MMD_RBF_failed: ValueError: need at least four test samples")
+    else:
+        try:
+            x_left = x_left_full[:mmd_n_each]
+            x_right = x_right_full[:mmd_n_each]
+            values["MMD_RBF"] = float(
+                mmd_rbf(
+                    x_left.to(device=mmd_device) if mmd_device else x_left,
+                    x_right.to(device=mmd_device) if mmd_device else x_right,
+                )
             )
-        )
-    except Exception as exc:
-        warnings.append(f"test_vs_test_MMD_RBF_failed: {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            warnings.append(f"test_vs_test_MMD_RBF_failed: {type(exc).__name__}: {exc}")
+
+    tv_limit = half_n if max_tv_samples is None else int(max_tv_samples)
+    tv_n_each = min(tv_limit, half_n)
+    if tv_n_each < TV_CLASSIFIER_MIN_SAMPLES:
+        warnings.append("test_vs_test_TV_CLASSIFIER_failed: ValueError: not enough test samples")
+    else:
+        try:
+            values[TV_CLASSIFIER_METRIC_NAME] = float(
+                classifier_tv_lower_bound(x_left_full[:tv_n_each], x_right_full[:tv_n_each], seed=seed)
+            )
+        except Exception as exc:
+            warnings.append(f"test_vs_test_TV_CLASSIFIER_failed: {type(exc).__name__}: {exc}")
+
+    if half_n < 1:
+        for metric_name in TAIL_COVERAGE_METRICS:
+            warnings.append(f"test_vs_test_{metric_name}_failed: ValueError: need at least two test samples")
+    else:
+        for metric_name, exceedance_prob in TAIL_COVERAGE_METRICS.items():
+            try:
+                probs = torch.tensor([float(exceedance_prob)], dtype=x_ref_cpu.dtype, device=x_ref_cpu.device)
+                values[metric_name] = float(tail_coverage_error(x_left_full, x_right_full, probs=probs))
+            except Exception as exc:
+                warnings.append(f"test_vs_test_{metric_name}_failed: {type(exc).__name__}: {exc}")
     return values, warnings
 
 
@@ -413,6 +452,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-eval-repeats", type=int, default=10)
     parser.add_argument("--sample-batch-size", type=int, default=5000)
     parser.add_argument("--max-mmd-samples", type=int, default=2000)
+    parser.add_argument("--max-tv-samples", type=int, default=None)
     parser.add_argument("--image-sample-count", type=int, default=IMAGE_SAMPLE_COUNT, help="Number of generated image samples to save per image-like run. Use 0 to disable.")
     parser.add_argument("--image-sample-cols", type=int, default=IMAGE_SAMPLE_COLS)
     parser.add_argument("--image-sample-normalize", choices=["clamp", "per-image"], default=IMAGE_SAMPLE_NORMALIZE)
@@ -437,6 +477,8 @@ if __name__ == "__main__":
         raise ValueError("--sample-batch-size must be >= 1")
     if args.max_mmd_samples < 2:
         raise ValueError("--max-mmd-samples must be >= 2")
+    if args.max_tv_samples is not None and args.max_tv_samples < TV_CLASSIFIER_MIN_SAMPLES:
+        raise ValueError(f"--max-tv-samples must be >= {TV_CLASSIFIER_MIN_SAMPLES}")
     if args.image_sample_count < 0:
         raise ValueError("--image-sample-count must be >= 0")
     if args.image_sample_cols < 1:
@@ -882,6 +924,7 @@ if __name__ == "__main__":
                 baseline_values, baseline_warnings = compute_test_vs_test_metrics(
                     x_ref_cpu,
                     max_mmd_samples=args.max_mmd_samples,
+                    max_tv_samples=args.max_tv_samples,
                     mmd_device=args.device if str(args.device).startswith("cuda") else None,
                 )
                 for warning in baseline_warnings:
@@ -925,6 +968,8 @@ if __name__ == "__main__":
                         x_ref_cpu,
                         x_gen_cpu,
                         max_mmd_samples=args.max_mmd_samples,
+                        max_tv_samples=args.max_tv_samples,
+                        tv_seed=eval_repeat_idx,
                         mmd_device=args.device if str(args.device).startswith("cuda") else None,
                     )
                     for warning in metric_warnings:
@@ -980,6 +1025,7 @@ if __name__ == "__main__":
                 "selection_only": bool(args.selection_only),
                 "selection_metric_name": None,
                 "max_mmd_samples": int(args.max_mmd_samples),
+                "max_tv_samples": None if args.max_tv_samples is None else int(args.max_tv_samples),
                 "metric_names": (
                     EVAL_METRIC_NAMES + (IMAGE_CLASS_RECOVERY_METRIC_NAMES if image_class_probe is not None else [])
                 ),

@@ -194,6 +194,7 @@ def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
         raise RuntimeError("mmd boom")
 
     monkeypatch.setattr(evaluate, "mmd_rbf", raise_mmd)
+    monkeypatch.setattr(evaluate, "classifier_tv_lower_bound", lambda *args, **kwargs: 0.25)
     x_ref = torch.arange(256, dtype=torch.float32).reshape(128, 2) + 1.0
     x_gen = x_ref + 0.1
 
@@ -204,6 +205,7 @@ def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
     )
 
     assert values["MMD_RBF"] != values["MMD_RBF"]
+    assert values["TV_CLASSIFIER"] == pytest.approx(0.25)
     assert any("MMD_RBF_failed: RuntimeError: mmd boom" == warning for warning in warnings)
     for metric_name in [
         "TCE(90)",
@@ -216,12 +218,15 @@ def test_compute_test_metrics_keeps_other_metrics_when_mmd_fails(monkeypatch):
 
 def test_tail_coverage_grid_keeps_anchor_metrics():
     assert len(evaluate.TAIL_COVERAGE_METRICS) == 20
+    assert "TV_CLASSIFIER" in evaluate.EVAL_METRIC_NAMES
+    assert plotting_bench.METRIC_LABELS["TV_CLASSIFIER"] == "Classifier TV lower bound"
     for metric_name in ["TCE(90)", "TCE(99)", "TCE(99,9)", "TCE(99,99)"]:
         assert metric_name in evaluate.TAIL_COVERAGE_METRICS
     assert len(plotting_bench.TCE_METRICS) == 20
 
 
-def test_compute_test_metrics_computes_mmd_for_high_dimensional_data():
+def test_compute_test_metrics_computes_mmd_for_high_dimensional_data(monkeypatch):
+    monkeypatch.setattr(evaluate, "classifier_tv_lower_bound", lambda *args, **kwargs: 0.0)
     x_ref = torch.arange(12 * 32, dtype=torch.float32).reshape(12, 32)
     x_gen = x_ref + 0.1
 
@@ -231,12 +236,16 @@ def test_compute_test_metrics_computes_mmd_for_high_dimensional_data():
     assert not any("mmd_skipped" in warning.lower() for warning in warnings)
 
 
-def test_compute_test_vs_test_metrics_computes_mmd_baseline():
+def test_compute_test_vs_test_metrics_computes_full_baseline(monkeypatch):
+    monkeypatch.setattr(evaluate, "classifier_tv_lower_bound", lambda *args, **kwargs: 0.125)
     x_ref = torch.arange(24 * 3, dtype=torch.float32).reshape(24, 3)
 
-    values, warnings = compute_test_vs_test_metrics(x_ref, max_mmd_samples=8)
+    values, warnings = compute_test_vs_test_metrics(x_ref, max_mmd_samples=8, max_tv_samples=10)
 
     assert torch.isfinite(torch.tensor(values["MMD_RBF"]))
+    assert values["TV_CLASSIFIER"] == pytest.approx(0.125)
+    for metric_name in ["TCE(90)", "TCE(99)", "TCE(99,9)", "TCE(99,99)"]:
+        assert torch.isfinite(torch.tensor(values[metric_name]))
     assert warnings == []
 
 
@@ -444,7 +453,7 @@ def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
         "TCE(99,99)": 0.01,
     }
 
-    for run_idx, (model_label, mmd_value) in enumerate([("GF-Linear", 0.12), ("DDPM-V", 0.2)], start=1):
+    for run_idx, (model_label, mmd_value, tv_value) in enumerate([("GF-Linear", 0.12, 0.18), ("DDPM-V", 0.2, 0.3)], start=1):
         run_dir = batch_dir / f"{run_idx:03d}_alpha_stable_target"
         run_dir.mkdir(parents=True)
         rows = []
@@ -466,6 +475,14 @@ def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
                     "source": "test_metrics",
                     "metric_name": "MMD_RBF",
                     "value": mmd_value + 0.01 * eval_repeat_idx,
+                }
+            )
+            rows.append(
+                {
+                    **base_row,
+                    "source": "test_metrics",
+                    "metric_name": "TV_CLASSIFIER",
+                    "value": tv_value + 0.01 * eval_repeat_idx,
                 }
             )
             for metric_name, value in metrics.items():
@@ -493,6 +510,39 @@ def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
                 "epoch": float("nan"),
             }
         )
+        rows.append(
+            {
+                "run_dir": run_dir.name,
+                "checkpoint_epoch": 2,
+                "dataset_preset": "alpha_stable_target",
+                "dataset_name": "alpha_stable",
+                "model_label": model_label,
+                "model_name": model_label.lower(),
+                "model_alpha": float("nan"),
+                "source": "test_vs_test_metrics",
+                "metric_name": "TV_CLASSIFIER",
+                "value": 0.08,
+                "eval_repeat_idx": float("nan"),
+                "epoch": float("nan"),
+            }
+        )
+        for metric_name, value in metrics.items():
+            rows.append(
+                {
+                    "run_dir": run_dir.name,
+                    "checkpoint_epoch": 2,
+                    "dataset_preset": "alpha_stable_target",
+                    "dataset_name": "alpha_stable",
+                    "model_label": model_label,
+                    "model_name": model_label.lower(),
+                    "model_alpha": float("nan"),
+                    "source": "test_vs_test_metrics",
+                    "metric_name": metric_name,
+                    "value": value * 0.5,
+                    "eval_repeat_idx": float("nan"),
+                    "epoch": float("nan"),
+                }
+            )
         pd.DataFrame(rows).to_csv(run_dir / "scalars.csv.gz", index=False, compression="gzip")
 
     stale_table = table_root / "alpha_stable_iso__performance.tex"
@@ -500,7 +550,7 @@ def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
     stale_table.write_text("stale", encoding="utf-8")
     stale_figures = [
         figure_root / f"alpha_stable_iso__{stem}.pdf"
-        for stem in ["mmd_rbf", "tce_90", "tce_95", "tce_99", "tce_999", "tce_9999"]
+        for stem in ["mmd_rbf", "tv_classifier", "tce_90", "tce_95", "tce_99", "tce_999", "tce_9999"]
     ]
     for stale_figure in stale_figures:
         stale_figure.parent.mkdir(parents=True, exist_ok=True)
@@ -514,6 +564,7 @@ def test_render_dataset_writes_mmd_and_tce_summary_figures(tmp_path):
     )
 
     assert (figure_root / "alpha_stable_iso__mmd_rbf_boxplot.pdf").is_file()
+    assert (figure_root / "alpha_stable_iso__tv_classifier_boxplot.pdf").is_file()
     assert (figure_root / "alpha_stable_iso__tce_quantiles.pdf").is_file()
     assert not stale_table.exists()
     assert all(not path.exists() for path in stale_figures)
