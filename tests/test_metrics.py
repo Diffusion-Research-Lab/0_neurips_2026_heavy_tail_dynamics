@@ -5,6 +5,7 @@ import pytest
 import torch
 from genkit import DDPMV, DLPMEps, GaussianFlowEDM, GaussianFlowLinear
 from genkit.metrics import (
+    classifier_tv_lower_bound,
     mmd_rbf,
     model_est_err_curve,
     model_est_jacobian_spectral_curve,
@@ -83,6 +84,52 @@ def test_mmd_rbf_supports_biased_and_unbiased_estimators(device, dtype):
     assert isinstance(score_unbiased, float)
     assert score_biased >= 0.0
     assert torch.isfinite(torch.tensor(score_unbiased)).item()
+
+
+def test_classifier_tv_lower_bound_near_zero_for_identical_distributions():
+    torch.manual_seed(0)
+    x = torch.randn(128, 2)
+
+    score = classifier_tv_lower_bound(x, x, hidden_dim=16, n_folds=4, epochs=25, lr=5e-3, seed=123)
+
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 0.1
+
+
+def test_classifier_tv_lower_bound_detects_separated_distributions():
+    torch.manual_seed(0)
+    x_ref = torch.randn(128, 2) - 3.0
+    x_gen = torch.randn(128, 2) + 3.0
+
+    score = classifier_tv_lower_bound(x_ref, x_gen, hidden_dim=16, n_folds=4, epochs=40, lr=5e-3, seed=123)
+
+    assert isinstance(score, float)
+    assert score > 0.8
+
+
+def test_classifier_tv_lower_bound_is_deterministic_for_fixed_seed():
+    torch.manual_seed(0)
+    x_ref = torch.randn(96, 3)
+    x_gen = torch.randn(96, 3) + 0.5
+
+    score_1 = classifier_tv_lower_bound(x_ref, x_gen, hidden_dim=12, n_folds=3, epochs=20, lr=3e-3, seed=7)
+    score_2 = classifier_tv_lower_bound(x_ref, x_gen, hidden_dim=12, n_folds=3, epochs=20, lr=3e-3, seed=7)
+
+    assert score_1 == pytest.approx(score_2, abs=0.0)
+
+
+def test_classifier_tv_lower_bound_validates_inputs():
+    x_ref = torch.randn(8, 2)
+    x_gen = torch.randn(8, 3)
+
+    with pytest.raises(ValueError, match="same feature dimension"):
+        classifier_tv_lower_bound(x_ref, x_gen, n_folds=2, epochs=1)
+    with pytest.raises(ValueError, match="n_folds"):
+        classifier_tv_lower_bound(x_ref, x_ref, n_folds=1, epochs=1)
+    with pytest.raises(ValueError, match="n_folds"):
+        classifier_tv_lower_bound(x_ref[:2], x_ref[:2], n_folds=3, epochs=1)
+    with pytest.raises(ValueError, match="finite"):
+        classifier_tv_lower_bound(torch.tensor([[float("nan")], [0.0]]), torch.zeros(2, 1), n_folds=2, epochs=1)
 
 
 @pytest.mark.parametrize("device", _devices())

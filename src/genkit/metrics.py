@@ -1,5 +1,6 @@
 """Evaluation metric helpers."""
 
+import math
 from typing import Literal
 import numpy as np
 import torch
@@ -7,6 +8,7 @@ from .diffusion import DLPMEps, DDPMV, DDPMX0
 from .flow_matching import GaussianFlowDDPM, GaussianFlowEDM, GaussianFlowLinear, GaussianFlowOTLinear
 
 __all__ = [
+    "classifier_tv_lower_bound",
     "model_est_err_curve",
     "model_est_jacobian_spectral_curve",
     "mmd_rbf",
@@ -122,6 +124,111 @@ def sliced_wasserstein(x_ref, x_gen, n_projections=128, n_grid=1000, eps=1e-12, 
     q_ref = torch.quantile(proj_ref, q, dim=0)
     q_gen = torch.quantile(proj_gen, q, dim=0)
     return float(torch.trapz((q_ref - q_gen).pow(2), q, dim=0).mean().item())
+
+
+def classifier_tv_lower_bound(
+    x_ref,
+    x_gen,
+    *,
+    hidden_dim: int = 64,
+    n_folds: int = 5,
+    epochs: int = 100,
+    lr: float = 1e-3,
+    seed: int | None = None,
+) -> float:
+    """Estimate a lower bound on TV from held-out balanced classification accuracy.
+
+    The identity TV(P, Q) = 2 a* - 1 relates total variation to the optimal
+    balanced accuracy for distinguishing P from Q. A learned finite classifier is
+    not necessarily optimal, so this returns only a lower bound.
+    """
+    hidden_dim = int(hidden_dim)
+    n_folds = int(n_folds)
+    epochs = int(epochs)
+    lr = float(lr)
+    if hidden_dim < 1:
+        raise ValueError("hidden_dim must be at least 1.")
+    if n_folds < 2:
+        raise ValueError("n_folds must be at least 2.")
+    if epochs < 1:
+        raise ValueError("epochs must be at least 1.")
+    if not math.isfinite(lr) or lr <= 0.0:
+        raise ValueError("lr must be finite and positive.")
+
+    x_ref = _to_2d_tensor(x_ref, dtype=torch.float32)
+    x_gen = _to_2d_tensor(x_gen, device=x_ref.device, dtype=x_ref.dtype)
+    _validate_same_feature_dim(x_ref, x_gen)
+    if not torch.isfinite(x_ref).all() or not torch.isfinite(x_gen).all():
+        raise ValueError("x_ref and x_gen must contain only finite values.")
+
+    x_ref = x_ref.detach().cpu()
+    x_gen = x_gen.detach().cpu()
+    n_ref, d = x_ref.shape
+    n_gen = x_gen.shape[0]
+    if n_folds > min(n_ref, n_gen):
+        raise ValueError("n_folds cannot exceed the number of samples in either class.")
+
+    generator = torch.Generator(device="cpu")
+    if seed is None:
+        generator.seed()
+    else:
+        generator.manual_seed(int(seed))
+
+    ref_folds = torch.tensor_split(torch.randperm(n_ref, generator=generator), n_folds)
+    gen_folds = torch.tensor_split(torch.randperm(n_gen, generator=generator), n_folds)
+    correct_ref = correct_gen = total_ref = total_gen = 0
+
+    for fold_idx in range(n_folds):
+        ref_val = ref_folds[fold_idx]
+        gen_val = gen_folds[fold_idx]
+        ref_train = torch.cat([fold for i, fold in enumerate(ref_folds) if i != fold_idx])
+        gen_train = torch.cat([fold for i, fold in enumerate(gen_folds) if i != fold_idx])
+
+        x_train = torch.cat([x_ref[ref_train], x_gen[gen_train]], dim=0)
+        y_train = torch.cat([torch.zeros(len(ref_train), 1), torch.ones(len(gen_train), 1)], dim=0)
+        x_val = torch.cat([x_ref[ref_val], x_gen[gen_val]], dim=0)
+
+        mean = x_train.mean(dim=0, keepdim=True)
+        std = x_train.std(dim=0, unbiased=False, keepdim=True).clamp_min(1e-6)
+        x_train = (x_train - mean) / std
+        x_val = (x_val - mean) / std
+
+        model = torch.nn.Sequential(
+            torch.nn.Linear(d, hidden_dim),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_dim, 1),
+        )
+        for module in model:
+            if isinstance(module, torch.nn.Linear):
+                torch.nn.init.kaiming_uniform_(module.weight, a=math.sqrt(5.0), generator=generator)
+                if module.bias is not None:
+                    fan_in = module.weight.shape[1]
+                    bound = 1.0 / math.sqrt(fan_in)
+                    torch.nn.init.uniform_(module.bias, -bound, bound, generator=generator)
+
+        class_weight = torch.cat([
+            torch.full((len(ref_train), 1), 0.5 / len(ref_train)),
+            torch.full((len(gen_train), 1), 0.5 / len(gen_train)),
+        ], dim=0)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        for _ in range(epochs):
+            logits = model(x_train)
+            loss = (torch.nn.functional.binary_cross_entropy_with_logits(logits, y_train, reduction="none") * class_weight).sum()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+        with torch.no_grad():
+            pred = (model(x_val) >= 0.0).reshape(-1)
+        ref_pred = pred[:len(ref_val)]
+        gen_pred = pred[len(ref_val):]
+        correct_ref += int((~ref_pred).sum().item())
+        correct_gen += int(gen_pred.sum().item())
+        total_ref += len(ref_val)
+        total_gen += len(gen_val)
+
+    balanced_accuracy = 0.5 * (correct_ref / total_ref + correct_gen / total_gen)
+    return max(0.0, min(1.0, 2.0 * balanced_accuracy - 1.0))
 
 
 def _tail_coverage_curve(x_ref, x_gen, probs=None, tail="upper", min_exceedances=10):
