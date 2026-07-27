@@ -118,6 +118,22 @@ def test_classifier_tv_lower_bound_is_deterministic_for_fixed_seed():
     assert score_1 == pytest.approx(score_2, abs=0.0)
 
 
+def test_classifier_tv_lower_bound_ignores_global_default_dtype():
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float64)
+        torch.manual_seed(0)
+        x_ref = torch.randn(32, 2, dtype=torch.float32)
+        x_gen = torch.randn(32, 2, dtype=torch.float32) + 0.5
+
+        score = classifier_tv_lower_bound(x_ref, x_gen, hidden_dim=8, n_folds=2, epochs=3, lr=1e-2, seed=5)
+    finally:
+        torch.set_default_dtype(previous_dtype)
+
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+
+
 def test_classifier_tv_lower_bound_validates_inputs():
     x_ref = torch.randn(8, 2)
     x_gen = torch.randn(8, 3)

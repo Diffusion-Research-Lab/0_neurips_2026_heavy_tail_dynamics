@@ -185,7 +185,10 @@ def classifier_tv_lower_bound(
         gen_train = torch.cat([fold for i, fold in enumerate(gen_folds) if i != fold_idx])
 
         x_train = torch.cat([x_ref[ref_train], x_gen[gen_train]], dim=0)
-        y_train = torch.cat([torch.zeros(len(ref_train), 1), torch.ones(len(gen_train), 1)], dim=0)
+        y_train = torch.cat([
+            torch.zeros(len(ref_train), 1, dtype=x_ref.dtype),
+            torch.ones(len(gen_train), 1, dtype=x_ref.dtype),
+        ], dim=0)
         x_val = torch.cat([x_ref[ref_val], x_gen[gen_val]], dim=0)
 
         mean = x_train.mean(dim=0, keepdim=True)
@@ -197,7 +200,7 @@ def classifier_tv_lower_bound(
             torch.nn.Linear(d, hidden_dim),
             torch.nn.SiLU(),
             torch.nn.Linear(hidden_dim, 1),
-        )
+        ).to(dtype=x_train.dtype)
         for module in model:
             if isinstance(module, torch.nn.Linear):
                 torch.nn.init.kaiming_uniform_(module.weight, a=math.sqrt(5.0), generator=generator)
@@ -207,8 +210,8 @@ def classifier_tv_lower_bound(
                     torch.nn.init.uniform_(module.bias, -bound, bound, generator=generator)
 
         class_weight = torch.cat([
-            torch.full((len(ref_train), 1), 0.5 / len(ref_train)),
-            torch.full((len(gen_train), 1), 0.5 / len(gen_train)),
+            torch.full((len(ref_train), 1), 0.5 / len(ref_train), dtype=x_train.dtype),
+            torch.full((len(gen_train), 1), 0.5 / len(gen_train), dtype=x_train.dtype),
         ], dim=0)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         for _ in range(epochs):
