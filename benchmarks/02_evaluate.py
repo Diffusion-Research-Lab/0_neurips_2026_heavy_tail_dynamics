@@ -655,10 +655,17 @@ if __name__ == "__main__":
             if summary_path.exists() and not args.overwrite:
                 summary = yaml.safe_load(summary_path.read_text()) or {}
                 if summary.get("status") == "ok":
-                    can_skip = True
+                    expected_metric_names = [PILOT_SELECTION_METRIC_NAME] if args.selection_only else list(EVAL_METRIC_NAMES)
+                    if not args.selection_only and image_class_probe is not None:
+                        expected_metric_names += IMAGE_CLASS_RECOVERY_METRIC_NAMES
+                    summary_warnings = [str(warning) for warning in (summary.get("warnings") or [])]
+                    has_failed_expected_metric = any(
+                        any(f"{metric_name}_failed" in warning or f"test_vs_test_{metric_name}_failed" in warning for warning in summary_warnings)
+                        for metric_name in expected_metric_names
+                    )
+                    can_skip = set(expected_metric_names).issubset(set(summary.get("metric_names") or [])) and not has_failed_expected_metric
                     if args.selection_only:
-                        can_skip = False
-                        if scalars_path.exists():
+                        if can_skip and scalars_path.exists():
                             sample = pd.read_csv(scalars_path, usecols=["source", "metric_name"])
                             can_skip = bool((sample["source"].eq("pilot_selection") & sample["metric_name"].eq(PILOT_SELECTION_METRIC_NAME)).any())
                     elif int(args.image_sample_count) > 0 and bool(summary.get("image_like", False)):
@@ -672,7 +679,7 @@ if __name__ == "__main__":
                                 str(summary.get("image_sample_normalize", "")) == str(args.image_sample_normalize),
                             )
                         )
-                        can_skip = image_sample_matches
+                        can_skip = can_skip and image_sample_matches
                     if can_skip:
                         row = {
                             "run_dir": run_dir.name,
