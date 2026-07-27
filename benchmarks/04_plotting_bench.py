@@ -301,6 +301,13 @@ def finite_values(frame: pd.DataFrame, column: str = "value", *, positive: bool 
     return values[mask]
 
 
+def unit_interval_data_ylim(groups: list[np.ndarray], baseline_values: np.ndarray) -> tuple[float, float]:
+    values = np.concatenate([*groups, baseline_values])
+    high = float(np.max(values)) if values.size else 1.0
+    upper = min(1.0, max(0.12, high + max(0.02, 0.15 * high)))
+    return 0.0, upper
+
+
 def save_figure(fig, output_path: Path, *, rect=FULL_LAYOUT_RECT) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout(rect=rect)
@@ -445,6 +452,7 @@ def render_metric_boxplot(
     positive: bool = False,
     yscale: str | None = None,
     ylim: tuple[float, float] | None = None,
+    adaptive_unit_ylim: bool = False,
 ) -> None:
     test_metric_mask = final_scalars["source"].eq("test_metrics")
     metric_mask = final_scalars["metric_name"].eq(metric_name)
@@ -491,6 +499,9 @@ def render_metric_boxplot(
         ax.set_yscale(yscale)
     if ylim is not None:
         ax.set_ylim(*ylim)
+    elif adaptive_unit_ylim:
+        ax.set_ylim(*unit_interval_data_ylim(groups, baseline_values))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
     ax.tick_params(axis="x", rotation=25)
     ax.grid(alpha=0.2, axis="y", which="both")
     add_top_legend(ax)
@@ -619,7 +630,7 @@ def render_dataset(
 
     final_scalars = final_checkpoint_rows(scalars)
     render_metric_boxplot(final_scalars, dataset_slug, figure_root, metric_name="MMD_RBF", positive=True, yscale="log")
-    render_metric_boxplot(final_scalars, dataset_slug, figure_root, metric_name="TV_CLASSIFIER", ylim=(0.0, 1.0))
+    render_metric_boxplot(final_scalars, dataset_slug, figure_root, metric_name="TV_CLASSIFIER", adaptive_unit_ylim=True)
     render_tce_quantiles(final_scalars, dataset_slug, figure_root)
     render_training_curves(scalars, dataset_slug, figure_root)
 
