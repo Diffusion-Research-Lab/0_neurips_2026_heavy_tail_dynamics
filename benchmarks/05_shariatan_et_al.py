@@ -19,19 +19,21 @@ from tqdm.auto import tqdm
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path = [entry for entry in sys.path if Path(entry or ".").resolve() != SCRIPT_DIR]
-for path_entry in [REPO_ROOT, REPO_ROOT / "src"]:
+for path_entry in [REPO_ROOT]:
     if str(path_entry) not in sys.path:
         sys.path.insert(0, str(path_entry))
 
-VENDOR_ROOT = REPO_ROOT / "src" / "genkit" / "_vendor" / "DLPM"
+import gendynamics                                                                           # noqa
+
+VENDOR_ROOT = Path(gendynamics.__file__).resolve().parent / "_vendor" / "DLPM"
 if str(VENDOR_ROOT) not in sys.path:
     sys.path.insert(0, str(VENDOR_ROOT))
 
 from bem.datasets.Distributions import gen_sas                                                       # noqa
 from dlpm.methods.GenerativeLevyProcess import GenerativeLevyProcess                                 # noqa
 from dlpm.models.Model import MLPModel as VendorMLPModel                                             # noqa
-from genkit.diffusion import DDPMV, DLPMEps                                                          # noqa
-from genkit.thirdparty import DLPMEpsOrigin                                                          # noqa
+from gendynamics.diffusion import DDPMV, DLPMEps                                                          # noqa
+from gendynamics.thirdparty import DLPMEpsOrigin                                                          # noqa
 
 ####################################################################################################
 # Globals

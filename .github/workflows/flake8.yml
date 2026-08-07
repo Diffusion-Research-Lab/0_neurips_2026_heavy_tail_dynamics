@@ -21,4 +21,4 @@ jobs:
           pip install -e .[dev,bench]
 
       - name: Lint
-        run: flake8 --ignore E501 --exclude src/genkit/_vendor -j1
+        run: flake8 --ignore E501 -j1

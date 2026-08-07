@@ -5,7 +5,7 @@
 ```bash
 make send
 ssh jz
-cd "$WORK/src/flowbench"
+cd "$WORK/src/heavy_tail_dynamics"
 ```
 
 ### Setup

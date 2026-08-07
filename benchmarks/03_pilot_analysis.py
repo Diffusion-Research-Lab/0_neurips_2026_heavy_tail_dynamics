@@ -9,7 +9,7 @@ import sys
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+for _path in (PROJECT_ROOT,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt                                                 
 import numpy as np                                                                                   # noqa
 import pandas as pd                                                                                  # noqa
 import yaml                                                                                          # noqa
-from benchmarks.utils import load_yaml                                                               # noqa
+from toolkit.utils import load_yaml                                                               # noqa
 
 ARTIFACT_ROOT = PROJECT_ROOT / "benchmarks" / "artifacts"
 CONFIG_ROOT = PROJECT_ROOT / "benchmarks" / "configs"

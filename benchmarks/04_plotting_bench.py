@@ -9,11 +9,11 @@ import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-for _path in (REPO_ROOT, REPO_ROOT / "src"):
+for _path in (REPO_ROOT,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from labkit.report import PRETTY_RCPARAMS, format_mean_std_latex                                      # noqa
+from benchtools.report import PRETTY_RCPARAMS, format_mean_std_latex                                  # noqa
 
 ARTIFACT_ROOT = REPO_ROOT / "benchmarks" / "artifacts"
 TABLE_ROOT = REPO_ROOT / "benchmarks" / "tables"

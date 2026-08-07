@@ -13,7 +13,7 @@ import traceback
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+for _path in (PROJECT_ROOT,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
@@ -22,8 +22,8 @@ import pandas as pd                                                             
 import torch                                                                                             # noqa
 from torch import nn                                                                                     # noqa
 import yaml                                                                                              # noqa
-from benchmarks._real_data_cache import load_preprocessed_real_dataset_metadata, real_dataset_cache_key  # noqa
-from genkit.metrics import classifier_tv_lower_bound, mmd_rbf, tail_coverage_error                       # noqa
+from toolkit.real_data_cache import load_preprocessed_real_dataset_metadata, real_dataset_cache_key  # noqa
+from gendynamics.metrics import classifier_tv_lower_bound, mmd_rbf, tail_coverage_error                       # noqa
 
 _main = importlib.import_module("benchmarks.01_main")
 build_dataset = _main.build_dataset
@@ -157,7 +157,7 @@ def sample_synthetic_reference(
     n_samples: int,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    from genkit.datasets import SYNTHETIC_DATASETS
+    from gendynamics.datasets import SYNTHETIC_DATASETS
 
     name = str(dataset_cfg.get("name", "")).strip()
     entry = SYNTHETIC_DATASETS[name]
@@ -224,7 +224,7 @@ def save_image_sample_grid(
     if n_images < 1:
         raise ValueError("Cannot save an empty image sample grid.")
 
-    os.environ.setdefault("MPLCONFIGDIR", "/tmp/flowbench-matplotlib")
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/heavy_tail_dynamics_matplotlib")
     import matplotlib  # noqa
     if "matplotlib.pyplot" not in sys.modules:
         matplotlib.use("Agg")

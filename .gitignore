@@ -5,6 +5,7 @@ __pycache__/
 .python-version
 
 # Artifacts / outputs
+.assets/
 _figures/
 _tables/
 _results/
@@ -19,9 +20,8 @@ benchmarks/figures/
 benchmarks/reports/
 benchmarks/tables/
 benchmarks/tables_dummy/
-src/genkit/_vendor/
-htfm_*.out
-htfm_*.err
+heavy_tail_dynamics_*.out
+heavy_tail_dynamics_*.err
 slurm-*.out
 
 # Latex build artifacts

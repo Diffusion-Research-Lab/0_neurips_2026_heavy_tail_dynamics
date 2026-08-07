@@ -1,0 +1,65 @@
+run:
+  name: test_smoke
+  seed: 0
+  dtype: float32
+  n_trial: 1
+
+sweep:
+  datasets:
+    - gaussian_tiny
+  networks:
+    - mlp
+  models:
+    - gaussian_flow_linear
+  trains:
+    - smoke
+
+datasets:
+  gaussian_tiny:
+    kind: synthetic
+    name: gaussian
+    params:
+      n_samples: 16
+      dim: 2
+    split:
+      val_size: 0.1
+      test_size: 0.1
+      random_state: 0
+      standardize: true
+
+networks:
+  mlp:
+    name: mlp
+    params:
+      width: 32
+      depth: 2
+      time_dim: 16
+      dropout: 0.0
+      use_norm: true
+
+models:
+  gaussian_flow_linear:
+    name: gaussian_flow_linear
+    params:
+      n_steps: 16
+      sigma_max: 2.0
+
+trains:
+  smoke:
+    device: cpu
+    batch_size: 8
+    n_epochs: 1
+    lr: 0.0002
+    num_workers: 0
+    use_adamw: true
+    weight_decay: 0.000001
+    grad_clip_norm: 10.0
+    lr_schedule: cosine
+    warmup_steps: 1
+    cosine_eta_min_ratio: 0.05
+    freq_logging: 1
+    ckpt_freq_epochs: 1
+    ckpt_keep_last: 1
+
+save:
+  root_dir: /tmp/heavy_tail_dynamics_smoke

@@ -9,7 +9,7 @@ import sys
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+for _path in (PROJECT_ROOT,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
@@ -18,7 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa
 import pandas as pd  # noqa
 import torch  # noqa
-from benchmarks.utils import latest_config_batch_dir  # noqa
+from toolkit.utils import latest_config_batch_dir  # noqa
 
 _main = importlib.import_module("benchmarks.01_main")
 build_model = _main.build_model

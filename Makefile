@@ -3,11 +3,18 @@ BASH                      ?= bash
 SHELL                     := $(BASH)
 VENV_DIR                  ?= .venv
 JZ_MODULE                 ?= pytorch-gpu/py3/2.8.0
+PROJECT_ID                := heavy_tail_dynamics
+
+ifdef WORK
+ASSET_DIR                 ?= $(WORK)/$(PROJECT_ID)_assets
+else
+ASSET_DIR                 ?= $(CURDIR)/.assets
+endif
 
 
 # Python entry points.
 BENCH_MAIN                ?= benchmarks/01_main.py
-BENCH_UTILS               ?= benchmarks/utils.py
+BENCH_UTILS               ?= toolkit/utils.py
 PILOT_ANALYSIS            ?= benchmarks/03_pilot_analysis.py
 BENCH_PLOTTING            ?= benchmarks/04_plotting_bench.py
 SHARIATAN_BENCH           ?= benchmarks/05_shariatan_et_al.py
@@ -16,10 +23,10 @@ IMAGENET128_VIZ_SCRIPT    ?= benchmarks/07_visualize_imagenet128.py
 
 
 # Output directories.
-LOG_DIR                   ?= logs
-ARTIFACT_DIR              ?= benchmarks/artifacts
-TABLE_DIR                 ?= benchmarks/tables
-FIGURE_DIR                ?= benchmarks/figures
+LOG_DIR                   ?= $(ASSET_DIR)/logs
+ARTIFACT_DIR              ?= $(ASSET_DIR)/artifacts
+TABLE_DIR                 ?= $(ASSET_DIR)/tables
+FIGURE_DIR                ?= $(ASSET_DIR)/figures
 
 
 # Config roots.
@@ -37,7 +44,7 @@ DATASET_OVERWRITE         ?= 0
 DATASET_HRRR_ENSURE       ?= 1
 DATASET_CPUS              ?= 20
 HRRR_ENSURE_ARGS          ?= --workers 4
-HRRR_STATUS               ?= $(CURDIR)/$(LOG_DIR)/hrrr_ensure_status.json
+HRRR_STATUS               ?= $(LOG_DIR)/hrrr_ensure_status.json
 
 
 # Slurm array sizes.
@@ -48,27 +55,27 @@ EVAL_PILOT_IMAGE_SHARDS   ?= 4
 
 
 # Jean Zay data root fallback.
-ifndef FLOWBENCH_DATA
+ifndef JEANZAY_DATA
   ifdef WORK
-    FLOWBENCH_DATA := $(WORK)/flowbench_data
+    JEANZAY_DATA := $(WORK)/jz_datasets
   endif
 endif
-export FLOWBENCH_DATA
+export JEANZAY_DATA
 
 
 # Python helpers.
 VENV_BIN                  = $(CURDIR)/$(VENV_DIR)/bin
 VENV_PYTHON               = $(VENV_BIN)/python
-PROJECT_PYTHONPATH        = $(CURDIR):$(CURDIR)/src
+PROJECT_PYTHONPATH        = $(CURDIR)
 PYTHON_ENV                = PYTHONPATH="$(PROJECT_PYTHONPATH)$${PYTHONPATH:+:$$PYTHONPATH}"
 # Run project Python commands without activating the virtual environment.
 RUN_PYTHON                = $(PYTHON_ENV) "$(VENV_PYTHON)"
 
 
 # Shared Slurm plumbing.
-ARRAY_LOG_ARGS            = --output="$(CURDIR)/$(LOG_DIR)/%x_%A_%a.out" \
-                            --error="$(CURDIR)/$(LOG_DIR)/%x_%A_%a.err"
-SBATCH_EXPORT             = --export=ALL,VENV_DIR="$(CURDIR)/$(VENV_DIR)"
+ARRAY_LOG_ARGS            = --output="$(LOG_DIR)/%x_%A_%a.out" \
+                            --error="$(LOG_DIR)/%x_%A_%a.err"
+SBATCH_EXPORT             = --export=ALL,VENV_DIR="$(CURDIR)/$(VENV_DIR)",ASSET_DIR="$(ASSET_DIR)"
 
 
 # Slurm resource presets.
@@ -81,6 +88,7 @@ IMAGENET128_VIZ_SBATCH_ARGS ?= --nodes=1 --ntasks=1 --cpus-per-task=15 --gres=gp
 EVAL_PILOT_SBATCH_ARGS    ?= $(JZ_GPU_DEV_ARGS) --time=01:00:00
 EVAL_SBATCH_ARGS          ?= $(JZ_GPU_ARGS) --time=10:00:00
 DATASET_SBATCH_ARGS       ?= --nodes=1 --ntasks=1 --cpus-per-task=$(DATASET_CPUS) --gres=gpu:1 --partition=gpu_p13 --qos=qos_gpu-t4 --account=jcx@v100 --time=60:00:00
+HRRR_DATASET_SBATCH_ARGS  ?= --nodes=1 --ntasks=1 --cpus-per-task=$(DATASET_CPUS) --partition=prepost --time=20:00:00
 
 
 # Evaluation options.
@@ -105,8 +113,8 @@ DATASET_CONFIG_INPUTS     ?= $(PILOT_IMAGE_CONFIG) $(BENCH_TEMPLATE_DIR)/image_b
 
 # Environment bootstrap.
 setup:
-	$(BASH) scripts/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
-	USE_JZ_MODULE=1 JZ_MODULE="$(JZ_MODULE)" PYTHON="$(VENV_PYTHON)" $(BASH) scripts/fetch.vendor.sh
+	$(BASH) setup/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
+	USE_JZ_MODULE=1 JZ_MODULE="$(JZ_MODULE)" PYTHON="$(VENV_PYTHON)" $(BASH) setup/fetch.vendor.sh
 
 
 # Dataset cache submission.
@@ -129,7 +137,7 @@ dataset-hrrr:
 	  if [ -n "$${HRRR_MIN_SAMPLES:-}" ]; then hrrr_args="$$hrrr_args --min-samples $$HRRR_MIN_SAMPLES"; fi; \
 	  if [ -n "$${HRRR_MIN_COVERAGE:-}" ]; then hrrr_args="$$hrrr_args --min-coverage $$HRRR_MIN_COVERAGE"; fi; \
 	  echo "[hrrr-login] ensuring raw HRRR tensor on the login node with $(JZ_MODULE)"; \
-	  $(RUN_PYTHON) scripts/ensure_hrrr.py --status-file "$(HRRR_STATUS)" $$hrrr_args
+	  $(RUN_PYTHON) setup/ensure_hrrr.py --status-file "$(HRRR_STATUS)" $$hrrr_args
 
 ifeq ($(DATASET_HRRR_ENSURE),1)
 ifneq (,$(filter hrrr,$(DATASETS)))
@@ -141,7 +149,7 @@ dataset:
 	@mkdir -p "$(LOG_DIR)"
 	@for dataset in $(DATASETS); do \
 	  case " $(INIT_DATASETS) " in \
-	    *" $$dataset "*) $(RUN_PYTHON) -m datakit init "$$dataset" ;; \
+	    *" $$dataset "*) $(RUN_PYTHON) -m jeanzaydata init "$$dataset" ;; \
 	  esac; \
 	  submit=0; \
 	  force_overwrite=0; \
@@ -159,7 +167,7 @@ dataset:
 	    submit=1; \
 	    force_overwrite=1; \
 	  elif [ "$$submit" != "1" ]; then \
-	    $(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset "$$dataset" $(DATASET_CONFIG_INPUTS); \
+	    $(RUN_PYTHON) setup/prefetch.datasets.py --check-only --only-dataset "$$dataset" $(DATASET_CONFIG_INPUTS); \
 	    status="$$?"; \
 	    if [ "$$status" = "0" ]; then \
 	      echo "[skip-sbatch] $$dataset: all variants already cached"; \
@@ -171,11 +179,13 @@ dataset:
 	  fi; \
 	  if [ "$$submit" = "1" ]; then \
 	    overwrite_arg=""; \
+	    sbatch_args="$(DATASET_SBATCH_ARGS)"; \
 	    if [ "$$force_overwrite" = "1" ]; then overwrite_arg="--overwrite"; fi; \
-	    sbatch --job-name=htfm_dataset_$${dataset} \
-	      --output="$(CURDIR)/$(LOG_DIR)/htfm_dataset_$${dataset}_%j.out" \
-	      --error="$(CURDIR)/$(LOG_DIR)/htfm_dataset_$${dataset}_%j.err" \
-	      $(DATASET_SBATCH_ARGS) $(SBATCH_EXPORT) scripts/dataset.slurm.sh \
+	    if [ "$$dataset" = "hrrr" ]; then sbatch_args="$(HRRR_DATASET_SBATCH_ARGS)"; fi; \
+	    sbatch --job-name=$(PROJECT_ID)_dataset_$${dataset} \
+	      --output="$(LOG_DIR)/$(PROJECT_ID)_dataset_$${dataset}_%j.out" \
+	      --error="$(LOG_DIR)/$(PROJECT_ID)_dataset_$${dataset}_%j.err" \
+	      $$sbatch_args $(SBATCH_EXPORT) setup/dataset.slurm.sh \
 	      $$overwrite_arg --only-dataset "$$dataset" $(DATASET_CONFIG_INPUTS) ; \
 	  fi; \
 	done
@@ -201,11 +211,11 @@ endef
 # Pilot and benchmark submission.
 pilot:
 	@mkdir -p "$(LOG_DIR)"
-	sbatch --job-name=htfm_pilot --array=$(call pilot_array,$(PILOT_SYNTH_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(PILOT_SYNTH_CONFIG)" --skip-existing
-	sbatch --job-name=htfm_pilot --array=$(call pilot_array,$(PILOT_IMAGE_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$(PILOT_IMAGE_CONFIG)" --skip-existing
+	sbatch --job-name=$(PROJECT_ID)_pilot --array=$(call pilot_array,$(PILOT_SYNTH_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/run.slurm.sh --config "$(PILOT_SYNTH_CONFIG)" --skip-existing
+	sbatch --job-name=$(PROJECT_ID)_pilot --array=$(call pilot_array,$(PILOT_IMAGE_SHARDS)) $(PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/run.slurm.sh --config "$(PILOT_IMAGE_CONFIG)" --skip-existing
 
 analyze-pilot:
-	$(RUN_PYTHON) "$(PILOT_ANALYSIS)"
+	$(RUN_PYTHON) "$(PILOT_ANALYSIS)" --artifact-root "$(ARTIFACT_DIR)" --report-root "$(ASSET_DIR)/pilot_reports" --bench-config-root "$(BENCH_CONFIG_DIR)"
 
 
 bench:
@@ -219,7 +229,7 @@ bench:
 	    *) bench_sbatch_args='$(BENCH_SBATCH_ARGS_SYNTH)' ;; \
 	  esac; \
 	  echo "[bench] submit $$config ($$count runs)"; \
-	  sbatch --job-name=htfm_bench --array="0-$$array_end" $$bench_sbatch_args $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$$config" --skip-existing; \
+	  sbatch --job-name=$(PROJECT_ID)_bench --array="0-$$array_end" $$bench_sbatch_args $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/run.slurm.sh --config "$$config" --skip-existing; \
 	done
 
 imagenet128-viz-configs:
@@ -227,7 +237,7 @@ imagenet128-viz-configs:
 
 bench-imagenet128-viz: imagenet128-viz-configs
 	@mkdir -p "$(LOG_DIR)"
-	@$(RUN_PYTHON) scripts/prefetch.datasets.py --check-only --only-dataset imagenet_lt "$(IMAGENET128_VIZ_CONFIG_DIR)" || { \
+	@$(RUN_PYTHON) setup/prefetch.datasets.py --check-only --only-dataset imagenet_lt "$(IMAGENET128_VIZ_CONFIG_DIR)" || { \
 	  status="$$?"; \
 	  if [ "$$status" = "2" ]; then \
 	    echo "[bench-imagenet128-viz] missing ImageNet-LT-96 processed cache." >&2; \
@@ -239,7 +249,7 @@ bench-imagenet128-viz: imagenet128-viz-configs
 	  count="$$($(call config_run_count,$$config))"; \
 	  array_end="$$((count - 1))"; \
 	  echo "[bench-imagenet128-viz] submit $$config ($$count runs)"; \
-	  sbatch --job-name=htfm_imagenet128_viz --array="0-$$array_end" $(IMAGENET128_VIZ_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/run.slurm.sh --config "$$config" --skip-existing; \
+	  sbatch --job-name=$(PROJECT_ID)_imagenet128_viz --array="0-$$array_end" $(IMAGENET128_VIZ_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/run.slurm.sh --config "$$config" --skip-existing; \
 	done
 
 visualize-imagenet128:
@@ -254,11 +264,11 @@ evaluate-pilot:
 	@test -d "$(ARTIFACT_DIR)" || { echo "Missing: $(ARTIFACT_DIR)" >&2; exit 2; }
 	@pilot_synth_batch="$$($(call latest_batch,*_synth) 2>/dev/null || true)"; \
 	test -n "$$pilot_synth_batch" || { echo "No synth pilot batch found under $(ARTIFACT_DIR)" >&2; exit 2; }; \
-	sbatch --job-name=htfm_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_SYNTH_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
+	sbatch --job-name=$(PROJECT_ID)_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_SYNTH_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/evaluate.slurm.sh \
 	  --batch-dir "$$pilot_synth_batch" $(PILOT_SELECTION_ARGS)
 	@pilot_image_batch="$$($(call latest_batch,*_image) 2>/dev/null || true)"; \
 	test -n "$$pilot_image_batch" || { echo "No image pilot batch found under $(ARTIFACT_DIR)" >&2; exit 2; }; \
-	sbatch --job-name=htfm_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_IMAGE_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh \
+	sbatch --job-name=$(PROJECT_ID)_eval_pilot --array=$(call pilot_array,$(EVAL_PILOT_IMAGE_SHARDS)) $(EVAL_PILOT_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/evaluate.slurm.sh \
 	  --batch-dir "$$pilot_image_batch" $(PILOT_SELECTION_ARGS)
 
 evaluate-bench:
@@ -273,7 +283,7 @@ evaluate-bench:
 	    *) eval_args='$(EVAL_BENCH_SYNTH_ARGS)' ;; \
 	  esac; \
 	  echo "[evaluate-bench] submit $$config -> $$batch_dir"; \
-	  sbatch --job-name=htfm_eval_bench $(EVAL_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) scripts/evaluate.slurm.sh --batch-dir "$$batch_dir" $$eval_args; \
+	  sbatch --job-name=$(PROJECT_ID)_eval_bench $(EVAL_SBATCH_ARGS) $(ARRAY_LOG_ARGS) $(SBATCH_EXPORT) benchmarks/evaluate.slurm.sh --batch-dir "$$batch_dir" $$eval_args; \
 	done
 
 
@@ -282,19 +292,17 @@ analyze-bench:
 	$(RUN_PYTHON) "$(BENCH_PLOTTING)" --artifact-root "$(ARTIFACT_DIR)" --table-root "$(TABLE_DIR)" --figure-root "$(FIGURE_DIR)"
 
 check:
-	$(PYTHON_ENV) "$(VENV_BIN)/flake8" --ignore E501 --exclude src/genkit/_vendor src tests benchmarks examples
-	$(PYTHON_ENV) "$(VENV_BIN)/pytest" -v
-	$(RUN_PYTHON) "$(BENCH_MAIN)" --config tests/fixtures/benchmark_smoke.yaml --fail-on-error
-	$(RUN_PYTHON) examples/01_visu_1d_path.py --blank
-	$(RUN_PYTHON) examples/02_visu_2d.py --blank
+	$(RUN_PYTHON) -m flake8 --ignore E501 toolkit benchmarks setup
+	$(RUN_PYTHON) -m pytest -v
+	$(RUN_PYTHON) "$(BENCH_MAIN)" --config toolkit/tests/fixtures/benchmark_smoke.yaml --fail-on-error
 
 
 # Transfer and archive helpers.
 send:
-	$(BASH) scripts/transfer.sh send
+	$(BASH) setup/transfer.sh send
 
 supp:
-	$(BASH) scripts/transfer.sh supp
+	$(BASH) setup/transfer.sh supp
 
 
 # Target index.

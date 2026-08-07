@@ -8,12 +8,12 @@ import sys
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+for _path in (PROJECT_ROOT,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
 import yaml  # noqa
-from benchmarks.utils import load_yaml  # noqa
+from toolkit.utils import load_yaml  # noqa
 
 
 MODEL_ORDER = [

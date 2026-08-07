@@ -28,7 +28,7 @@ jobs:
           pip install -e .[dev,bench]
 
       - name: Fetch and patch vendors
-        run: PYTHON=python bash scripts/fetch.vendor.sh
+        run: PYTHON=python bash setup/fetch.vendor.sh
 
       - name: Run tests
         run: pytest -q
@@ -52,13 +52,13 @@ jobs:
           pip install -e .[dev,bench]
 
       - name: Fetch and patch vendors
-        run: PYTHON=python bash scripts/fetch.vendor.sh
+        run: PYTHON=python bash setup/fetch.vendor.sh
 
       - name: Run tests with coverage
         run: |
           pytest \
-            --cov=genkit \
-            --cov=labkit \
+            --cov=benchmarks \
+            --cov=toolkit \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
             -q

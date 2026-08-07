@@ -3,21 +3,21 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flowbench"
+name = "heavy-tail-dynamics"
 version = "0.1.0"
-description = "Flow-Matching and Diffusion research codebase."
+description = "Benchmarks for heavy-tailed diffusion and flow-matching dynamics."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "diffusers>=0.35.0",
+  "benchtools @ git+ssh://git@github.com/Diffusion-Research-Lab/benchtools.git",
+  "gendynamics @ git+ssh://git@github.com/Diffusion-Research-Lab/gendynamics.git",
+  "jeanzaydata @ git+ssh://git@github.com/Diffusion-Research-Lab/jeanzaydata.git",
   "matplotlib>=3.7.1",
   "numpy>=1.24",
   "pandas>=2.0",
   "Pillow>=10",
-  "POT>=0.9",
   "PyYAML>=6.0",
   "scikit-learn>=1.3",
-  "scipy>=1.10",
   "torch>=2.7",
 ]
 
@@ -56,22 +56,12 @@ bench = [
   "warp-lang>=1.5.0",
 ]
 
-[project.scripts]
-datakit = "datakit._prepare:run_cli"
-
 [tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["datakit", "genkit", "labkit"]
-
-[tool.setuptools.package-data]
-datakit = ["resources/imagenet_lt/annotations/*.txt"]
+packages = ["toolkit"]
+include-package-data = false
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["toolkit/tests"]
 
 [tool.coverage.run]
-source = ["datakit", "genkit", "labkit"]
-omit = ["src/genkit/_vendor/*"]
-
-[tool.coverage.report]
-omit = ["src/genkit/_vendor/*"]
+source = ["benchmarks", "toolkit"]

@@ -13,24 +13,24 @@ import traceback
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _path in (PROJECT_ROOT, PROJECT_ROOT / "src"):
+for _path in (PROJECT_ROOT,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
 import pandas as pd                                                                             # noqa
 import torch                                                                                    # noqa
 import yaml                                                                                     # noqa
-from benchmarks.utils import load_yaml, make_batch_dir, require_section, select_entries         # noqa
-from benchmarks._real_data_cache import load_preprocessed_real_dataset, load_preprocessed_real_dataset_shapes  # noqa
-from datakit._dataset import fetch_real_data, list_datasets as list_real_datasets               # noqa
-from genkit.datasets import fetch_synthetic_data, list_datasets as list_synthetic_datasets      # noqa
-from genkit.diffusion import DDPMV, DLPMEps                                                     # noqa
-from genkit.flow_matching import GaussianFlowEDM, GaussianFlowLinear                            # noqa
-from genkit.nn import MLPModel, TransformerModel, UNetModel                                     # noqa
-from genkit.thirdparty import TEDMOrigin                                                        # noqa
-from genkit.training import train                                                               # noqa
-from labkit.config import parse_dtype                                                           # noqa
-from labkit.utils import set_seed                                                               # noqa
+from toolkit.utils import load_yaml, make_batch_dir, require_section, select_entries         # noqa
+from toolkit.real_data_cache import load_preprocessed_real_dataset, load_preprocessed_real_dataset_shapes  # noqa
+from jeanzaydata import fetch_real_data, list_datasets as list_real_datasets                        # noqa
+from gendynamics.datasets import fetch_synthetic_data, list_datasets as list_synthetic_datasets      # noqa
+from gendynamics.diffusion import DDPMV, DLPMEps                                                     # noqa
+from gendynamics.flow_matching import GaussianFlowEDM, GaussianFlowLinear                            # noqa
+from gendynamics.nn import MLPModel, TransformerModel, UNetModel                                     # noqa
+from gendynamics.thirdparty import TEDMOrigin                                                        # noqa
+from gendynamics.training import train                                                               # noqa
+from benchtools.config import parse_dtype                                                       # noqa
+from benchtools.utils import set_seed                                                           # noqa
 
 MODEL_REGISTRY = {
     "ddpm_v": DDPMV,
@@ -81,7 +81,7 @@ def build_dataset(
         data = fetch_synthetic_data(name, **kwargs)
         return tuple(data[split_indices[split]] for split in splits)
     if kind == "real":
-        if os.getenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "").lower() in {"1", "true", "yes", "y", "on"}:
+        if os.getenv("HEAVY_TAIL_DYNAMICS_REQUIRE_PREPROCESSED_REAL_DATA", "").lower() in {"1", "true", "yes", "y", "on"}:
             return load_preprocessed_real_dataset(dataset_cfg, dtype=dtype, device=device, splits=splits)
         try:
             return load_preprocessed_real_dataset(dataset_cfg, dtype=dtype, device=device, splits=splits)
@@ -105,7 +105,7 @@ def build_training_dataset(
     """Load the training split and record all split shapes."""
     kind = str(dataset_cfg.get("kind", "synthetic")).lower()
     if kind == "real":
-        require_cache = os.getenv("FLOWBENCH_REQUIRE_PREPROCESSED_REAL_DATA", "").lower() in {"1", "true", "yes", "y", "on"}
+        require_cache = os.getenv("HEAVY_TAIL_DYNAMICS_REQUIRE_PREPROCESSED_REAL_DATA", "").lower() in {"1", "true", "yes", "y", "on"}
         try:
             x_train = load_preprocessed_real_dataset(
                 dataset_cfg, dtype=dtype, device=device, splits=("train",),
