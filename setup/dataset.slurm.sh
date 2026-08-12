@@ -61,8 +61,8 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
   else
     echo "[dataset-slurm] Missing virtual environment." >&2
     echo "[dataset-slurm] Expected: ${PROJECT_ROOT}/.venv (or ${PROJECT_ROOT}/.venv-gendynamics)" >&2
-    echo "[dataset-slurm] Run setup first on login node:" >&2
-    echo "  make setup" >&2
+    echo "[dataset-slurm] Install the environment first on the login node:" >&2
+    echo "  make install" >&2
     exit 1
   fi
 fi

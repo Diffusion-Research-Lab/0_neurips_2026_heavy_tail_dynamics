@@ -9,9 +9,9 @@ description = "Benchmarks for heavy-tailed diffusion and flow-matching dynamics.
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "benchtools @ git+ssh://git@github.com/Diffusion-Research-Lab/benchtools.git",
-  "gendynamics @ git+ssh://git@github.com/Diffusion-Research-Lab/gendynamics.git",
-  "jeanzaydata @ git+ssh://git@github.com/Diffusion-Research-Lab/jeanzaydata.git",
+  "benchtools @ git+https://github.com/Diffusion-Research-Lab/benchtools.git",
+  "gendynamics @ git+https://github.com/Diffusion-Research-Lab/gendynamics.git",
+  "jeanzaydata @ git+https://github.com/Diffusion-Research-Lab/jeanzaydata.git",
   "matplotlib>=3.7.1",
   "numpy>=1.24",
   "pandas>=2.0",

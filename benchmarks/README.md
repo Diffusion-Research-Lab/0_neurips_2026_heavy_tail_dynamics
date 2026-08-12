@@ -8,10 +8,10 @@ ssh jz
 cd "$WORK/src/Diffusion-Research-Lab/0_neurips_2026_heavy_tail_dynamics"
 ```
 
-### Setup
+### Installation
 
 ```bash
-make setup
+make install
 make dataset
 ```
 

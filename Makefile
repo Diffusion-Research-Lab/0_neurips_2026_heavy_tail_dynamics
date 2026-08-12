@@ -112,13 +112,13 @@ DATASET_CONFIG_INPUTS     ?= $(PILOT_IMAGE_CONFIG) $(BENCH_TEMPLATE_DIR)/image_b
 
 .DEFAULT_GOAL := help
 
-.PHONY: setup dataset dataset-hrrr pilot analyze-pilot bench bench-shariatan imagenet128-viz-configs \
+.PHONY: install dataset dataset-hrrr pilot analyze-pilot bench bench-shariatan imagenet128-viz-configs \
         bench-imagenet128-viz visualize-imagenet128 evaluate-pilot evaluate-bench analyze-bench \
         check send supp help
 
 
 # Environment bootstrap.
-setup:
+install:
 	$(BASH) setup/setup.sh --venv-dir "$(VENV_DIR)" --use-jz-module
 	USE_JZ_MODULE=1 JZ_MODULE="$(JZ_MODULE)" PYTHON="$(VENV_PYTHON)" $(BASH) setup/fetch.vendor.sh
 
@@ -314,7 +314,7 @@ supp:
 # Target index.
 help:
 	@printf "Available targets:\n"
-	@printf "  %-22s %s\n" "setup" "Install Jean Zay environment"
+	@printf "  %-22s %s\n" "install" "Install Jean Zay environment"
 	@printf "  %-22s %s\n" "dataset" "Submit real image-cache jobs; override with DATASETS=hrrr"
 	@printf "  %-22s %s\n" "dataset-hrrr" "Fetch/grow raw HRRR tensor on the login node"
 	@printf "  %-22s %s\n" "pilot" "Submit pilot configs via Slurm"

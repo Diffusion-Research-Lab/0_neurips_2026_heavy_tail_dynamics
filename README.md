@@ -15,12 +15,12 @@ To reproduce the NeurIPS 2026 paper results, see `benchmarks/README.md`.
 
 On Jean Zay, benchmark-specific outputs are stored under `$WORK/0_neurips_2026_heavy_tail_dynamics_assets`; shared datasets remain under `$WORK/jz_datasets`.
 
-Install the independent benchmark utility, model, and Jean Zay dataset packages from their GitHub repositories over SSH before installing this benchmark:
+Install the independent benchmark utility, model, and Jean Zay dataset packages from their public GitHub repositories over HTTPS before installing this benchmark:
 
 ```bash
-pip install "benchtools @ git+ssh://git@github.com/Diffusion-Research-Lab/benchtools.git"
-pip install "gendynamics @ git+ssh://git@github.com/Diffusion-Research-Lab/gendynamics.git"
-pip install "jeanzaydata @ git+ssh://git@github.com/Diffusion-Research-Lab/jeanzaydata.git"
+pip install "benchtools @ git+https://github.com/Diffusion-Research-Lab/benchtools.git"
+pip install "gendynamics @ git+https://github.com/Diffusion-Research-Lab/gendynamics.git"
+pip install "jeanzaydata @ git+https://github.com/Diffusion-Research-Lab/jeanzaydata.git"
 pip install -e ".[dev,bench]"
 ```
 
