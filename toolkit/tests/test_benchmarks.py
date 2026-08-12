@@ -386,7 +386,7 @@ def test_latest_config_batch_falls_back_to_saved_config_metadata(tmp_path):
     config_path.write_text("run:\n  name: bench_synth__alpha_stable_iso__ddpm_v\n", encoding="utf-8")
     batch_dir = artifact_root / "1412454_ddpm_v"
     batch_dir.mkdir()
-    (batch_dir / "summary_shard_000.txt").write_text("\n".join(["n_runs: 1", "config: /lustre/fswork/projects/rech/jcx/uor49lv/src/heavy_tail_dynamics/benchmarks/configs/bench/synth/alpha_stable_iso/ddpm_v.yaml"]) + "\n", encoding="utf-8")  # noqa
+    (batch_dir / "summary_shard_000.txt").write_text("\n".join(["n_runs: 1", "config: /lustre/fswork/projects/rech/jcx/uor49lv/src/Diffusion-Research-Lab/0_neurips_2026_heavy_tail_dynamics/benchmarks/configs/bench/synth/alpha_stable_iso/ddpm_v.yaml"]) + "\n", encoding="utf-8")  # noqa
 
     assert bench_utils.latest_config_batch_dir(artifact_root, config_path) == batch_dir
 

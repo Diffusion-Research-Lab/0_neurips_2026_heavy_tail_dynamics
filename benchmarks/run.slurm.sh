@@ -109,7 +109,7 @@ source "${VENV_DIR}/bin/activate"
 PYTHON_BIN="$(command -v python)"
 export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 export HEAVY_TAIL_DYNAMICS_REQUIRE_PREPROCESSED_REAL_DATA="${HEAVY_TAIL_DYNAMICS_REQUIRE_PREPROCESSED_REAL_DATA:-1}"
-ASSET_DIR="${ASSET_DIR:-${WORK:-${PROJECT_ROOT}}/heavy_tail_dynamics_assets}"
+ASSET_DIR="${ASSET_DIR:-${WORK:-${PROJECT_ROOT}}/$(basename "${PROJECT_ROOT}")_assets}"
 
 if [[ -z "${PYTHON_BIN}" ]]; then
   echo "[slurm] python command not found after venv activation." >&2

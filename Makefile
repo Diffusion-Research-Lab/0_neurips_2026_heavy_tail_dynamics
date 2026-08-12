@@ -1,9 +1,15 @@
 # Local shell and environment.
 BASH                      ?= bash
 SHELL                     := $(BASH)
-VENV_DIR                  ?= .venv
 JZ_MODULE                 ?= pytorch-gpu/py3/2.8.0
-PROJECT_ID                := heavy_tail_dynamics
+PROJECT_ID                := 0_neurips_2026_heavy_tail_dynamics
+
+ifdef SCRATCH
+RUNTIME_DIR               ?= $(SCRATCH)/$(PROJECT_ID)_runtime
+VENV_DIR                  ?= $(RUNTIME_DIR)/venv
+else
+VENV_DIR                  ?= $(CURDIR)/.venv
+endif
 
 ifdef WORK
 ASSET_DIR                 ?= $(WORK)/$(PROJECT_ID)_assets
@@ -64,7 +70,7 @@ export JEANZAY_DATA
 
 
 # Python helpers.
-VENV_BIN                  = $(CURDIR)/$(VENV_DIR)/bin
+VENV_BIN                  = $(VENV_DIR)/bin
 VENV_PYTHON               = $(VENV_BIN)/python
 PROJECT_PYTHONPATH        = $(CURDIR)
 PYTHON_ENV                = PYTHONPATH="$(PROJECT_PYTHONPATH)$${PYTHONPATH:+:$$PYTHONPATH}"
@@ -75,7 +81,7 @@ RUN_PYTHON                = $(PYTHON_ENV) "$(VENV_PYTHON)"
 # Shared Slurm plumbing.
 ARRAY_LOG_ARGS            = --output="$(LOG_DIR)/%x_%A_%a.out" \
                             --error="$(LOG_DIR)/%x_%A_%a.err"
-SBATCH_EXPORT             = --export=ALL,VENV_DIR="$(CURDIR)/$(VENV_DIR)",ASSET_DIR="$(ASSET_DIR)"
+SBATCH_EXPORT             = --export=ALL,VENV_DIR="$(VENV_DIR)",ASSET_DIR="$(ASSET_DIR)"
 
 
 # Slurm resource presets.

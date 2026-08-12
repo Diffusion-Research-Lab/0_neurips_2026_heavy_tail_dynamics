@@ -13,7 +13,7 @@ Heavy Tail Dynamics provides:
 
 To reproduce the NeurIPS 2026 paper results, see `benchmarks/README.md`.
 
-On Jean Zay, benchmark-specific outputs are stored under `$WORK/heavy_tail_dynamics_assets`; shared datasets remain under `$WORK/jz_datasets`.
+On Jean Zay, benchmark-specific outputs are stored under `$WORK/0_neurips_2026_heavy_tail_dynamics_assets`; shared datasets remain under `$WORK/jz_datasets`.
 
 Install the independent benchmark utility, model, and Jean Zay dataset packages from their GitHub repositories over SSH before installing this benchmark:
 

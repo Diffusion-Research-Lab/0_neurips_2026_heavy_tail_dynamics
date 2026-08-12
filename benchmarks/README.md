@@ -5,7 +5,7 @@
 ```bash
 make send
 ssh jz
-cd "$WORK/src/heavy_tail_dynamics"
+cd "$WORK/src/Diffusion-Research-Lab/0_neurips_2026_heavy_tail_dynamics"
 ```
 
 ### Setup

@@ -2,10 +2,11 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_NAME="$(basename "${PROJECT_ROOT}")"
 
 MODE="${1:-}"
 REMOTE_HOST="jz"
-REMOTE_BASE="/lustre/fswork/projects/rech/jcx/uor49lv/src"
+REMOTE_BASE="/lustre/fswork/projects/rech/jcx/uor49lv/src/Diffusion-Research-Lab"
 ZIP_NAME="code.zip"
 
 usage() { echo "Usage: $(basename "$0") [send|supp]" >&2; }
@@ -57,9 +58,10 @@ stage_project() {
 }
 
 send_code() {
-    local work_dir="/tmp/heavy_tail_dynamics"
-    echo "Send -> ${REMOTE_HOST}:${REMOTE_BASE}/heavy_tail_dynamics"
+    local work_dir="/tmp/${PROJECT_NAME}"
+    echo "Send -> ${REMOTE_HOST}:${REMOTE_BASE}/${PROJECT_NAME}"
     stage_project "${work_dir}"
+    ssh "${REMOTE_HOST}" "mkdir -p '${REMOTE_BASE}'"
     rsync -avh --info=stats2,progress2 "${work_dir}" "${REMOTE_HOST}:${REMOTE_BASE}/"
     rm -rf "${work_dir}"
 }
