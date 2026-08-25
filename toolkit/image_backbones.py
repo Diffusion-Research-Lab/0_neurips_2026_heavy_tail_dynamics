@@ -12,7 +12,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 import sys
-
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

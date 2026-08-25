@@ -2,7 +2,6 @@
 """Report training/evaluation settings from benchmark artifacts."""
 
 from __future__ import annotations
-
 import argparse
 from collections import Counter, defaultdict
 import csv
@@ -11,7 +10,6 @@ import json
 import math
 from pathlib import Path
 from typing import Any
-
 import yaml
 
 

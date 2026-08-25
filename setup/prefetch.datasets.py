@@ -190,10 +190,7 @@ def _check_only(tasks: list, root: Path) -> int:
 def _run_build(args, tasks: list, root: Path) -> int:
     # Heavy imports happen here; require torch/sklearn/benchtools available.
     import time
-    from toolkit.real_data_cache import (
-        CACHE_VERSION as RUNTIME_CACHE_VERSION,
-        build_preprocessed_real_dataset,
-    )
+    from toolkit.real_data_cache import CACHE_VERSION as RUNTIME_CACHE_VERSION, build_preprocessed_real_dataset
     from benchtools.config import parse_dtype
 
     if RUNTIME_CACHE_VERSION != CACHE_VERSION:
