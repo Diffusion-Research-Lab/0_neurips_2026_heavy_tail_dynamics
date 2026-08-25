@@ -22,22 +22,17 @@ stage_project() {
 
     rsync -a \
       --exclude '.git/' \
-      --exclude '.agents/' \
-      --exclude '.claude/' \
-      --exclude '.github/' \
       --exclude '.gitignore' \
+      --exclude '.github/' \
+      --exclude '.agents/' \
+      --exclude '.codex/' \
       --exclude '.pytest_cache/' \
-      --exclude '.mypy_cache/' \
-      --exclude '.ruff_cache/' \
       --exclude '.venv/' \
-      --exclude 'venv/' \
       --exclude 'build/' \
       --exclude 'dist/' \
-      --exclude '*.codex' \
       --exclude '*.egg-info/' \
       --exclude '__pycache__/' \
       --exclude '*.py[cod]' \
-      --exclude '*~' \
       --exclude 'code.zip' \
       --exclude '*_results*/' \
       --exclude 'benchmarks/artifacts/' \
