@@ -35,6 +35,8 @@ stage_project() {
       --exclude '*.py[cod]' \
       --exclude 'code.zip' \
       --exclude '*_results*/' \
+      --exclude '_figures/' \
+      --exclude '_tables/' \
       --exclude 'benchmarks/artifacts/' \
       --exclude 'benchmarks/data/' \
       --exclude 'benchmarks/data_archive/' \
